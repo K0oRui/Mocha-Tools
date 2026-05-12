@@ -466,10 +466,10 @@ class UploadWorker(QThread):
                 }
                 if server_fid:
                     part_params["fileId"] = server_fid
-                part_headers = self._headers()
+                part_headers = self._headers(file_name)
                 self.status.emit(f"[DEBUG] Part upload URL: {part_url}")
                 self.status.emit(f"[DEBUG] Params: {part_params}")
-                self.status.emit(f"[DEBUG] Headers: {{'Authorization': '(hidden)'}}")
+                self.status.emit(f"[DEBUG] Headers: {{'Authorization': '(hidden)', 'x-file-name': file_name}}")
                 self.status.emit(f"[DEBUG] Chunk size: {len(chunk)} bytes")
                 try:
                     part_resp = requests.put(
@@ -477,7 +477,7 @@ class UploadWorker(QThread):
                         headers=part_headers,
                         params=part_params,
                         data=chunk,
-                        timeout=120,
+                        timeout=300,
                     )
                     part_resp.raise_for_status()
                 except requests.HTTPError as e:
