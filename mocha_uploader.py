@@ -306,8 +306,11 @@ class UploadWorker(QThread):
     def cancel(self):
         self._cancel = True
 
-    def _headers(self):
-        return {"Authorization": f"Bearer {self.api_key}"}
+    def _headers(self, file_name=None):
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        if file_name:
+            headers["x-file-name"] = file_name
+        return headers
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -369,17 +372,9 @@ class UploadWorker(QThread):
                 self.speed.emit(uploaded / elapsed)
         data = b"".join(chunks)
 
-        # FIX: the API's POST /api/files endpoint expects a multipart/form-data
-        # body where the file field is named "file" and the destination path
-        # field is named "path".  The original code was correct on field names
-        # but was sending `data={"path": dest}` alongside `files=`, which
-        # caused requests to duplicate the Content-Type boundary and produce a
-        # malformed body on some server stacks.  Pass the extra form fields
-        # inside the `files` dict as plain tuples (no filename, no mime type)
-        # so that requests builds a single, well-formed multipart body.
         resp = requests.post(
             url,
-            headers=self._headers(),
+            headers=self._headers(file_name),
             files={
                 "file": (file_name, data, "application/octet-stream"),
                 "path": (None, dest),
@@ -650,8 +645,16 @@ class MochaUploader(QMainWindow):
         path_lbl.setObjectName("field_label")
         self.upload_path_edit = QLineEdit()
         self.upload_path_edit.setText("/")
+
+        # Resize handle
+        self.path_handle = QWidget()
+        self.path_handle.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        self.path_handle.setFixedWidth(12)
+        self.path_handle.setStyleSheet("background: #2a2d32;")
+
         path_row.addWidget(path_lbl)
         path_row.addWidget(self.upload_path_edit, 1)
+        path_row.addWidget(self.path_handle)
         api_lay.addLayout(path_row)
 
         # Remember key checkbox
@@ -680,10 +683,20 @@ class MochaUploader(QMainWindow):
         self.status_badge = QLabel("● Idle")
         self.status_badge.setObjectName("status_badge")
         self.speed_label  = QLabel("")
-        self.speed_label.setObjectName("status_label")
-        self.speed_label.setStyleSheet("color: #9ca3af; font-size: 11px; background:transparent;")
+
+        # Shrink text label to fit speed label
+        self.text_label = QLabel("Ready — configure your API key and select a file.")
+        self.text_label.setObjectName("log_console")
+        self.text_label.setWordWrap(True)
+        self.text_label.setMinimumHeight(46)
+        self.text_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+        # Add stretchable space to push speed label to the right
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
         top_row.addWidget(self.status_badge)
-        top_row.addStretch()
+        top_row.addWidget(spacer)
         top_row.addWidget(self.speed_label)
         status_lay.addLayout(top_row)
 
@@ -699,11 +712,7 @@ class MochaUploader(QMainWindow):
         status_lay.addLayout(prog_row)
 
         # Log console
-        self.log_label = QLabel("Ready — configure your API key and select a file.")
-        self.log_label.setObjectName("log_console")
-        self.log_label.setWordWrap(True)
-        self.log_label.setMinimumHeight(46)
-        status_lay.addWidget(self.log_label)
+        status_lay.addWidget(self.text_label)
 
         # Share result
         self.share_result = QLabel("")
@@ -740,6 +749,7 @@ class MochaUploader(QMainWindow):
         exp_lbl.setObjectName("field_label")
         self.expiry_combo = QComboBox()
         self.expiry_combo.addItems([
+
             "Never", "1h", "6h", "12h", "1d", "3d", "7d", "14d", "30d"
         ])
         exp_row.addWidget(exp_lbl)
@@ -896,7 +906,12 @@ class MochaUploader(QMainWindow):
         self._log(f"✗ Error: {msg}")
 
     def _log(self, msg):
-        self.log_label.setText(msg)
+        self.text_label.setText(msg)
+        try:
+            with open("mocha_uploader.log", "a", encoding="utf-8") as f:
+                f.write(msg + "\n")
+        except Exception:
+            pass
 
     def _badge(self, text, color):
         self.status_badge.setText(f"● {text}")
@@ -966,6 +981,8 @@ if __name__ == "__main__":
 #
 # SHARE OPTIONS
 # -------------
+
+
 #   Expiration values are sent as-is to the API (e.g. "1d", "7d", "Never").
 #   Max downloads = 0 means "Unlimited" (field omitted from request).
 # ═══════════════════════════════════════════════════════════════════════════

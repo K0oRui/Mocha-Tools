@@ -1,0 +1,20 @@
+Selected: LICENSE.txt
+File size: 1.2 KB
+Starting direct upload…
+[DEBUG] Upload URL: https://mocha.my/api/files
+[DEBUG] Dest path: /test/LICENSE.txt
+[DEBUG] File name: LICENSE.txt
+[DEBUG] Headers: {'Authorization': '(hidden)'}
+[DEBUG] HTTPError: 400 Client Error: Bad Request for url: https://mocha.my/api/files
+[DEBUG] Response status: 400
+[DEBUG] Response content: {"error":"x-file-name header is required"}
+✗ Error: 400 Client Error: Bad Request for url: https://mocha.my/api/files
+Selected: LICENSE.txt
+File size: 1.2 KB
+Starting direct upload…
+[DEBUG] Upload URL: https://mocha.my/api/files
+[DEBUG] Dest path: /test/LICENSE.txt
+[DEBUG] File name: LICENSE.txt
+[DEBUG] Headers: {'Authorization': '(hidden)', 'x-file-name': 'LICENSE.txt'}
+Upload complete. File ID: abde88da-d5d3-44d1-8e09-21cbf59c0a36
+✓ Done! File ID: abde88da-d5d3-44d1-8e09-21cbf59c0a36
