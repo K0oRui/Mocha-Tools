@@ -372,16 +372,32 @@ class UploadWorker(QThread):
                 self.speed.emit(uploaded / elapsed)
         data = b"".join(chunks)
 
-        resp = requests.post(
-            url,
-            headers=self._headers(file_name),
-            files={
-                "file": (file_name, data, "application/octet-stream"),
-                "path": (None, dest),
-            },
-            timeout=120,
-        )
-        resp.raise_for_status()
+        # Debug: log request details (excluding sensitive data)
+        self.status.emit(f"[DEBUG] Upload URL: {url}")
+        self.status.emit(f"[DEBUG] Dest path: {dest}")
+        self.status.emit(f"[DEBUG] File name: {file_name}")
+        debug_headers = dict(self._headers(file_name))
+        debug_headers["Authorization"] = "(hidden)"
+        self.status.emit(f"[DEBUG] Headers: {debug_headers}")
+        try:
+            resp = requests.post(
+                url,
+                headers=self._headers(file_name),
+                files={
+                    "file": (file_name, data, "application/octet-stream"),
+                    "path": (None, dest),
+                },
+                timeout=120,
+            )
+            resp.raise_for_status()
+        except requests.HTTPError as e:
+            self.status.emit(f"[DEBUG] HTTPError: {e}")
+            self.status.emit(f"[DEBUG] Response status: {getattr(e.response, 'status_code', None)}")
+            self.status.emit(f"[DEBUG] Response content: {getattr(e.response, 'text', None)}")
+            raise
+        except Exception as e:
+            self.status.emit(f"[DEBUG] Exception: {e}")
+            raise
         j       = resp.json()
         file_id = j.get("fileId") or j.get("id") or j.get("file", {}).get("id")
         self.status.emit(f"Upload complete. File ID: {file_id}")
@@ -395,24 +411,39 @@ class UploadWorker(QThread):
         total_parts = math.ceil(file_size / CHUNK_SIZE)
         self.status.emit(f"Multipart upload: {total_parts} parts…")
 
-        # 1. Init
-        # FIX: the original payload used "fileName" and "fileSize" but the
-        # Mocha API expects "name", "path", and "size" for the init call.
-        # Sending unrecognised keys caused the server to return 400.
-        init_resp = requests.post(
-            f"{self.base_url}/api/files/multipart/init",
-            headers={**self._headers(), "Content-Type": "application/json"},
-            json={
-                "name":     file_name,   # was: "fileName"
-                "path":     dest,
-                "size":     file_size,   # was: "fileSize"
-            },
-            timeout=30,
-        )
-        init_resp.raise_for_status()
+        # Debug: log request details (excluding sensitive data)
+        url = f"{self.base_url}/api/files/multipart/init"
+        payload = {
+            "name": file_name,
+            "originalName": file_name,
+            "path": dest,
+            "size": file_size,
+        }
+        debug_headers = {**self._headers(), "Content-Type": "application/json"}
+        debug_headers["Authorization"] = "(hidden)"
+        self.status.emit(f"[DEBUG] Multipart init URL: {url}")
+        self.status.emit(f"[DEBUG] Payload: {payload}")
+        self.status.emit(f"[DEBUG] Headers: {debug_headers}")
+        try:
+            init_resp = requests.post(
+                url,
+                headers={**self._headers(), "Content-Type": "application/json"},
+                json=payload,
+                timeout=30,
+            )
+            init_resp.raise_for_status()
+        except requests.HTTPError as e:
+            self.status.emit(f"[DEBUG] HTTPError: {e}")
+            self.status.emit(f"[DEBUG] Response status: {getattr(e.response, 'status_code', None)}")
+            self.status.emit(f"[DEBUG] Response content: {getattr(e.response, 'text', None)}")
+            raise
+        except Exception as e:
+            self.status.emit(f"[DEBUG] Exception: {e}")
+            raise
         init_data  = init_resp.json()
+        self.status.emit(f"[DEBUG] Init response: {init_data}")
         upload_id  = init_data.get("uploadId")
-        server_fid = init_data.get("fileId")
+        server_fid = init_data.get("fileId") or init_data.get("id") or (init_data.get("file") or {}).get("id")
         self.status.emit(f"Session: {upload_id}")
 
         parts    = []
@@ -428,18 +459,35 @@ class UploadWorker(QThread):
                 chunk = f.read(CHUNK_SIZE)
                 self.status.emit(f"Uploading part {part_num}/{total_parts}…")
 
-                part_resp = requests.put(
-                    f"{self.base_url}/api/files/multipart/part",
-                    headers=self._headers(),
-                    params={
-                        "uploadId":   upload_id,
-                        "partNumber": part_num,
-                        "fileId":     server_fid,
-                    },
-                    data=chunk,
-                    timeout=120,
-                )
-                part_resp.raise_for_status()
+                part_url = f"{self.base_url}/api/files/multipart/part"
+                part_params = {
+                    "uploadId":   upload_id,
+                    "partNumber": part_num,
+                }
+                if server_fid:
+                    part_params["fileId"] = server_fid
+                part_headers = self._headers()
+                self.status.emit(f"[DEBUG] Part upload URL: {part_url}")
+                self.status.emit(f"[DEBUG] Params: {part_params}")
+                self.status.emit(f"[DEBUG] Headers: {{'Authorization': '(hidden)'}}")
+                self.status.emit(f"[DEBUG] Chunk size: {len(chunk)} bytes")
+                try:
+                    part_resp = requests.put(
+                        part_url,
+                        headers=part_headers,
+                        params=part_params,
+                        data=chunk,
+                        timeout=120,
+                    )
+                    part_resp.raise_for_status()
+                except requests.HTTPError as e:
+                    self.status.emit(f"[DEBUG] HTTPError: {e}")
+                    self.status.emit(f"[DEBUG] Response status: {getattr(e.response, 'status_code', None)}")
+                    self.status.emit(f"[DEBUG] Response content: {getattr(e.response, 'text', None)}")
+                    raise
+                except Exception as e:
+                    self.status.emit(f"[DEBUG] Exception: {e}")
+                    raise
                 etag = part_resp.headers.get("ETag", "")
                 parts.append({"partNumber": part_num, "etag": etag})
 
@@ -645,16 +693,8 @@ class MochaUploader(QMainWindow):
         path_lbl.setObjectName("field_label")
         self.upload_path_edit = QLineEdit()
         self.upload_path_edit.setText("/")
-
-        # Resize handle
-        self.path_handle = QWidget()
-        self.path_handle.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
-        self.path_handle.setFixedWidth(12)
-        self.path_handle.setStyleSheet("background: #2a2d32;")
-
         path_row.addWidget(path_lbl)
         path_row.addWidget(self.upload_path_edit, 1)
-        path_row.addWidget(self.path_handle)
         api_lay.addLayout(path_row)
 
         # Remember key checkbox
@@ -683,20 +723,10 @@ class MochaUploader(QMainWindow):
         self.status_badge = QLabel("● Idle")
         self.status_badge.setObjectName("status_badge")
         self.speed_label  = QLabel("")
-
-        # Shrink text label to fit speed label
-        self.text_label = QLabel("Ready — configure your API key and select a file.")
-        self.text_label.setObjectName("log_console")
-        self.text_label.setWordWrap(True)
-        self.text_label.setMinimumHeight(46)
-        self.text_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-
-        # Add stretchable space to push speed label to the right
-        spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-
+        self.speed_label.setObjectName("status_label")
+        self.speed_label.setStyleSheet("color: #9ca3af; font-size: 11px; background:transparent;")
         top_row.addWidget(self.status_badge)
-        top_row.addWidget(spacer)
+        top_row.addStretch()
         top_row.addWidget(self.speed_label)
         status_lay.addLayout(top_row)
 
@@ -712,7 +742,11 @@ class MochaUploader(QMainWindow):
         status_lay.addLayout(prog_row)
 
         # Log console
-        status_lay.addWidget(self.text_label)
+        self.log_label = QLabel("Ready — configure your API key and select a file.")
+        self.log_label.setObjectName("log_console")
+        self.log_label.setWordWrap(True)
+        self.log_label.setMinimumHeight(46)
+        status_lay.addWidget(self.log_label)
 
         # Share result
         self.share_result = QLabel("")
@@ -749,7 +783,6 @@ class MochaUploader(QMainWindow):
         exp_lbl.setObjectName("field_label")
         self.expiry_combo = QComboBox()
         self.expiry_combo.addItems([
-
             "Never", "1h", "6h", "12h", "1d", "3d", "7d", "14d", "30d"
         ])
         exp_row.addWidget(exp_lbl)
@@ -906,7 +939,7 @@ class MochaUploader(QMainWindow):
         self._log(f"✗ Error: {msg}")
 
     def _log(self, msg):
-        self.text_label.setText(msg)
+        self.log_label.setText(msg)
         try:
             with open("mocha_uploader.log", "a", encoding="utf-8") as f:
                 f.write(msg + "\n")
@@ -981,8 +1014,6 @@ if __name__ == "__main__":
 #
 # SHARE OPTIONS
 # -------------
-
-
 #   Expiration values are sent as-is to the API (e.g. "1d", "7d", "Never").
 #   Max downloads = 0 means "Unlimited" (field omitted from request).
 # ═══════════════════════════════════════════════════════════════════════════
