@@ -1,3 +1,5 @@
 .vs/
 .dist/
 .build/
+/dist
+/build/mocha_uploader
