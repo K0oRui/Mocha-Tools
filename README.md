@@ -31,3 +31,8 @@
 - Upload speed and progress indicators
 - Create share links with all options from within the program
 
+## Potential? Ideas
+- Add download support for your own files
+- Create android version
+- add to context menu for easy uploading
+
