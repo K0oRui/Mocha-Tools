@@ -440,11 +440,11 @@ class UploadWorker(QThread):
             raise
         init_data  = init_resp.json()
         self.status.emit(f"[DEBUG] Init response: {init_data}")
+        # Store init_data for use in presign payload
+        self._multipart_init_data = init_data
         upload_id  = init_data.get("uploadId")
         server_fid = init_data.get("fileId") or init_data.get("id") or (init_data.get("file") or {}).get("id")
         strategy   = init_data.get("strategy", "mocha")  # "s3" or "mocha"
-        s3_key     = init_data.get("key")
-        node_id    = init_data.get("nodeId")
 
         # Use the server's declared part size; fall back to our constant.
         chunk_size  = init_data.get("partSizeBytes") or CHUNK_SIZE
@@ -467,9 +467,14 @@ class UploadWorker(QThread):
                 self.status.emit(f"[DEBUG] Chunk size: {len(chunk)} bytes")
 
                 if strategy == "s3":
-                    etag = self._upload_part_s3(upload_id, server_fid, part_num, chunk, strategy, s3_key, node_id)
+                    etag = self._upload_part_s3(upload_id, server_fid, part_num, chunk, strategy)
                 else:
                     etag = self._upload_part_mocha(upload_id, server_fid, part_num, chunk)
+
+                # If etag is None the part worker already aborted the session
+                # and emitted an error — don't fall through to /complete.
+                if etag is None:
+                    return None
 
                 parts.append({"partNumber": part_num, "etag": etag})
 
@@ -520,19 +525,23 @@ class UploadWorker(QThread):
             raise
         return resp.headers.get("ETag", "")
 
-    def _upload_part_s3(self, upload_id, server_fid, part_num, chunk, strategy, s3_key, node_id):
+    def _upload_part_s3(self, upload_id, server_fid, part_num, chunk, strategy):
         """Upload one part directly to S3 via a presigned URL (strategy='s3')."""
         # Step 1: ask Mocha for a presigned URL for this part
         presign_url     = f"{self.base_url}/api/files/multipart/presigned"
-        presign_payload = {
-            "uploadId":   upload_id,
-            "partNumber": part_num,
-            "strategy":   strategy,
-            "key":        s3_key,
-            "nodeId":     node_id,
-        }
+        # Always seed the presign request with the full session context from
+        # init (uploadId, key, nodeId) so the Mocha backend can anchor the
+        # presigned URL to the correct existing S3 multipart session rather
+        # than creating a new one (which would cause a NoSuchUpload mismatch).
+        presign_payload = {"uploadId": upload_id, "partNumbers": [part_num], "strategy": strategy}
         if server_fid:
             presign_payload["fileId"] = server_fid
+        if hasattr(self, "_multipart_init_data") and self._multipart_init_data:
+            for field in ("key", "nodeId", "uploadId"):
+                if field in self._multipart_init_data and field not in presign_payload:
+                    presign_payload[field] = self._multipart_init_data[field]
+            # Ensure uploadId always comes from the canonical init response
+            presign_payload["uploadId"] = self._multipart_init_data.get("uploadId", upload_id)
         self.status.emit(f"[DEBUG] Presign URL: {presign_url}")
         self.status.emit(f"[DEBUG] Presign payload: {presign_payload}")
         try:
@@ -553,7 +562,17 @@ class UploadWorker(QThread):
             raise
 
         presign_data = presign_resp.json()
-        signed_url   = presign_data.get("url") or presign_data.get("presignedUrl")
+        signed_url = None
+        if "url" in presign_data:
+            signed_url = presign_data["url"]
+        elif "presignedUrl" in presign_data:
+            signed_url = presign_data["presignedUrl"]
+        elif "urls" in presign_data and isinstance(presign_data["urls"], list):
+            # Find the url for the current part_num
+            for entry in presign_data["urls"]:
+                if entry.get("partNumber") == part_num and "url" in entry:
+                    signed_url = entry["url"]
+                    break
         if not signed_url:
             raise RuntimeError(f"No presigned URL in response: {presign_data}")
         self.status.emit(f"[DEBUG] Uploading part {part_num} directly to S3…")
@@ -562,14 +581,18 @@ class UploadWorker(QThread):
         try:
             s3_resp = requests.put(
                 signed_url,
-                data=chunk,
-                timeout=120,
+                data=chunk
             )
             s3_resp.raise_for_status()
         except requests.HTTPError as e:
+            content = getattr(e.response, 'text', '')
             self.status.emit(f"[DEBUG] HTTPError (S3 PUT): {e}")
             self.status.emit(f"[DEBUG] Response status: {getattr(e.response, 'status_code', None)}")
-            self.status.emit(f"[DEBUG] Response content: {getattr(e.response, 'text', None)}")
+            self.status.emit(f"[DEBUG] Response content: {content}")
+            if e.response is not None and 'NoSuchUpload' in content:
+                self._abort(upload_id, server_fid)
+                self.error.emit("S3 upload session expired or invalid (NoSuchUpload). Please retry the upload.")
+                return None
             raise
         except Exception as e:
             self.status.emit(f"[DEBUG] Exception (S3 PUT): {e}")
@@ -784,17 +807,25 @@ class MochaUploader(QMainWindow):
         status_lay  = QVBoxLayout(status_card)
         status_lay.setSpacing(8)
 
-        # Badge + speed row
+        # Badge row
         top_row = QHBoxLayout()
         self.status_badge = QLabel("● Idle")
         self.status_badge.setObjectName("status_badge")
-        self.speed_label  = QLabel("")
-        self.speed_label.setObjectName("status_label")
-        self.speed_label.setStyleSheet("color: #9ca3af; font-size: 11px; background:transparent;")
         top_row.addWidget(self.status_badge)
         top_row.addStretch()
-        top_row.addWidget(self.speed_label)
         status_lay.addLayout(top_row)
+
+        # Upload speed row
+        speed_row = QHBoxLayout()
+        speed_lbl = QLabel("Speed:")
+        speed_lbl.setObjectName("field_label")
+        self.speed_label = QLabel("")
+        self.speed_label.setObjectName("status_label")
+        self.speed_label.setStyleSheet("color: #9ca3af; font-size: 11px; background:transparent;")
+        speed_row.addWidget(speed_lbl)
+        speed_row.addWidget(self.speed_label)
+        speed_row.addStretch()
+        status_lay.addLayout(speed_row)
 
         # Progress bar + percent
         prog_row = QHBoxLayout()
