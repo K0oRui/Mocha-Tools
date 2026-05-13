@@ -20,6 +20,7 @@ import threading
 import requests
 
 from PyQt6.QtWidgets import (
+    QDialog, QListWidget, QListWidgetItem, QDialogButtonBox,
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QCheckBox, QProgressBar,
     QFileDialog, QFrame, QSpinBox, QComboBox, QScrollArea,
@@ -35,7 +36,7 @@ from PyQt6.QtGui import (
 )
 
 # ── Constants ────────────────────────────────────────────────────────────────
-CHUNK_THRESHOLD = 50 * 1024 * 1024   # 50 MB  → use multipart above this
+CHUNK_THRESHOLD = 20 * 1024 * 1024   # 20 MB  → use multipart above this (Cloudflare rejects larger direct POSTs)
 CHUNK_SIZE      = 20 * 1024 * 1024   # 20 MB chunks
 APP_NAME        = "MochaUploader"
 ORG_NAME        = "Mocha"
@@ -288,16 +289,17 @@ class UploadWorker(QThread):
     finished    = pyqtSignal(dict)         # result dict
     error       = pyqtSignal(str)
 
-    def __init__(self, api_key, base_url, upload_path, file_path,
+    def __init__(self, api_key, base_url, file_pairs,
                  create_share, share_expiry, share_max_downloads):
+        """
+        file_pairs: list of (local_abs_path, remote_dest_path) tuples.
+        remote_dest_path is already the full absolute path on Mocha,
+        e.g. '/Music/Album/CD1/track.flac'.
+        """
         super().__init__()
         self.api_key             = api_key
         self.base_url            = base_url.rstrip("/")
-        # FIX: normalise upload_path so it always starts with "/" and never
-        # has a trailing slash.  dest is then built as "<upload_path>/<name>",
-        # which avoids the double-slash that caused 400s on both endpoints.
-        self.upload_path         = "/" + upload_path.strip("/")
-        self.file_path           = file_path
+        self.file_pairs          = file_pairs          # [(local, dest), ...]
         self.create_share        = create_share
         self.share_expiry        = share_expiry
         self.share_max_downloads = share_max_downloads
@@ -314,50 +316,56 @@ class UploadWorker(QThread):
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
-    def _dest_path(self, file_name):
-        """Return a clean absolute destination path with no double slashes."""
-        base = self.upload_path.rstrip("/")   # e.g. "" for root, "/folder"
-        return f"{base}/{file_name}"          # always exactly one slash
-
     def run(self):
-        try:
-            file_size = os.path.getsize(self.file_path)
-            self.status.emit(f"File size: {self._fmt_size(file_size)}")
+        total_files = len(self.file_pairs)
+        last_file_id = None
+        last_share_url = None
 
-            if file_size <= CHUNK_THRESHOLD:
-                file_id = self._simple_upload(file_size)
-            else:
-                file_id = self._multipart_upload(file_size)
-
-            if self._cancel or file_id is None:
+        for idx, (local_path, dest_path) in enumerate(self.file_pairs, 1):
+            if self._cancel:
                 return
 
-            result = {"file_id": file_id, "share_url": None}
+            file_name = os.path.basename(local_path)
+            prefix    = f"[{idx}/{total_files}] " if total_files > 1 else ""
 
-            if self.create_share:
-                self.status.emit("Creating share link…")
-                share_url = self._create_share(file_id)
-                result["share_url"] = share_url
-                self.status.emit(f"Share: {share_url}")
+            try:
+                file_size = os.path.getsize(local_path)
+                self.status.emit(f"{prefix}{file_name}  ({self._fmt_size(file_size)})")
 
-            self.finished.emit(result)
+                if file_size <= CHUNK_THRESHOLD:
+                    file_id = self._simple_upload(file_size, local_path, dest_path)
+                else:
+                    file_id = self._multipart_upload(file_size, local_path, dest_path)
 
-        except Exception as e:
-            self.error.emit(str(e))
+                if self._cancel or file_id is None:
+                    return
 
-    # ── simple upload (≤ 50 MB) ──────────────────────────────────────────────
-    def _simple_upload(self, file_size):
-        self.status.emit("Starting direct upload…")
-        file_name = os.path.basename(self.file_path)
-        dest      = self._dest_path(file_name)
-        url       = f"{self.base_url}/api/files"
+                last_file_id = file_id
+
+                if self.create_share and idx == total_files:
+                    # Only create a share for the last file (or the only file)
+                    self.status.emit("Creating share link…")
+                    last_share_url = self._create_share(file_id)
+                    self.status.emit(f"Share: {last_share_url}")
+
+            except Exception as e:
+                self.error.emit(f"{prefix}{file_name}: {e}")
+                return
+
+        self.finished.emit({"file_id": last_file_id, "share_url": last_share_url})
+
+    # ── simple upload (≤ 20 MB) ──────────────────────────────────────────────
+    def _simple_upload(self, file_size, local_path, dest_path):
+        file_name  = os.path.basename(local_path)
+        dest_dir   = "/".join(dest_path.rstrip("/").split("/")[:-1]) or "/"
+        url        = f"{self.base_url}/api/files"
 
         start    = time.time()
         uploaded = 0
 
         # Read file in chunks so we can report live progress
         chunks = []
-        with open(self.file_path, "rb") as f:
+        with open(local_path, "rb") as f:
             while True:
                 chunk = f.read(65536)
                 if not chunk:
@@ -372,9 +380,8 @@ class UploadWorker(QThread):
                 self.speed.emit(uploaded / elapsed)
         data = b"".join(chunks)
 
-        # Debug: log request details (excluding sensitive data)
         self.status.emit(f"[DEBUG] Upload URL: {url}")
-        self.status.emit(f"[DEBUG] Dest path: {dest}")
+        self.status.emit(f"[DEBUG] Dest path: {dest_path}")
         self.status.emit(f"[DEBUG] File name: {file_name}")
         debug_headers = dict(self._headers(file_name))
         debug_headers["Authorization"] = "(hidden)"
@@ -385,7 +392,7 @@ class UploadWorker(QThread):
                 headers=self._headers(file_name),
                 files={
                     "file": (file_name, data, "application/octet-stream"),
-                    "path": (None, dest),
+                    "path": (None, dest_path),
                 },
                 timeout=120,
             )
@@ -398,16 +405,25 @@ class UploadWorker(QThread):
         except Exception as e:
             self.status.emit(f"[DEBUG] Exception: {e}")
             raise
+
         j       = resp.json()
         file_id = j.get("fileId") or j.get("id") or j.get("file", {}).get("id")
         self.status.emit(f"Upload complete. File ID: {file_id}")
         self.progress.emit(100)
+
+        # If the target folder is not root, move the file there.
+        # The upload endpoint ignores the path field and always places files
+        # at root, so we move after upload as a reliable workaround.
+        if dest_dir and dest_dir != "/":
+            self.status.emit(f"Moving to {dest_dir}…")
+            file_id = self._move_file(file_id, dest_path)
+
         return file_id
 
     # ── multipart upload (> 50 MB) ───────────────────────────────────────────
-    def _multipart_upload(self, file_size):
-        file_name   = os.path.basename(self.file_path)
-        dest        = self._dest_path(file_name)
+    def _multipart_upload(self, file_size, local_path, dest_path):
+        file_name   = os.path.basename(local_path)
+        dest        = dest_path
 
         # Debug: log request details (excluding sensitive data)
         url = f"{self.base_url}/api/files/multipart/init"
@@ -456,7 +472,7 @@ class UploadWorker(QThread):
         uploaded = 0
         start    = time.time()
 
-        with open(self.file_path, "rb") as f:
+        with open(local_path, "rb") as f:
             for part_num in range(1, total_parts + 1):
                 if self._cancel:
                     self._abort(upload_id, server_fid)
@@ -495,6 +511,13 @@ class UploadWorker(QThread):
         file_id = j.get("fileId") or server_fid
         self.status.emit(f"Multipart complete. File ID: {file_id}")
         self.progress.emit(100)
+
+        # Move to target folder if not root (same workaround as simple upload)
+        dest_dir = "/".join(dest_path.rstrip("/").split("/")[:-1]) or "/"
+        if dest_dir and dest_dir != "/":
+            self.status.emit(f"Moving to {dest_dir}…")
+            file_id = self._move_file(file_id, dest_path)
+
         return file_id
 
     def _upload_part_mocha(self, upload_id, server_fid, part_num, chunk):
@@ -577,11 +600,28 @@ class UploadWorker(QThread):
             raise RuntimeError(f"No presigned URL in response: {presign_data}")
         self.status.emit(f"[DEBUG] Uploading part {part_num} directly to S3…")
 
-        # Step 2: PUT the chunk directly to S3 (no auth header — the URL is pre-signed)
+        # Step 2: compute actual CRC32 and compare against what the presigned
+        # URL expects.  Ceph/S3 may reject the PUT (or surface it as
+        # NoSuchUpload) if the x-amz-checksum-crc32 header is missing or wrong.
+        import zlib, struct, base64 as _b64
+        from urllib.parse import urlparse as _urlparse, parse_qs as _parse_qs
+        crc_int   = zlib.crc32(chunk) & 0xFFFFFFFF
+        crc_b64   = _b64.b64encode(struct.pack(">I", crc_int)).decode()
+        qs        = _parse_qs(_urlparse(signed_url).query)
+        url_crc   = _parse_qs(_urlparse(signed_url).query).get("x-amz-checksum-crc32", ["(none)"])[0]
+        self.status.emit(f"[DEBUG] Computed CRC32 (b64): {crc_b64}")
+        self.status.emit(f"[DEBUG] Presigned URL CRC32 : {url_crc}")
+        self.status.emit(f"[DEBUG] CRC32 match         : {crc_b64 == url_crc}")
+
+        # Send the correct CRC32 header so S3 can validate the part
+        s3_put_headers = {"x-amz-checksum-crc32": crc_b64}
+
+        # Step 3: PUT the chunk directly to S3 (no auth header — the URL is pre-signed)
         try:
             s3_resp = requests.put(
                 signed_url,
-                data=chunk
+                data=chunk,
+                headers=s3_put_headers,
             )
             s3_resp.raise_for_status()
         except requests.HTTPError as e:
@@ -614,6 +654,28 @@ class UploadWorker(QThread):
             pass
         self.status.emit("Upload aborted.")
 
+    def _move_file(self, file_id, dest_path):
+        """Move an uploaded file to dest_path via POST /api/files/move."""
+        try:
+            resp = requests.post(
+                f"{self.base_url}/api/files/move",
+                headers={**self._headers(), "Content-Type": "application/json"},
+                json={"fileId": file_id, "newPath": dest_path},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            j = resp.json()
+            self.status.emit(f"[DEBUG] Move response: {j}")
+            return j.get("fileId") or j.get("id") or file_id
+        except requests.HTTPError as e:
+            self.status.emit(f"[DEBUG] Move HTTPError: {e}")
+            self.status.emit(f"[DEBUG] Move response: {getattr(e.response, 'text', '')[:200]}")
+            # Don't raise — upload succeeded even if move fails
+            return file_id
+        except Exception as e:
+            self.status.emit(f"[DEBUG] Move exception: {e}")
+            return file_id
+
     def _create_share(self, file_id):
         payload = {"fileId": file_id}
         if self.share_expiry and self.share_expiry != "Never":
@@ -643,7 +705,8 @@ class UploadWorker(QThread):
 
 # ── Drop Zone Widget ─────────────────────────────────────────────────────────
 class DropZone(QFrame):
-    file_dropped = pyqtSignal(str)
+    # Emits a list of absolute local file paths (1 file, or many from a folder)
+    selection_changed = pyqtSignal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -666,7 +729,7 @@ class DropZone(QFrame):
 
         bold = QLabel("Click to browse")
         bold.setObjectName("drop_label_bold")
-        rest = QLabel("or drag & drop a file here")
+        rest = QLabel("or drag & drop a file / folder here")
         rest.setObjectName("drop_label")
 
         row.addWidget(bold)
@@ -686,9 +749,22 @@ class DropZone(QFrame):
         self._browse()
 
     def _browse(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select file")
-        if path:
-            self._set_file(path)
+        """Pop a small menu so the user can choose file or folder."""
+        from PyQt6.QtWidgets import QMenu
+        menu = QMenu(self)
+        act_file   = menu.addAction("📄  Select file…")
+        act_folder = menu.addAction("📁  Select folder…")
+        chosen = menu.exec(self.mapToGlobal(self.rect().center()))
+        if chosen == act_file:
+            path, _ = QFileDialog.getOpenFileName(self, "Select file")
+            if path:
+                self._set_paths([path], path)
+        elif chosen == act_folder:
+            path = QFileDialog.getExistingDirectory(self, "Select folder")
+            if path:
+                files = self._collect_folder(path)
+                if files:
+                    self._set_paths(files, path)
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
@@ -707,17 +783,199 @@ class DropZone(QFrame):
         self.style().unpolish(self)
         self.style().polish(self)
         urls = event.mimeData().urls()
-        if urls:
-            path = urls[0].toLocalFile()
-            if os.path.isfile(path):
-                self._set_file(path)
+        if not urls:
+            return
+        path = urls[0].toLocalFile()
+        if os.path.isfile(path):
+            self._set_paths([path], path)
+        elif os.path.isdir(path):
+            files = self._collect_folder(path)
+            if files:
+                self._set_paths(files, path)
 
-    def _set_file(self, path):
-        name  = os.path.basename(path)
-        size  = os.path.getsize(path)
-        label = f"{name}  ({UploadWorker._fmt_size(size)})"
+    @staticmethod
+    def _collect_folder(folder_path):
+        """Recursively collect all files under folder_path, sorted."""
+        result = []
+        for dirpath, _dirnames, filenames in os.walk(folder_path):
+            for fname in filenames:
+                result.append(os.path.join(dirpath, fname))
+        return sorted(result)
+
+    def _set_paths(self, file_list, display_root):
+        if not file_list:
+            return
+        name = os.path.basename(display_root.rstrip("/\\"))
+        if len(file_list) == 1:
+            size  = os.path.getsize(file_list[0])
+            label = f"{os.path.basename(file_list[0])}  ({UploadWorker._fmt_size(size)})"
+        else:
+            total = sum(os.path.getsize(p) for p in file_list)
+            label = f"{name}/  —  {len(file_list)} files  ({UploadWorker._fmt_size(total)})"
         self.file_label.setText(label)
-        self.file_dropped.emit(path)
+        self.selection_changed.emit(file_list)
+
+
+
+# ── Remote Folder Browser ─────────────────────────────────────────────────────
+class FolderBrowserDialog(QDialog):
+    """Fetches folders from the Mocha API and lets the user navigate & pick one."""
+
+    def __init__(self, api_key, base_url, current_path="/", parent=None):
+        super().__init__(parent)
+        self.api_key    = api_key
+        self.base_url   = base_url.rstrip("/")
+        self.current    = current_path or "/"
+        self.selected   = self.current
+
+        self.setWindowTitle("Browse remote folders")
+        self.setMinimumSize(420, 380)
+        self.setStyleSheet(parent.styleSheet() if parent else "")
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(8)
+
+        # Current path label
+        self.path_label = QLabel()
+        self.path_label.setObjectName("section_header")
+        lay.addWidget(self.path_label)
+
+        # Folder list
+        self.list = QListWidget()
+        self.list.setStyleSheet("""
+            QListWidget { background:#0e1012; border:1px solid #2a2d32;
+                          border-radius:6px; color:#e0e0e0; font-size:13px; }
+            QListWidget::item { padding:6px 10px; }
+            QListWidget::item:selected { background:#c8975a33; color:#e0e0e0; }
+            QListWidget::item:hover { background:#1e2024; }
+        """)
+        self.list.itemDoubleClicked.connect(self._on_double_click)
+        lay.addWidget(self.list)
+
+        # Status
+        self.status_lbl = QLabel("")
+        self.status_lbl.setStyleSheet("color:#9ca3af; font-size:11px; background:transparent;")
+        lay.addWidget(self.status_lbl)
+
+        # Buttons
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(self._on_accept)
+        btns.rejected.connect(self.reject)
+        # Style the OK button
+        btns.button(QDialogButtonBox.StandardButton.Ok).setObjectName("upload_btn")
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("Select this folder")
+        lay.addWidget(btns)
+
+        self._navigate(self.current)
+
+    def _navigate(self, path):
+        self.current = path
+        self.selected = path
+        self.path_label.setText(path or "/")
+        self.status_lbl.setText("Loading…")
+        self.list.clear()
+
+        try:
+            resp = requests.get(
+                f"{self.base_url}/api/files",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                params={"path": path, "includeSubfolders": "0"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            self.status_lbl.setText(f"Error: {e}")
+            # Log raw response for debugging
+            if hasattr(e, "response") and e.response is not None:
+                self.status_lbl.setText(
+                    f"Error {e.response.status_code}: {e.response.text[:200]}"
+                )
+            return
+
+        # ── DEBUG: show raw API response shape in the dialog status label ──────
+        import json as _json
+        if isinstance(data, dict):
+            preview = f"keys={list(data.keys())}  sample={_json.dumps(data)[:300]}"
+        elif isinstance(data, list):
+            preview = f"list[{len(data)}]  first={_json.dumps(data[0])[:200] if data else '(empty)'}"
+        else:
+            preview = repr(data)[:300]
+        self.status_lbl.setText(f"[DEBUG] {preview}")
+        self.status_lbl.setWordWrap(True)
+
+        # Add ".." entry unless we're at root
+        if path and path != "/":
+            parent = "/" + "/".join(path.strip("/").split("/")[:-1])
+            parent = parent if parent != "/" else "/"
+            item = QListWidgetItem("↑  .. (go up)")
+            item.setData(Qt.ItemDataRole.UserRole, ("dir", parent))
+            item.setForeground(QColor("#9ca3af"))
+            self.list.addItem(item)
+
+        # Collect folders — API returns {"files": [...], "folders": [...], ...}
+        # "folders" contains folder entries; "files" contains only file entries.
+        folders = []
+        # Check dedicated "folders" key first, then fall back to scanning "files"
+        # for any entries that look like folders (future-proofing).
+        folder_entries = data.get("folders") if isinstance(data, dict) else []
+        if not folder_entries and isinstance(data, list):
+            folder_entries = data  # flat list — scan everything
+        for entry in (folder_entries or []):
+            # API may return folders as strings (paths) or as dicts
+            if isinstance(entry, str):
+                # entry is the full path e.g. "/Music/Albums"
+                name     = entry.rstrip("/").split("/")[-1]
+                fullpath = entry
+            elif isinstance(entry, dict):
+                name = (
+                    entry.get("name")
+                    or entry.get("original_name")
+                    or entry.get("originalName")
+                    or entry.get("file_name")
+                    or ""
+                )
+                fullpath = (
+                    entry.get("path")
+                    or entry.get("fullPath")
+                    or (path.rstrip("/") + "/" + name)
+                )
+            else:
+                continue
+            if name:
+                folders.append((name, fullpath))
+
+        folders.sort(key=lambda x: x[0].lower())
+        for name, fullpath in folders:
+            item = QListWidgetItem(f"📁  {name}")
+            item.setData(Qt.ItemDataRole.UserRole, ("dir", fullpath))
+            self.list.addItem(item)
+
+        count = len(folders)
+        suffix = f" folder{'s' if count != 1 else ''}"
+        existing = self.status_lbl.text()
+        if existing.startswith("[DEBUG]"):
+            # Append folder count to the debug line
+            self.status_lbl.setText(existing + f"  |  {count}{suffix}")
+        else:
+            self.status_lbl.setText(f"{count}{suffix}")
+
+    def _on_double_click(self, item):
+        kind, path = item.data(Qt.ItemDataRole.UserRole)
+        if kind == "dir":
+            self._navigate(path)
+
+    def _on_accept(self):
+        sel = self.list.currentItem()
+        if sel:
+            kind, path = sel.data(Qt.ItemDataRole.UserRole)
+            self.selected = path
+        else:
+            self.selected = self.current
+        self.accept()
 
 
 # ── Main Window ──────────────────────────────────────────────────────────────
@@ -727,8 +985,9 @@ class MochaUploader(QMainWindow):
         self.setWindowTitle("Mocha Uploader")
         self.setMinimumWidth(520)
         self.setMaximumWidth(640)
-        self.selected_file = None
-        self.worker        = None
+        self.selected_files = []   # list of local absolute paths
+        self.selected_root  = ""   # common ancestor for relative path calc
+        self.worker         = None
         self.settings      = QSettings(ORG_NAME, APP_NAME)
         self._build_ui()
         self._load_settings()
@@ -781,9 +1040,15 @@ class MochaUploader(QMainWindow):
         path_lbl = QLabel("Upload path")
         path_lbl.setObjectName("field_label")
         self.upload_path_edit = QLineEdit()
+        self.upload_path_edit.setPlaceholderText("/folder/subfolder")
         self.upload_path_edit.setText("/")
+        self.browse_path_btn = QPushButton("Browse")
+        self.browse_path_btn.setObjectName("browse_btn")
+        self.browse_path_btn.setFixedWidth(68)
+        self.browse_path_btn.clicked.connect(self._browse_remote_path)
         path_row.addWidget(path_lbl)
         path_row.addWidget(self.upload_path_edit, 1)
+        path_row.addWidget(self.browse_path_btn)
         api_lay.addLayout(path_row)
 
         # Remember key checkbox
@@ -797,7 +1062,7 @@ class MochaUploader(QMainWindow):
         file_card = self._make_card()
         file_lay  = QVBoxLayout(file_card)
         self.drop_zone = DropZone()
-        self.drop_zone.file_dropped.connect(self._on_file_selected)
+        self.drop_zone.selection_changed.connect(self._on_files_selected)
         file_lay.addWidget(self.drop_zone)
         main.addWidget(file_card)
 
@@ -932,12 +1197,30 @@ class MochaUploader(QMainWindow):
         mode = QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
         self.api_key_edit.setEchoMode(mode)
 
+    def _browse_remote_path(self):
+        api_key = self.api_key_edit.text().strip()
+        if not api_key:
+            self._log("⚠ Enter your API key first to browse remote folders.")
+            return
+        current = self.upload_path_edit.text().strip() or "/"
+        dlg = FolderBrowserDialog(api_key, HARDCODED_BASE_URL, current, parent=self)
+        if dlg.exec():
+            self.upload_path_edit.setText(dlg.selected)
+
     def _toggle_share_options(self, checked):
         self.share_opts_widget.setVisible(checked)
 
-    def _on_file_selected(self, path):
-        self.selected_file = path
-        self._log(f"Selected: {os.path.basename(path)}")
+    def _on_files_selected(self, file_list):
+        self.selected_files = file_list
+        if len(file_list) == 1:
+            self.selected_root = os.path.dirname(file_list[0])
+            self._log(f"Selected: {os.path.basename(file_list[0])}")
+        else:
+            # Common root = the dropped folder itself (parent of first file's dir)
+            self.selected_root = os.path.commonpath(file_list)
+            if os.path.isfile(self.selected_root):
+                self.selected_root = os.path.dirname(self.selected_root)
+            self._log(f"Selected folder: {len(file_list)} files")
         self.share_result.hide()
 
     # ── Settings ──────────────────────────────────────────────────────────────
@@ -963,15 +1246,14 @@ class MochaUploader(QMainWindow):
     # ── Upload flow ───────────────────────────────────────────────────────────
     def _start_upload(self):
         api_key     = self.api_key_edit.text().strip()
-        base_url    = HARDCODED_BASE_URL  # always use hardcoded
+        base_url    = HARDCODED_BASE_URL
         upload_path = self.upload_path_edit.text().strip() or "/"
 
         if not api_key:
             self._log("⚠ Please enter an API key.")
             return
-        # Remove base_url check
-        if not self.selected_file:
-            self._log("⚠ Please select a file.")
+        if not self.selected_files:
+            self._log("⚠ Please select a file or folder.")
             return
 
         self._save_settings()
@@ -985,8 +1267,29 @@ class MochaUploader(QMainWindow):
         expiry = self.expiry_combo.currentText() if self.create_share_cb.isChecked() else "Never"
         max_dl = self.max_dl_spin.value()        if self.create_share_cb.isChecked() else 0
 
+        # Build list of (local_abs_path, remote_dest_path) pairs.
+        # For a single file the dest is just upload_path/filename.
+        # For a folder we preserve the relative sub-structure so that
+        #   /local/Album/CD1/track.flac → <upload_path>/Album/CD1/track.flac
+        base_remote = "/" + upload_path.strip("/")
+        file_pairs  = []
+        for local in self.selected_files:
+            rel = os.path.relpath(local, self.selected_root)
+            # relpath uses OS separator; normalise to forward slashes
+            rel = rel.replace(os.sep, "/")
+            # If relpath returned an absolute path (different drive on Windows),
+            # fall back to just the filename
+            if rel.startswith("/") or (len(rel) > 1 and rel[1] == ":"):
+                rel = os.path.basename(local)
+            dest = f"{base_remote}/{rel}" if base_remote != "/" else f"/{rel}"
+            file_pairs.append((local, dest))
+
+        self._log(f"[DEBUG] Upload path: {upload_path!r} → base_remote: {base_remote!r}")
+        for local, dest in file_pairs[:3]:  # log first 3 so it's not overwhelming
+            self._log(f"[DEBUG] Dest: {dest}")
+
         self.worker = UploadWorker(
-            api_key, base_url, upload_path, self.selected_file,
+            api_key, base_url, file_pairs,
             self.create_share_cb.isChecked(), expiry, max_dl
         )
         self.worker.progress.connect(self._on_progress)
