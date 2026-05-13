@@ -11,8 +11,11 @@
   ▀█   ███   █▀   ▀██████▀  ████████▀    ███    █▀      ███    █▀       ████████▀   ▄████▀      
                                                                                                 
 ```                                                     
-                                                     
-                                                      
+# **WIP**                                             
+|**CURRENT ISSUES**|
+| :---- |
+|<ul><li>Large file upload is not working correctly</li><li>Uploading to specific existing folders is not functioning</li></ul>|
+
 *Cross platform uploader for Mocha written in Python and designed to be compiled with pyinstaller*
 
 ## Requirements
@@ -21,4 +24,10 @@
 - requests (can be installed with `pip install requests`)
 - pyinstaller (can be installed with `pip install pyinstaller`)
 - A Mocha account and an API key
+
+## Features
+- Uploads files to Mocha with a simple drag and drop interface, or selection through file manager.
+- Folder upload support
+- Upload speed and progress indicators
+- Create share links with all options from within the program
 
