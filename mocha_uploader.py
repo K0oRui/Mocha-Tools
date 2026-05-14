@@ -470,9 +470,11 @@ class UploadWorker(QThread):
         server_fid = (init.get("fileId") or init.get("id")
                       or (init.get("file") or {}).get("id"))
 
-        # Use our own chunk size — server's partSizeBytes is the maximum
-        # allowed, not a directive.  20 MB keeps requests short-lived.
-        chunk_size  = CHUNK_SIZE
+        # Use the server's declared partSizeBytes.  The S3 multipart session
+        # is created server-side with this exact part size — sending chunks of
+        # a different size causes S3 to reject parts with NoSuchUpload because
+        # the part count and boundaries don't match what was registered at init.
+        chunk_size  = init.get("partSizeBytes") or CHUNK_SIZE
         total_parts = math.ceil(file_size / chunk_size)
         self.status.emit(
             f"Multipart upload: {total_parts} parts… "
