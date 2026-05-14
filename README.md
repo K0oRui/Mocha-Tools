@@ -12,13 +12,14 @@
        ░       ░ ░  ░ ░       ░  ░  ░      ░  ░                ░ ░      ░ ░      ░  ░      ░  
                     ░                                                                         
                                                                                                 
-```                                                     
+```
+*Cross platform uploader for Mocha written in Python and designed to be compiled with pyinstaller*
+
 # **WIP**                                             
 |**CURRENT ISSUES**|
 | :---- |
-|<ul><li>Large file upload is not working correctly</li><li>Uploading to specific existing folders is not functioning</li></ul>|
+|<ul><li>Original file names not being listed</li><li>Unable to move files</li><li>Unable to create or view shares</li><li>Large file upload is not working correctly</li><li>Uploading to specific existing folders is not functioning</li></ul>|
 
-*Cross platform uploader for Mocha written in Python and designed to be compiled with pyinstaller*
 
 ## Requirements
 - Python 3.10 or higher (can be downloader [here](https://www.python.org/downloads/)
@@ -32,10 +33,12 @@
 - Folder upload support
 - Upload speed and progress indicators
 - Create share links with all options from within the program
+- Ability to view files and folders (note issues listed above)
 
 ## Potential? Ideas
 - Add download support for your own files
 - Create android version
-- add to context menu for easy uploading
+- Add to context menu (traditiional and Windows 11 (maybe idk how that works yet) for easy uploading
 - Complete control over files, deletion, moving, sharing, etc.
+- Debug and token management in its own tab
 
