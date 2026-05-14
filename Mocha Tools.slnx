@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".gitignore" />
+    <File Path="mocha_uploader.py" />
+    <File Path="README.md" />
+    <File Path="requirements.txt" />
+  </Folder>
+  <Folder Name="/Solution Items/art/">
+    <File Path="../../Users/codys/Downloads/1m22x0f.ico" />
+  </Folder>
+</Solution>
