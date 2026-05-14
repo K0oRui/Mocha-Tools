@@ -35,4 +35,5 @@
 - Add download support for your own files
 - Create android version
 - add to context menu for easy uploading
+- Complete control over files, deletion, moving, sharing, etc.
 
