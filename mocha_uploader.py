@@ -763,7 +763,7 @@ class UploadWorker(QThread):
             resp = requests.post(
                 f"{self.base_url}/api/files/move",
                 headers={**self._headers(), "Content-Type": "application/json"},
-                json={"fileId": file_id, "newPath": dest_path},
+                json={"fileId": file_id, "toPath": dest_path.rstrip("/") + "/"},
                 timeout=30,
             )
             resp.raise_for_status()
@@ -1151,7 +1151,9 @@ class FilesWorker(QThread):
     def _move(self):
         file_id  = self.kwargs.get("file_id")
         new_path = self.kwargs["new_path"]
-        payload  = {"newPath": new_path}
+        # API expects toPath to be the destination directory with a trailing slash
+        to_path = new_path if new_path.endswith("/") else new_path.rstrip("/") + "/"
+        payload  = {"toPath": to_path}
         if file_id:
             payload["fileId"] = file_id
         else:
@@ -1212,6 +1214,66 @@ class FilesWorker(QThread):
         )
         resp.raise_for_status()
         self.done.emit({"op": "shares", "data": resp.json()})
+
+
+# ── Share Link Dialog ─────────────────────────────────────────────────────────
+class ShareLinkDialog(QDialog):
+    """Modal dialog that displays a freshly created share URL with a Copy button."""
+
+    def __init__(self, url, parent=None):
+        super().__init__(parent)
+        self.url = url
+        self.setWindowTitle("Share Link Created")
+        self.setModal(True)
+        self.setMinimumWidth(480)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(14)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        # Header
+        header = QLabel("✓  Share link ready")
+        header.setStyleSheet("color:#4ade80; font-size:14px; font-weight:700; background:transparent;")
+        layout.addWidget(header)
+
+        # URL box (read-only, selectable)
+        self.url_edit = QLineEdit(url)
+        self.url_edit.setReadOnly(True)
+        self.url_edit.setStyleSheet(
+            "background:#0e1012; border:1px solid #2a2d32; border-radius:6px;"
+            "padding:8px 10px; color:#c8975a; font-family:'Consolas','Fira Code','Courier New',monospace;"
+            "font-size:12px;"
+        )
+        layout.addWidget(self.url_edit)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        self.copy_btn = QPushButton("⧉  Copy URL")
+        self.copy_btn.setObjectName("upload_btn")
+        self.copy_btn.setFixedHeight(36)
+        self.copy_btn.clicked.connect(self._copy)
+        btn_row.addWidget(self.copy_btn)
+
+        open_btn = QPushButton("↗  Open in browser")
+        open_btn.setObjectName("browse_btn")
+        open_btn.setFixedHeight(36)
+        open_btn.clicked.connect(lambda: __import__("webbrowser").open(url))
+        btn_row.addWidget(open_btn)
+
+        close_btn = QPushButton("Close")
+        close_btn.setObjectName("browse_btn")
+        close_btn.setFixedHeight(36)
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+
+        layout.addLayout(btn_row)
+
+    def _copy(self):
+        QApplication.clipboard().setText(self.url)
+        self.copy_btn.setText("✓  Copied!")
+        QTimer.singleShot(2000, lambda: self.copy_btn.setText("⧉  Copy URL"))
 
 
 # ── Files Browser Tab ─────────────────────────────────────────────────────────
@@ -1409,11 +1471,10 @@ class FilesBrowserTab(QWidget):
             self._refresh()
         elif op == "share":
             url = result.get("url", "")
-            self._status(f"✓ Share created")
+            self._status("✓ Share created")
             if url:
-                self.share_bar.setText(
-                    f'Share link: <a href="{url}" style="color:#c8975a;">{url}</a>')
-                self.share_bar.show()
+                dlg = ShareLinkDialog(url, parent=self)
+                dlg.exec()
             self._refresh()
 
     def _on_worker_error(self, msg):
@@ -1618,10 +1679,9 @@ class FilesBrowserTab(QWidget):
         dlg.setWindowTitle("Move — choose destination folder")
         if not dlg.exec():
             return
-        dest_folder = dlg.selected.rstrip("/")
-        dest_path   = f"{dest_folder}/{name}"
-        self._status(f"Moving to {dest_path}…")
-        self._run_worker("move", file_id=fid, source_path=src, new_path=dest_path)
+        dest_folder = dlg.selected.rstrip("/") + "/"
+        self._status(f"Moving to {dest_folder}…")
+        self._run_worker("move", file_id=fid, source_path=src, new_path=dest_folder)
 
     def _share_selected(self):
         items = self._selected_items()
