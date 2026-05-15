@@ -18,7 +18,7 @@
 # **WIP**                                             
 |**CURRENT ISSUES**|
 | :---- |
-|<ul><li>Original file names not being listed</li><li>Unable to move files</li><li>Unable to create or view shares</li><li>Large file upload is not working correctly</li><li>Uploading to specific existing folders is not functioning</li></ul>|
+|<ul><li>Folder upload just dumps all files in root without creating new folder</li><li>Original file names not being listed</li><li>Unable to move files</li><li>Unable to create or view shares</li><li>Large file upload is not working correctly</li><li>Uploading to specific existing folders is not functioning</li></ul>|
 
 
 ## Requirements
@@ -30,7 +30,7 @@
 
 ## Features
 - Uploads files to Mocha with a simple drag and drop interface, or selection through file manager.
-- Folder upload support
+- Folder upload support (note issues listed above)
 - Upload speed and progress indicators
 - Create share links with all options from within the program
 - Ability to view files and folders (note issues listed above)
