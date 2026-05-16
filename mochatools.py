@@ -1,7 +1,7 @@
 """
 Mocha Tools
 A cross-platform PyQt6 application for uploading files to mocha
-Written by nxllxvxxd
+Written by nxllxvxxd && Bink-lab
 
 To compile:
     pyinstaller --onefile --windowed --noconsole mochatools.py
