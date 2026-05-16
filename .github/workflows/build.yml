@@ -23,16 +23,16 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install pyinstaller
+        run: pip install -r requirements.txt
 
       - name: Build executable
         run: |
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            pyinstaller --onefile --icon=icon.ico your_script.py
+            pyinstaller --onefile --icon=icon.ico mochatools.py
           elif [[ "$RUNNER_OS" == "macOS" ]]; then
-            pyinstaller --onefile --windowed --icon=icon.icns your_script.py
+            pyinstaller --onefile --windowed --icon=icon.icns mochatools.py
           else
-            pyinstaller --onefile --icon=icon.png your_script.py
+            pyinstaller --onefile --icon=icon.png mochatools.py
           fi
 
       - name: Upload artifact
