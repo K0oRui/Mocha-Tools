@@ -1,7 +1,7 @@
 """
 Mocha Tools
 A cross-platform PyQt6 application for uploading files to mocha
-Written by nxllxvxxd && Bink-lab
+Written by nxllxvxxd
 
 To compile:
     pyinstaller --onefile --windowed --noconsole mochatools.py
@@ -1134,12 +1134,11 @@ class FolderBrowserDialog(QDialog):
         if not folder_entries and isinstance(data, list):
             folder_entries = data  # flat list — scan everything
         for entry in (folder_entries or []):
-            # API may return folders as strings (paths) or as dicts.
-            # Never trust entry path unless it's absolute — the API often
-            # returns just the folder name, causing destination to be wrong.
+            # API may return folders as strings (paths) or as dicts
             if isinstance(entry, str):
+                # entry is the full path e.g. "/Music/Albums"
                 name     = entry.rstrip("/").split("/")[-1]
-                fullpath = entry if entry.startswith("/") else path.rstrip("/") + "/" + name
+                fullpath = entry
             elif isinstance(entry, dict):
                 name = (
                     entry.get("name")
@@ -1148,8 +1147,11 @@ class FolderBrowserDialog(QDialog):
                     or entry.get("file_name")
                     or ""
                 )
-                entry_path = entry.get("path") or entry.get("fullPath") or ""
-                fullpath = entry_path if entry_path.startswith("/") else path.rstrip("/") + "/" + name
+                fullpath = (
+                    entry.get("path")
+                    or entry.get("fullPath")
+                    or (path.rstrip("/") + "/" + name)
+                )
             else:
                 continue
             if name:
@@ -1626,7 +1628,7 @@ class FilesBrowserTab(QWidget):
         for entry in raw_folders:
             if isinstance(entry, str):
                 name     = entry.rstrip("/").split("/")[-1]
-                fullpath = entry if entry.startswith("/") else f"{path.rstrip('/')}/{name}" if path != "/" else f"/{name}"
+                fullpath = entry
                 print(f"[DEBUG]   String folder entry: {entry!r} -> fullpath={fullpath!r}")
                 folders.append({"name": name, "path": fullpath})
             elif isinstance(entry, dict):
@@ -1897,6 +1899,236 @@ class FilesBrowserTab(QWidget):
         return "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
 
 
+
+# ── Shares Tab ────────────────────────────────────────────────────────────────
+class SharesTab(QWidget):
+    """Lists all active shares with copy-link and delete actions."""
+
+    def __init__(self, get_api_key, parent=None):
+        super().__init__(parent)
+        self.get_api_key = get_api_key
+        self.base_url    = HARDCODED_BASE_URL
+        self._workers    = []
+        self._build_ui()
+
+    def _build_ui(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setSpacing(8)
+
+        # ── Toolbar ──────────────────────────────────────────────────────────
+        tb = QHBoxLayout()
+        tb.setSpacing(4)
+
+        self.refresh_btn = QPushButton("↺  Refresh")
+        self.refresh_btn.setObjectName("tb_btn")
+        self.refresh_btn.clicked.connect(self.refresh)
+        tb.addWidget(self.refresh_btn)
+
+        self.copy_btn = QPushButton("⧉  Copy Link")
+        self.copy_btn.setObjectName("tb_btn")
+        self.copy_btn.setEnabled(False)
+        self.copy_btn.clicked.connect(self._copy_selected)
+        tb.addWidget(self.copy_btn)
+
+        self.toggle_btn = QPushButton("◎  Toggle Active")
+        self.toggle_btn.setObjectName("tb_btn")
+        self.toggle_btn.setEnabled(False)
+        self.toggle_btn.clicked.connect(self._toggle_selected)
+        tb.addWidget(self.toggle_btn)
+
+        self.delete_btn = QPushButton("✕  Delete")
+        self.delete_btn.setObjectName("tb_btn_danger")
+        self.delete_btn.setEnabled(False)
+        self.delete_btn.clicked.connect(self._delete_selected)
+        tb.addWidget(self.delete_btn)
+
+        tb.addStretch()
+        self.status_lbl = QLabel("")
+        self.status_lbl.setStyleSheet("color:#9ca3af; font-size:11px; background:transparent;")
+        tb.addWidget(self.status_lbl)
+        outer.addLayout(tb)
+
+        # ── Table ─────────────────────────────────────────────────────────────
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(4)
+        self.tree.setHeaderLabels(["File", "Share Link", "Active", "Expires"])
+        self.tree.setRootIsDecorated(False)
+        self.tree.setSortingEnabled(True)
+        self.tree.sortByColumn(0, Qt.SortOrder.AscendingOrder)
+        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.tree.itemSelectionChanged.connect(self._on_selection_changed)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._context_menu)
+
+        hdr = self.tree.header()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+
+        outer.addWidget(self.tree, 1)
+
+        # ── Copied feedback bar ───────────────────────────────────────────────
+        self.copy_bar = QLabel("")
+        self.copy_bar.setObjectName("log_console")
+        self.copy_bar.setWordWrap(True)
+        self.copy_bar.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse |
+            Qt.TextInteractionFlag.LinksAccessibleByMouse)
+        self.copy_bar.setOpenExternalLinks(True)
+        self.copy_bar.hide()
+        outer.addWidget(self.copy_bar)
+
+    # ── Data ──────────────────────────────────────────────────────────────────
+    def refresh(self):
+        api_key = self.get_api_key()
+        if not api_key:
+            self._status("⚠ Enter your API key in Settings first.")
+            return
+        self._status("Loading…")
+        self.tree.clear()
+        self.copy_bar.hide()
+        w = FilesWorker("shares", api_key, self.base_url)
+        w.done.connect(self._on_done)
+        w.error.connect(self._on_error)
+        w.finished.connect(lambda: self._workers.remove(w) if w in self._workers else None)
+        self._workers.append(w)
+        w.start()
+
+    def _on_done(self, result):
+        if result.get("op") != "shares":
+            return
+        data   = result["data"]
+        shares = data.get("shares", data) if isinstance(data, dict) else data
+        self.tree.setSortingEnabled(False)
+        self.tree.clear()
+
+        for s in shares:
+            token     = s.get("token", "")
+            file_name = s.get("file_name") or s.get("fileName") or s.get("original_name") or token
+            is_active = s.get("is_active", s.get("isActive", True))
+            expires   = s.get("expires_at") or s.get("expiresAt") or s.get("expiry") or "Never"
+            if expires and expires != "Never" and len(expires) > 10:
+                expires = expires[:10]
+            url = f"{self.base_url}/share/{token}" if token else ""
+
+            active_text  = "● Active"   if is_active else "○ Inactive"
+            active_color = "#4ade80"    if is_active else "#9ca3af"
+
+            item = QTreeWidgetItem([file_name, url, active_text, expires])
+            item.setData(0, Qt.ItemDataRole.UserRole, {
+                "token": token, "url": url,
+                "is_active": is_active, "file_name": file_name,
+            })
+            item.setForeground(2, QColor(active_color))
+            item.setForeground(1, QColor("#9ca3af"))
+            self.tree.addTopLevelItem(item)
+
+        self.tree.setSortingEnabled(True)
+        count = self.tree.topLevelItemCount()
+        self._status(f"{count} share{'s' if count != 1 else ''}")
+
+    def _on_error(self, msg):
+        self._status(f"✗ {msg}")
+        QMessageBox.warning(self, "Error", msg)
+
+    # ── Selection ─────────────────────────────────────────────────────────────
+    def _on_selection_changed(self):
+        has = len(self.tree.selectedItems()) > 0
+        self.copy_btn.setEnabled(has)
+        self.toggle_btn.setEnabled(has)
+        self.delete_btn.setEnabled(has)
+
+    def _selected_meta(self):
+        return [item.data(0, Qt.ItemDataRole.UserRole)
+                for item in self.tree.selectedItems()]
+
+    # ── Actions ───────────────────────────────────────────────────────────────
+    def _copy_selected(self):
+        items = self._selected_meta()
+        if not items:
+            return
+        if len(items) == 1:
+            url = items[0]["url"]
+            QApplication.clipboard().setText(url)
+            self.copy_bar.setText(f'Copied: <a href="{url}" style="color:#c8975a;">{url}</a>')
+            self.copy_bar.show()
+        else:
+            urls = "\n".join(m["url"] for m in items)
+            QApplication.clipboard().setText(urls)
+            self.copy_bar.setText(f"Copied {len(items)} links to clipboard.")
+            self.copy_bar.show()
+
+    def _toggle_selected(self):
+        api_key = self.get_api_key()
+        for meta in self._selected_meta():
+            token      = meta["token"]
+            new_active = not meta["is_active"]
+            import requests as _req
+            try:
+                resp = _req.patch(
+                    f"{self.base_url}/api/shares/{token}",
+                    headers={"Authorization": f"Bearer {api_key}",
+                             "Content-Type": "application/json"},
+                    json={"is_active": new_active},
+                    timeout=15,
+                )
+                resp.raise_for_status()
+            except Exception as e:
+                QMessageBox.warning(self, "Error", str(e))
+                return
+        self.refresh()
+
+    def _delete_selected(self):
+        items = self._selected_meta()
+        if not items:
+            return
+        msg = (f"Delete share for {items[0]['file_name']!r}?"
+               if len(items) == 1
+               else f"Delete {len(items)} shares?")
+        if QMessageBox.question(self, "Confirm Delete", msg,
+                                QMessageBox.StandardButton.Yes |
+                                QMessageBox.StandardButton.No
+                                ) != QMessageBox.StandardButton.Yes:
+            return
+        api_key = self.get_api_key()
+        import requests as _req
+        for meta in items:
+            try:
+                resp = _req.delete(
+                    f"{self.base_url}/api/shares/{meta['token']}",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    timeout=15,
+                )
+                resp.raise_for_status()
+            except Exception as e:
+                QMessageBox.warning(self, "Error", str(e))
+                return
+        self.copy_bar.hide()
+        self.refresh()
+
+    def _context_menu(self, pos):
+        item = self.tree.itemAt(pos)
+        if not item:
+            return
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background:#1a1c1f; border:1px solid #2a2d32;
+                    color:#e0e0e0; font-size:12px; }
+            QMenu::item { padding:6px 24px; }
+            QMenu::item:selected { background:#c8975a33; }
+        """)
+        menu.addAction("⧉  Copy Link",     self._copy_selected)
+        menu.addAction("◎  Toggle Active", self._toggle_selected)
+        menu.addSeparator()
+        menu.addAction("✕  Delete",        self._delete_selected)
+        menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _status(self, msg):
+        self.status_lbl.setText(msg)
+
+
 # ── Main Window ──────────────────────────────────────────────────────────────
 class MochaTools(QMainWindow):
     def __init__(self):
@@ -1948,6 +2180,11 @@ class MochaTools(QMainWindow):
             get_api_key=lambda: self.api_key_edit.text().strip(),
             get_upload_path=lambda: self.upload_path_edit.text().strip(),
             set_upload_path=lambda p: self.upload_path_edit.setText(p),
+        )
+
+        # ── Shares tab ───────────────────────────────────────────────────────
+        self.shares_tab = SharesTab(
+            get_api_key=lambda: self.api_key_edit.text().strip(),
         )
 
         # ── Settings tab ─────────────────────────────────────────────────────
@@ -2004,6 +2241,7 @@ class MochaTools(QMainWindow):
 
         self.tabs.addTab(upload_tab, "↑  Upload")
         self.tabs.addTab(self.files_tab, "📁  Files")
+        self.tabs.addTab(self.shares_tab, "⤴  Shares")
         self.tabs.addTab(settings_tab, "⚙  Settings")
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
@@ -2345,14 +2583,20 @@ class MochaTools(QMainWindow):
         if index == 1:
             if self.api_key_edit.text().strip():
                 self.files_tab._refresh()
-        # Auto-save settings when leaving Settings tab
-        elif index != 2:
+        # Auto-refresh the Shares tab when switched to
+        elif index == 2:
+            if self.api_key_edit.text().strip():
+                self.shares_tab.refresh()
+        # Auto-save settings when leaving Settings tab (now index 3)
+        elif index != 3:
             self._save_settings()
 
     def closeEvent(self, event):
         self._save_settings()
-        # Stop any running file-tab workers
+        # Stop any running workers
         for w in list(self.files_tab._workers):
+            w.quit()
+        for w in list(self.shares_tab._workers):
             w.quit()
         super().closeEvent(event)
 
