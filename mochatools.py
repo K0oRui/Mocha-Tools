@@ -1136,8 +1136,7 @@ class FolderBrowserDialog(QDialog):
         for entry in (folder_entries or []):
             # API may return folders as strings (paths) or as dicts.
             # Never trust entry path unless it's absolute — the API often
-            # returns just the folder name, causing the destination to be
-            # written as e.g. "bfb" instead of "/test/bfb".
+            # returns just the folder name, causing destination to be wrong.
             if isinstance(entry, str):
                 name     = entry.rstrip("/").split("/")[-1]
                 fullpath = entry if entry.startswith("/") else path.rstrip("/") + "/" + name
@@ -1627,7 +1626,7 @@ class FilesBrowserTab(QWidget):
         for entry in raw_folders:
             if isinstance(entry, str):
                 name     = entry.rstrip("/").split("/")[-1]
-                fullpath = entry
+                fullpath = entry if entry.startswith("/") else f"{path.rstrip('/')}/{name}" if path != "/" else f"/{name}"
                 print(f"[DEBUG]   String folder entry: {entry!r} -> fullpath={fullpath!r}")
                 folders.append({"name": name, "path": fullpath})
             elif isinstance(entry, dict):
