@@ -18,6 +18,7 @@ import math
 import time
 import threading
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from PyQt6.QtWidgets import (
     QDialog, QListWidget, QListWidgetItem, QDialogButtonBox,
@@ -448,7 +449,7 @@ class UploadWorker(QThread):
 
         self.finished.emit({"file_id": last_file_id, "share_url": last_share_url})
 
-    # ── simple upload (≤ 20 MB) ──────────────────────────────────────────────
+    # ── simple upload (≤ 50 MB) ──────────────────────────────────────────────
     def _simple_upload(self, file_size, local_path, dest_path):
         file_name  = os.path.basename(local_path)
         dest_dir   = "/".join(dest_path.rstrip("/").split("/")[:-1]) or "/"  # sent as x-file-path header
@@ -531,16 +532,20 @@ class UploadWorker(QThread):
 
     # ── multipart upload (> 50 MB) ───────────────────────────────────────────
     def _multipart_upload(self, file_size, local_path, dest_path):
-        file_name   = os.path.basename(local_path)
-        dest        = dest_path
+        import mimetypes
+
+        file_name = os.path.basename(local_path)
+        dest_dir  = "/".join(dest_path.rstrip("/").split("/")[:-1]) or "/"
+        dest_dir  = dest_dir.rstrip("/") + "/"
+        mime_type = mimetypes.guess_type(local_path)[0] or "application/octet-stream"
 
         # Debug: log request details (excluding sensitive data)
         url = f"{self.base_url}/api/files/multipart/init"
         payload = {
-            "name": file_name,
             "originalName": file_name,
-            "path": dest,
+            "path": dest_dir,
             "size": file_size,
+            "mimeType": mime_type,
         }
         debug_headers = {**self._headers(), "Content-Type": "application/json"}
         debug_headers["Authorization"] = "(hidden)"
@@ -565,48 +570,91 @@ class UploadWorker(QThread):
             raise
         init_data  = init_resp.json()
         self.status.emit(f"[DEBUG] Init response: {init_data}")
-        # Store init_data for use in presign payload
-        self._multipart_init_data = init_data
+        # Store the init response fields in one session payload so every
+        # multipart request uses the same uploadId, key, nodeId, and path.
+        # The backend uses those values to find the existing upload session.
+        strategy   = init_data.get("strategy")
         upload_id  = init_data.get("uploadId")
-        server_fid = init_data.get("fileId") or init_data.get("id") or (init_data.get("file") or {}).get("id")
-        strategy   = init_data.get("strategy", "mocha")  # "s3" or "mocha"
+        key        = init_data.get("key")
+        node_id    = init_data.get("nodeId")
+        direct     = init_data.get("directUploadEnabled") is not False
 
-        # Use our fixed CHUNK_SIZE (20 MB) rather than the server's partSizeBytes
+        if strategy not in ("s3", "webdav") or not upload_id or not key or not node_id:
+            raise RuntimeError(f"Invalid multipart init response: {init_data}")
+
+        session = {
+            "strategy": strategy,
+            "uploadId": upload_id,
+            "key": key,
+            "nodeId": node_id,
+            "originalName": init_data.get("originalName") or file_name,
+            "path": dest_dir,
+            "size": file_size,
+            "mimeType": mime_type,
+        }
+
+        # Use our fixed CHUNK_SIZE (50 MB) rather than the server's partSizeBytes
         # (which can be up to 200 MB).  Smaller chunks are more reliable and
         # keep presigned URLs fresh within their 1-hour TTL.
         # partSizeBytes is the *maximum* allowed, not a requirement.
         chunk_size  = CHUNK_SIZE
         total_parts = math.ceil(file_size / chunk_size)
-        self.status.emit(f"Multipart upload: {total_parts} parts… (strategy={strategy}, partSize={self._fmt_size(chunk_size)})")
+        concurrency = self._multipart_concurrency(init_data, total_parts)
+        mode = "direct S3" if strategy == "s3" and direct else "server relay"
+        self.status.emit(f"Multipart upload: {total_parts} parts… (strategy={strategy}, mode={mode}, partSize={self._fmt_size(chunk_size)}, concurrency={concurrency})")
         self.status.emit(f"Session: {upload_id}")
 
         parts    = []
         uploaded = 0
         start    = time.time()
 
-        with open(local_path, "rb") as f:
-            for part_num in range(1, total_parts + 1):
+        # Each worker opens its own file handle and seeks to its part offset.
+        # Sharing one file object across parallel uploads would race the read
+        # position and corrupt the parts.
+        def upload_part(part_num):
+            offset = (part_num - 1) * chunk_size
+            read_size = min(chunk_size, file_size - offset)
+            if self._cancel:
+                return None
+            with open(local_path, "rb") as part_file:
+                part_file.seek(offset)
+                chunk = part_file.read(read_size)
+            if self._cancel:
+                return None
+            self.status.emit(f"Uploading part {part_num}/{total_parts}…")
+            self.status.emit(f"[DEBUG] Chunk size: {len(chunk)} bytes")
+            if strategy == "s3" and direct:
+                etag = self._upload_part_s3(session, part_num, chunk)
+            else:
+                etag = self._upload_part_relay(session, part_num, chunk)
+            return {"partNumber": part_num, "etag": etag, "size": len(chunk)}
+
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = {
+                executor.submit(upload_part, part_num): part_num
+                for part_num in range(1, total_parts + 1)
+            }
+            for future in as_completed(futures):
                 if self._cancel:
-                    self._abort(upload_id, server_fid)
+                    self._stop_multipart_futures(futures, session, total_parts)
                     return None
 
-                chunk = f.read(chunk_size)
-                self.status.emit(f"Uploading part {part_num}/{total_parts}…")
-                self.status.emit(f"[DEBUG] Chunk size: {len(chunk)} bytes")
-
-                if strategy == "s3":
-                    etag = self._upload_part_s3(upload_id, server_fid, part_num, chunk, strategy)
-                else:
-                    etag = self._upload_part_mocha(upload_id, server_fid, part_num, chunk)
+                try:
+                    result = future.result()
+                except Exception:
+                    self._cancel = True
+                    self._stop_multipart_futures(futures, session, total_parts)
+                    raise
 
                 # If etag is None the part worker already aborted the session
                 # and emitted an error — don't fall through to /complete.
-                if etag is None:
+                if result is None or result["etag"] is None:
+                    self._stop_multipart_futures(futures, session, total_parts)
                     return None
 
-                parts.append({"partNumber": part_num, "etag": etag})
+                parts.append({"partNumber": result["partNumber"], "etag": result["etag"]})
 
-                uploaded += len(chunk)
+                uploaded += result["size"]
                 elapsed   = max(time.time() - start, 0.001)
                 self.progress.emit(int(uploaded / file_size * 100))
                 self.speed.emit(uploaded / elapsed)
@@ -615,26 +663,53 @@ class UploadWorker(QThread):
         comp_resp = requests.post(
             f"{self.base_url}/api/files/multipart/complete",
             headers={**self._headers(), "Content-Type": "application/json"},
-            json={"uploadId": upload_id, "fileId": server_fid, "parts": parts},
+            json={**session, "parts": parts},
             timeout=60,
         )
         comp_resp.raise_for_status()
         j       = comp_resp.json()
-        file_id = j.get("fileId") or server_fid
+        file_id = j.get("fileId") or j.get("id") or (j.get("file") or {}).get("id")
         self.status.emit(f"Multipart complete. File ID: {file_id}")
         self.progress.emit(100)
 
-        # The multipart init payload includes the full destination path, so the
-        # API places the file there directly — no post-upload move required.
+        # The multipart init payload includes the destination folder, so the API
+        # places the file there directly — no post-upload move required.
 
         return file_id
 
-    def _upload_part_mocha(self, upload_id, server_fid, part_num, chunk):
-        """Upload one part through the Mocha relay (strategy='mocha')."""
+    @staticmethod
+    def _multipart_concurrency(init_data, total_parts):
+        value = init_data.get("partUploadConcurrency", 1)
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = 1
+        return max(1, min(parsed, total_parts, 64))
+
+    @staticmethod
+    def _cancel_futures(futures):
+        for future in futures:
+            future.cancel()
+
+    def _abort_all_parts(self, session, total_parts):
+        self._abort(session, list(range(1, total_parts + 1)))
+
+    def _stop_multipart_futures(self, futures, session, total_parts):
+        self._cancel_futures(futures)
+        self._abort_all_parts(session, total_parts)
+
+    def _upload_part_relay(self, session, part_num, chunk):
+        """Upload one part through the Mocha relay."""
         part_url    = f"{self.base_url}/api/files/multipart/part"
-        part_params = {"uploadId": upload_id, "partNumber": part_num}
-        if server_fid:
-            part_params["fileId"] = server_fid
+        part_params = {
+            "strategy": session["strategy"],
+            "uploadId": session["uploadId"],
+            "key": session["key"],
+            "nodeId": session["nodeId"],
+            "originalName": session["originalName"],
+            "path": session["path"],
+            "partNumber": part_num,
+        }
         self.status.emit(f"[DEBUG] Part upload URL: {part_url}")
         self.status.emit(f"[DEBUG] Params: {part_params}")
         self.status.emit(f"[DEBUG] Headers: {{'Authorization': '(hidden)'}}")
@@ -655,25 +730,19 @@ class UploadWorker(QThread):
         except Exception as e:
             self.status.emit(f"[DEBUG] Exception: {e}")
             raise
-        return resp.headers.get("ETag", "")
+        data = resp.json()
+        etag = data.get("etag") or resp.headers.get("ETag", "")
+        if not etag:
+            raise RuntimeError(f"No ETag returned for part {part_num}: {data}")
+        return etag
 
-    def _upload_part_s3(self, upload_id, server_fid, part_num, chunk, strategy):
+    def _upload_part_s3(self, session, part_num, chunk):
         """Upload one part directly to S3 via a presigned URL (strategy='s3')."""
         # Step 1: ask Mocha for a presigned URL for this part
         presign_url     = f"{self.base_url}/api/files/multipart/presigned"
-        # Always seed the presign request with the full session context from
-        # init (uploadId, key, nodeId) so the Mocha backend can anchor the
-        # presigned URL to the correct existing S3 multipart session rather
-        # than creating a new one (which would cause a NoSuchUpload mismatch).
-        presign_payload = {"uploadId": upload_id, "partNumbers": [part_num], "strategy": strategy}
-        if server_fid:
-            presign_payload["fileId"] = server_fid
-        if hasattr(self, "_multipart_init_data") and self._multipart_init_data:
-            for field in ("key", "nodeId", "uploadId"):
-                if field in self._multipart_init_data and field not in presign_payload:
-                    presign_payload[field] = self._multipart_init_data[field]
-            # Ensure uploadId always comes from the canonical init response
-            presign_payload["uploadId"] = self._multipart_init_data.get("uploadId", upload_id)
+        # Send the full session context from init so the backend signs the URL
+        # for the same object key and multipart upload session.
+        presign_payload = {**session, "partNumbers": [part_num]}
         self.status.emit(f"[DEBUG] Presign URL: {presign_url}")
         self.status.emit(f"[DEBUG] Presign payload: {presign_payload}")
         try:
@@ -709,22 +778,11 @@ class UploadWorker(QThread):
             raise RuntimeError(f"No presigned URL in response: {presign_data}")
         self.status.emit(f"[DEBUG] Uploading part {part_num} directly to S3…")
 
-        # Step 2: compute the CRC32 of the chunk and send it as the
-        # x-amz-checksum-crc32 header.  The presigned URL is generated by the
-        # server with x-amz-sdk-checksum-algorithm=CRC32 in SignedHeaders, so
-        # S3 requires the matching header on the PUT or it rejects the request.
-        import zlib, struct, base64 as _b64
-        crc_int = zlib.crc32(chunk) & 0xFFFFFFFF
-        crc_b64 = _b64.b64encode(struct.pack(">I", crc_int)).decode()
-        self.status.emit(f"[DEBUG] CRC32 (b64): {crc_b64}")
-        s3_put_headers = {"x-amz-checksum-crc32": crc_b64}
-
-        # Step 3: PUT the chunk directly to S3 (no auth header — the URL is pre-signed)
+        # Step 2: PUT the chunk directly to S3 (no auth header — the URL is pre-signed)
         try:
             s3_resp = requests.put(
                 signed_url,
                 data=chunk,
-                headers=s3_put_headers,
             )
             s3_resp.raise_for_status()
         except requests.HTTPError as e:
@@ -733,7 +791,7 @@ class UploadWorker(QThread):
             self.status.emit(f"[DEBUG] Response status: {getattr(e.response, 'status_code', None)}")
             self.status.emit(f"[DEBUG] Response content: {content}")
             if e.response is not None and 'NoSuchUpload' in content:
-                self._abort(upload_id, server_fid)
+                self._abort(session)
                 self.error.emit("S3 upload session expired or invalid (NoSuchUpload). Please retry the upload.")
                 return None
             raise
@@ -742,11 +800,11 @@ class UploadWorker(QThread):
             raise
         return s3_resp.headers.get("ETag", "")
 
-    def _abort(self, upload_id, file_id=None):
+    def _abort(self, session, part_numbers=None):
         try:
-            payload = {"uploadId": upload_id}
-            if file_id:
-                payload["fileId"] = file_id
+            payload = dict(session)
+            if part_numbers:
+                payload["partNumbers"] = part_numbers
             requests.post(
                 f"{self.base_url}/api/files/multipart/abort",
                 headers={**self._headers(), "Content-Type": "application/json"},
@@ -1541,9 +1599,10 @@ class FilesBrowserTab(QWidget):
 
         # Add file rows
         for f in sorted(files, key=lambda x: (
-                x.get("name") or x.get("originalName") or "").lower()):
-            name    = (f.get("name") or f.get("originalName")
-                       or f.get("file_name") or "")
+                x.get("originalName") or x.get("original_name") or x.get("name") or x.get("file_name") or "").lower()):
+            stored_name = f.get("file_name") or f.get("name") or ""
+            name    = (f.get("originalName") or f.get("original_name")
+                       or f.get("name") or stored_name)
             size    = f.get("size") or f.get("fileSize") or 0
             fid     = f.get("id") or f.get("fileId") or ""
             expires = f.get("expiresAt") or f.get("expiry") or "—"
@@ -1558,9 +1617,9 @@ class FilesBrowserTab(QWidget):
                 expires,
             ])
             item.setData(0, Qt.ItemDataRole.UserRole,
-                         {"_type": "file", "name": name, "id": fid,
-                          "path": f.get("path") or f"{path.rstrip('/')}/{name}",
-                          **f})
+                         {**f, "_type": "file", "name": name, "id": fid,
+                          "file_name": stored_name,
+                          "path": f.get("path") or f"{path.rstrip('/')}/{stored_name or name}"})
             self.tree.addTopLevelItem(item)
 
         self.tree.setSortingEnabled(True)
@@ -1570,20 +1629,23 @@ class FilesBrowserTab(QWidget):
         self._refresh_share_indicators()
 
     def _index_shares(self, data):
-        """Build fileId → share_url map from GET /api/shares response."""
+        """Build file reference → share_url map from GET /api/shares response."""
         self._shares_map = {}
         items = data if isinstance(data, list) else data.get("shares", [])
         for s in items:
             fid   = (s.get("fileId") or
                      (s.get("file") or {}).get("id") or "")
+            file_name = s.get("fileName") or s.get("file_name") or ""
             token = s.get("token", "")
-            if fid:
-                self._shares_map[fid] = {
-                    "url":     f"{self.base_url}/share/{token}" if token else "",
-                    "token":   token,
-                    "expires": s.get("expiresAt") or s.get("expiry") or "—",
-                    "active":  s.get("active", True),
-                }
+            share = {
+                "url":     f"{self.base_url}/share/{token}" if token else "",
+                "token":   token,
+                "expires": s.get("expiresAt") or s.get("expires_at") or s.get("expiry") or "—",
+                "active":  s.get("active", s.get("is_active", True)),
+            }
+            for key in (fid, file_name):
+                if key:
+                    self._shares_map[key] = share
 
     def _refresh_share_indicators(self):
         """Update the Shared column for all file rows based on _shares_map."""
@@ -1594,8 +1656,9 @@ class FilesBrowserTab(QWidget):
             if meta.get("_type") != "file":
                 continue
             fid = meta.get("id") or meta.get("fileId") or ""
-            if fid in self._shares_map:
-                share = self._shares_map[fid]
+            file_name = meta.get("file_name") or meta.get("name") or ""
+            share = self._shares_map.get(fid) or self._shares_map.get(file_name)
+            if share:
                 label = "● Shared" if share.get("active", True) else "○ Inactive"
                 color = "#4ade80" if share.get("active", True) else "#9ca3af"
                 item.setText(3, label)
@@ -1661,7 +1724,7 @@ class FilesBrowserTab(QWidget):
             if meta.get("_type") == "folder":
                 self._run_worker("delete_folder", path=meta.get("path", ""))
             else:
-                file_name = meta.get("name") or meta.get("path", "").lstrip("/")
+                file_name = meta.get("file_name") or meta.get("name") or meta.get("path", "").lstrip("/")
                 self._run_worker("delete", file_name=file_name)
         self._status("Deleting…")
 
@@ -2146,9 +2209,12 @@ class MochaUploader(QMainWindow):
         self._log(f"✗ Error: {msg}")
 
     def _log(self, msg):
-        if not (getattr(self, "debug_cb", None) and self.debug_cb.isChecked()):
+        debug_enabled = getattr(self, "debug_cb", None) and self.debug_cb.isChecked()
+        if msg.startswith("[DEBUG]") and not debug_enabled:
             return
         self.log_label.setText(msg)
+        if not debug_enabled:
+            return
         try:
             with open("mocha_uploader.log", "a", encoding="utf-8") as f:
                 f.write(msg + "\n")
@@ -2232,10 +2298,10 @@ if __name__ == "__main__":
 # ------------
 #   ≤ 50 MB  → POST /api/files          (direct upload)
 #   > 50 MB  → multipart: init → parts → complete
-#              Each part is 20 MB. Abort is called on cancel.
+#              Each part is 50 MB. Abort is called on cancel.
 #
 # SHARE OPTIONS
 # -------------
-#   Expiration values are sent as-is to the API (e.g. "1d", "7d", "Never").
+#   Expiration values are sent as expiresInHours.
 #   Max downloads = 0 means "Unlimited" (field omitted from request).
 # ═══════════════════════════════════════════════════════════════════════════
