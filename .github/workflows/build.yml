@@ -29,11 +29,11 @@ jobs:
         shell: bash
         run: |
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            pyinstaller --onefile --icon=icon.ico mochatools.py
+            pyinstaller --onefile --noconsole --icon=icon.ico mochatools.py
           elif [[ "$RUNNER_OS" == "macOS" ]]; then
-            pyinstaller --onefile --windowed --icon=icon.icns mochatools.py
+            pyinstaller --onefile --noconsole --windowed --icon=icon.icns mochatools.py
           else
-            pyinstaller --onefile --icon=icon.png mochatools.py
+            pyinstaller --onefile --noconsole --icon=icon.png mochatools.py
           fi
 
       - name: Upload artifact
