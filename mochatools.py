@@ -1134,11 +1134,13 @@ class FolderBrowserDialog(QDialog):
         if not folder_entries and isinstance(data, list):
             folder_entries = data  # flat list — scan everything
         for entry in (folder_entries or []):
-            # API may return folders as strings (paths) or as dicts
+            # API may return folders as strings (paths) or as dicts.
+            # Never trust entry path unless it's absolute — the API often
+            # returns just the folder name, causing the destination to be
+            # written as e.g. "bfb" instead of "/test/bfb".
             if isinstance(entry, str):
-                # entry is the full path e.g. "/Music/Albums"
                 name     = entry.rstrip("/").split("/")[-1]
-                fullpath = entry
+                fullpath = entry if entry.startswith("/") else path.rstrip("/") + "/" + name
             elif isinstance(entry, dict):
                 name = (
                     entry.get("name")
@@ -1147,11 +1149,8 @@ class FolderBrowserDialog(QDialog):
                     or entry.get("file_name")
                     or ""
                 )
-                fullpath = (
-                    entry.get("path")
-                    or entry.get("fullPath")
-                    or (path.rstrip("/") + "/" + name)
-                )
+                entry_path = entry.get("path") or entry.get("fullPath") or ""
+                fullpath = entry_path if entry_path.startswith("/") else path.rstrip("/") + "/" + name
             else:
                 continue
             if name:
