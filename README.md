@@ -18,7 +18,7 @@
 # **WIP**                                             
 |**CURRENT ISSUES**|
 | :---- |
-|<ul><li>~~Share link creation creates share but provides incorrect link~~</li><li>Folder upload just dumps all files in root without creating new folder</li><li>~~Original file names not being listed~~</li><li>~~Unable to move files~~</li><li>Unable to ~~create~~ or view shares</li><li>~~Large file upload is not working correctly~~</li><li>~~Uploading to specific existing folders is not functioning~~</li><li>Moving files or folders deeper than one folder does not function</li><li>~~Uploading deeper than one folder is not working~~</li></ul>|
+|<ul><li>~~Share link creation creates share but provides incorrect link~~</li><li>Folder upload just dumps all files in root without creating new folder</li><li>~~Original file names not being listed~~</li><li>~~Unable to move files~~</li><li>Unable to ~~create~~ or view shares</li><li>~~Large file upload is not working correctly~~</li><li>~~Uploading to specific existing folders is not functioning~~</li><li>~~Moving files or folders deeper than one folder does not function~~</li><li>~~Uploading deeper than one folder is not working~~</li></ul>|
 
 
 ## Requirements
