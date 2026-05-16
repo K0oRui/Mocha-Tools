@@ -1,10 +1,10 @@
 """
-Mocha File Uploader
+Mocha Tools
 A cross-platform PyQt6 application for uploading files to mocha
 Written by nxllxvxxd
 
 To compile:
-    pyinstaller --onefile --windowed --noconsole mocha_uploader.py
+    pyinstaller --onefile --windowed --noconsole mochatools.py
 
 Android:
     Use Buildozer with Kivy — PyQt6 is not supported on Android natively.
@@ -41,7 +41,7 @@ from PyQt6.QtGui import (
 # ── Constants ────────────────────────────────────────────────────────────────
 CHUNK_THRESHOLD = 50 * 1024 * 1024   # 50 MB  → use multipart above this (API direct upload limit)
 CHUNK_SIZE      = 50 * 1024 * 1024   # 50 MB chunks (API max per chunk is 200 MB)
-APP_NAME        = "MochaUploader"
+APP_NAME        = "MochaTools"
 ORG_NAME        = "Mocha"
 HARDCODED_BASE_URL = "https://mocha.my"
 
@@ -1434,25 +1434,6 @@ class FilesBrowserTab(QWidget):
 
         outer.addWidget(self.tree, 1)
 
-        # ── Upload destination bar ────────────────────────────────────────────
-        dest_row = QHBoxLayout()
-        dest_row.setSpacing(6)
-        dest_lbl = QLabel("Upload destination:")
-        dest_lbl.setObjectName("field_label")
-        dest_lbl.setStyleSheet("color:#9ca3af; font-size:11px; background:transparent; min-width:0;")
-        self.dest_display = QLabel("/")
-        self.dest_display.setStyleSheet(
-            "color:#c8975a; font-size:11px; font-weight:600; background:transparent;")
-        self.dest_display.setMinimumWidth(0)
-        set_dest_btn = QPushButton("Use current folder")
-        set_dest_btn.setObjectName("tb_btn")
-        set_dest_btn.setToolTip("Set the current browsed folder as the upload destination")
-        set_dest_btn.clicked.connect(self._set_as_upload_dest)
-        dest_row.addWidget(dest_lbl)
-        dest_row.addWidget(self.dest_display, 1)
-        dest_row.addWidget(set_dest_btn)
-        outer.addLayout(dest_row)
-
         # ── Share result bar ─────────────────────────────────────────────────
         self.share_bar = QLabel("")
         self.share_bar.setObjectName("log_console")
@@ -1499,13 +1480,6 @@ class FilesBrowserTab(QWidget):
 
     def _refresh(self):
         self._navigate(self.current_path)
-        # Keep dest display in sync with the saved upload path
-        self.dest_display.setText(self.get_upload_path() or "/")
-
-    def _set_as_upload_dest(self):
-        self.set_upload_path(self.current_path)
-        self.dest_display.setText(self.current_path)
-        self._status(f"✓ Upload destination set to {self.current_path}")
 
     # ── Worker dispatch ───────────────────────────────────────────────────────
     def _run_worker(self, op, **kwargs):
@@ -1816,10 +1790,10 @@ class FilesBrowserTab(QWidget):
 
 
 # ── Main Window ──────────────────────────────────────────────────────────────
-class MochaUploader(QMainWindow):
+class MochaTools(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Mocha Uploader")
+        self.setWindowTitle("Mocha Tools")
         self.setMinimumWidth(520)
         self.setMaximumWidth(640)
         self.selected_files = []   # list of local absolute paths
@@ -1892,10 +1866,9 @@ class MochaUploader(QMainWindow):
         key_row.addWidget(self.show_key_cb)
         api_lay.addLayout(key_row)
 
-        # upload_path_edit is hidden — set via the Files tab "Use current folder" button
+        # upload_path_edit is used by _start_upload; it is shown in the Upload tab
         self.upload_path_edit = QLineEdit()
         self.upload_path_edit.setText("/")
-        self.upload_path_edit.hide()
 
         self.remember_cb = QCheckBox("Remember settings across sessions")
         api_lay.addWidget(self.remember_cb)
@@ -1935,6 +1908,26 @@ class MochaUploader(QMainWindow):
         file_lay.addWidget(self.drop_zone)
         main.addWidget(file_card)
 
+        # ── DESTINATION ───────────────────────────────────────────────────────
+        main.addWidget(self._make_section_header("Destination"))
+        dest_card = self._make_card()
+        dest_lay  = QVBoxLayout(dest_card)
+        dest_lay.setSpacing(8)
+
+        dest_row = QHBoxLayout()
+        dest_lbl = QLabel("Folder")
+        dest_lbl.setObjectName("field_label")
+        self.upload_path_edit.setPlaceholderText("/")
+        browse_dest_btn = QPushButton("Browse…")
+        browse_dest_btn.setObjectName("browse_btn")
+        browse_dest_btn.setToolTip("Browse remote folders to pick an upload destination")
+        browse_dest_btn.clicked.connect(self._browse_upload_dest)
+        dest_row.addWidget(dest_lbl)
+        dest_row.addWidget(self.upload_path_edit, 1)
+        dest_row.addWidget(browse_dest_btn)
+        dest_lay.addLayout(dest_row)
+        main.addWidget(dest_card)
+
         # ── UPLOAD STATUS ─────────────────────────────────────────────────────
         main.addWidget(self._make_section_header("Upload Status"))
         status_card = self._make_card()
@@ -1973,7 +1966,7 @@ class MochaUploader(QMainWindow):
         status_lay.addLayout(prog_row)
 
         # Log console
-        self.log_label = QLabel("Ready — select a file to upload. Set the destination folder in the Files tab.")
+        self.log_label = QLabel("Ready — select a file and destination folder, then upload.")
         self.log_label.setObjectName("log_console")
         self.log_label.setWordWrap(True)
         self.log_label.setMinimumHeight(46)
@@ -2071,6 +2064,20 @@ class MochaUploader(QMainWindow):
         frame = QFrame()
         frame.setObjectName("card")
         return frame
+
+    def _browse_upload_dest(self):
+        api_key = self.api_key_edit.text().strip()
+        if not api_key:
+            self._log("⚠ Enter your API key in Settings before browsing folders.")
+            return
+        dlg = FolderBrowserDialog(
+            api_key, HARDCODED_BASE_URL,
+            self.upload_path_edit.text().strip() or "/",
+            parent=self,
+        )
+        dlg.setWindowTitle("Choose upload destination folder")
+        if dlg.exec():
+            self.upload_path_edit.setText(dlg.selected)
 
     def _toggle_key_visibility(self, checked):
         mode = QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
@@ -2216,7 +2223,7 @@ class MochaUploader(QMainWindow):
         if not debug_enabled:
             return
         try:
-            with open("mocha_uploader.log", "a", encoding="utf-8") as f:
+            with open("mochatools.log", "a", encoding="utf-8") as f:
                 f.write(msg + "\n")
         except Exception:
             pass
@@ -2232,7 +2239,6 @@ class MochaUploader(QMainWindow):
     def _on_tab_changed(self, index):
         # Auto-refresh the Files tab when switched to (if API key is present)
         if index == 1:
-            self.files_tab.dest_display.setText(self.upload_path_edit.text().strip() or "/")
             if self.api_key_edit.text().strip():
                 self.files_tab._refresh()
         # Auto-save settings when leaving Settings tab
@@ -2266,7 +2272,7 @@ def main():
     palette.setColor(QPalette.ColorRole.HighlightedText,  QColor("#111214"))
     app.setPalette(palette)
 
-    win = MochaUploader()
+    win = MochaTools()
     win.show()
     sys.exit(app.exec())
 
@@ -2289,9 +2295,9 @@ if __name__ == "__main__":
 # SETTINGS STORAGE
 # ----------------
 #   API key and settings are stored via QSettings:
-#     • Windows : HKEY_CURRENT_USER\Software\Mocha\MochaUploader
-#     • macOS   : ~/Library/Preferences/com.Mocha.MochaUploader.plist
-#     • Linux   : ~/.config/Mocha/MochaUploader.ini
+#     • Windows : HKEY_CURRENT_USER\Software\Mocha\MochaTools
+#     • macOS   : ~/Library/Preferences/com.Mocha.MochaTools.plist
+#     • Linux   : ~/.config/Mocha/MochaTools.ini
 #   Only saved when "Remember settings across sessions" is checked.
 #
 # UPLOAD LOGIC
