@@ -40,6 +40,12 @@ from PyQt6.QtGui import (
 # ── Constants ────────────────────────────────────────────────────────────────
 CHUNK_THRESHOLD = 50 * 1024 * 1024   # 50 MB  → use multipart above this (API direct upload limit)
 CHUNK_SIZE      = 50 * 1024 * 1024   # 50 MB chunks (API max per chunk is 200 MB)
+PART_UPLOAD_RETRIES = 5
+PART_UPLOAD_TIMEOUT = (30, 900)
+S3_DEFAULT_CONCURRENCY = 4
+S3_MAX_CONCURRENCY = 8
+RELAY_DEFAULT_CONCURRENCY = 2
+RELAY_MAX_CONCURRENCY = 4
 APP_NAME        = "MochaTools"
 ORG_NAME        = "Mocha"
 HARDCODED_BASE_URL = "https://mocha.my"
@@ -421,11 +427,10 @@ class UploadWorker(QThread):
         for d in dest_dirs:
             if d == "/":
                 continue
-            self.status.emit(f"[DEBUG] Creating folder: {d}")
+            self.status.emit(f"Creating folder: {d}")
             try:
                 self._ensure_folder(d)
             except Exception as e:
-                self.status.emit(f"[DEBUG] Failed to create folder {d!r}: {e}")
                 self.error.emit(f"Failed to create folder {d!r}: {e}")
                 return
 
@@ -442,11 +447,11 @@ class UploadWorker(QThread):
 
                 # Skip empty files — API requires positive Content-Length
                 if file_size == 0:
-                    self.status.emit(f"[DEBUG] {prefix}{file_name}  ⊘ Skipped (empty file)")
+                    self.status.emit(f"{prefix}{file_name}  ⊘ Skipped (empty file)")
                     self.status.emit(f"[DEBUG] Skipped empty file: {local_path}")
                     continue
 
-                self.status.emit(f"[DEBUG] {prefix}{file_name}  ({self._fmt_size(file_size)})")
+                self.status.emit(f"{prefix}{file_name}  ({self._fmt_size(file_size)})")
                 self.status.emit(f"[DEBUG] Local path: {local_path}")
                 self.status.emit(f"[DEBUG] Remote dest: {dest_path}")
                 self.status.emit(f"[DEBUG] File size (bytes): {file_size}  threshold: {CHUNK_THRESHOLD}")
@@ -465,13 +470,13 @@ class UploadWorker(QThread):
                 last_file_id = file_id
 
                 if self.create_share and idx == total_files:
-                    self.status.emit("[DEBUG] Creating share link…")
+                    self.status.emit("Creating share link…")
                     last_share_url = self._create_share(file_id)
-                    self.status.emit(f"[DEBUG] Share: {last_share_url}")
+                    self.status.emit(f"Share: {last_share_url}")
 
             except Exception as e:
-                self.status.emit(f"[DEBUG] Exception in run() for {prefix}{file_name}: {e}")
                 self.error.emit(f"{prefix}{file_name}: {e}")
+                return
 
         self.finished.emit({"file_id": last_file_id, "share_url": last_share_url})
 
@@ -484,22 +489,30 @@ class UploadWorker(QThread):
         start    = time.time()
         uploaded = 0
 
-        # Read file in chunks so we can report live progress
-        chunks = []
-        with open(local_path, "rb") as f:
-            while True:
-                chunk = f.read(65536)
-                if not chunk:
-                    break
-                if self._cancel:
-                    self.status.emit("[DEBUG] Cancelled.")
-                    return None
-                chunks.append(chunk)
-                uploaded += len(chunk)
-                elapsed   = max(time.time() - start, 0.001)
-                self.progress.emit(int(uploaded / file_size * 100))
-                self.speed.emit(uploaded / elapsed)
-        data = b"".join(chunks)
+        class UploadCancelled(Exception):
+            pass
+
+        class UploadStream:
+            def __init__(self, path, worker):
+                self._file = open(path, "rb")
+                self._worker = worker
+
+            def read(self, size=-1):
+                nonlocal uploaded
+                if self._worker._cancel:
+                    raise UploadCancelled
+                if size is None or size < 0:
+                    size = 65536
+                chunk = self._file.read(size)
+                if chunk:
+                    uploaded += len(chunk)
+                    elapsed = max(time.time() - start, 0.001)
+                    self._worker.progress.emit(int(uploaded / file_size * 100))
+                    self._worker.speed.emit(uploaded / elapsed)
+                return chunk
+
+            def close(self):
+                self._file.close()
 
         import mimetypes
         mime_type = mimetypes.guess_type(local_path)[0] or "application/octet-stream"
@@ -521,18 +534,22 @@ class UploadWorker(QThread):
         debug_headers["Authorization"] = "(hidden)"
         self.status.emit(f"[DEBUG] Request headers: {debug_headers}")
         t0 = time.time()
+        data = UploadStream(local_path, self)
         try:
             resp = requests.post(
                 url,
                 headers=req_headers,
                 data=data,
-                timeout=240,
+                timeout=PART_UPLOAD_TIMEOUT,
             )
             elapsed_ms = (time.time() - t0) * 1000
             self.status.emit(f"[DEBUG] Response status: {resp.status_code}  elapsed: {elapsed_ms:.0f} ms")
             self.status.emit(f"[DEBUG] Response headers: {dict(resp.headers)}")
             self.status.emit(f"[DEBUG] Response body: {resp.text[:500]}")
             resp.raise_for_status()
+        except UploadCancelled:
+            self.status.emit("Cancelled.")
+            return None
         except requests.HTTPError as e:
             self.status.emit(f"[DEBUG] HTTPError: {e}")
             self.status.emit(f"[DEBUG] Response status: {getattr(e.response, 'status_code', None)}")
@@ -541,11 +558,13 @@ class UploadWorker(QThread):
         except Exception as e:
             self.status.emit(f"[DEBUG] Exception: {e}")
             raise
+        finally:
+            data.close()
 
         j       = resp.json()
         file_id = j.get("fileId") or j.get("id") or j.get("file", {}).get("id")
         self.status.emit(f"[DEBUG] Parsed file ID: {file_id}  full JSON: {j}")
-        self.status.emit(f"[DEBUG] Upload complete. File ID: {file_id}")
+        self.status.emit(f"Upload complete. File ID: {file_id}")
         self.progress.emit(100)
         return file_id
 
@@ -618,15 +637,18 @@ class UploadWorker(QThread):
         # partSizeBytes is the *maximum* allowed, not a requirement.
         chunk_size  = CHUNK_SIZE
         total_parts = math.ceil(file_size / chunk_size)
-        concurrency = self._multipart_concurrency(init_data, total_parts)
         mode = "direct S3" if strategy == "s3" and direct else "server relay"
-        self.status.emit(f"[DEBUG] Multipart upload: {total_parts} parts… (strategy={strategy}, mode={mode}, partSize={self._fmt_size(chunk_size)}, concurrency={concurrency})")
-        self.status.emit(f"[DEBUG] Session: {upload_id}")
+        concurrency = self._multipart_concurrency(init_data, total_parts, mode)
+        self.status.emit(f"Multipart upload: {total_parts} parts… (strategy={strategy}, mode={mode}, partSize={self._fmt_size(chunk_size)}, concurrency={concurrency})")
+        self.status.emit(f"Session: {upload_id}")
 
         parts    = []
         uploaded = 0
         start    = time.time()
 
+        # Each worker opens its own file handle and seeks to its part offset.
+        # Sharing one file object across parallel uploads would race the read
+        # position and corrupt the parts.
         def upload_part(part_num):
             offset = (part_num - 1) * chunk_size
             read_size = min(chunk_size, file_size - offset)
@@ -637,7 +659,7 @@ class UploadWorker(QThread):
                 chunk = part_file.read(read_size)
             if self._cancel:
                 return None
-            self.status.emit(f"[DEBUG] Uploading part {part_num}/{total_parts}…")
+            self.status.emit(f"Uploading part {part_num}/{total_parts}…")
             self.status.emit(f"[DEBUG] Chunk size: {len(chunk)} bytes")
             if strategy == "s3" and direct:
                 etag = self._upload_part_s3(session, part_num, chunk)
@@ -679,24 +701,26 @@ class UploadWorker(QThread):
         comp_resp = requests.post(
             f"{self.base_url}/api/files/multipart/complete",
             headers={**self._headers(), "Content-Type": "application/json"},
-            json={**session, "parts": parts},
+            json={**session, "parts": sorted(parts, key=lambda part: part["partNumber"])},
             timeout=60,
         )
         comp_resp.raise_for_status()
         j       = comp_resp.json()
         file_id = j.get("fileId") or j.get("id") or (j.get("file") or {}).get("id")
-        self.status.emit(f"[DEBUG] Multipart complete. File ID: {file_id}")
+        self.status.emit(f"Multipart complete. File ID: {file_id}")
         self.progress.emit(100)
         return file_id
 
     @staticmethod
-    def _multipart_concurrency(init_data, total_parts):
-        value = init_data.get("partUploadConcurrency", 1)
+    def _multipart_concurrency(init_data, total_parts, mode):
+        default = S3_DEFAULT_CONCURRENCY if mode == "direct S3" else RELAY_DEFAULT_CONCURRENCY
+        maximum = S3_MAX_CONCURRENCY if mode == "direct S3" else RELAY_MAX_CONCURRENCY
+        value = init_data.get("partUploadConcurrency", default)
         try:
             parsed = int(value)
         except (TypeError, ValueError):
-            parsed = 1
-        return max(1, min(parsed, total_parts, 64))
+            parsed = default
+        return max(1, min(parsed, total_parts, maximum))
 
     @staticmethod
     def _cancel_futures(futures):
@@ -709,6 +733,14 @@ class UploadWorker(QThread):
     def _stop_multipart_futures(self, futures, session, total_parts):
         self._cancel_futures(futures)
         self._abort_all_parts(session, total_parts)
+
+    def _wait_before_part_retry(self, label, part_num, attempt, error):
+        if attempt >= PART_UPLOAD_RETRIES or not self._is_retryable_upload_error(error):
+            raise error
+
+        delay = min(2 ** (attempt - 1), 10)
+        self.status.emit(f"[DEBUG] Retrying {label} part {part_num} after transient failure in {delay}s…")
+        time.sleep(delay)
 
     def _upload_part_relay(self, session, part_num, chunk):
         """Upload one part through the Mocha relay."""
@@ -725,134 +757,130 @@ class UploadWorker(QThread):
         self.status.emit(f"[DEBUG] Part upload URL: {part_url}")
         self.status.emit(f"[DEBUG] Params: {part_params}")
         self.status.emit(f"[DEBUG] Headers: {{'Authorization': '(hidden)'}}")
+        last_error = None
+        with requests.Session() as http:
+            for attempt in range(1, PART_UPLOAD_RETRIES + 1):
+                if self._cancel:
+                    return None
+                try:
+                    resp = http.put(
+                        part_url,
+                        headers=self._headers(),
+                        params=part_params,
+                        data=chunk,
+                        timeout=PART_UPLOAD_TIMEOUT,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    etag = data.get("etag") or resp.headers.get("ETag", "")
+                    if not etag:
+                        raise RuntimeError(f"No ETag returned for part {part_num}: {data}")
+                    return etag
+                except requests.HTTPError as e:
+                    self.status.emit(f"[DEBUG] HTTPError: {e}")
+                    self.status.emit(f"[DEBUG] Response status: {getattr(e.response, 'status_code', None)}")
+                    self.status.emit(f"[DEBUG] Response content: {getattr(e.response, 'text', None)}")
+                    last_error = e
+                except Exception as e:
+                    self.status.emit(f"[DEBUG] Exception: {e}")
+                    last_error = e
+
+                self._wait_before_part_retry("relay", part_num, attempt, last_error)
+
+        raise last_error
+
+    def _presign_part_url(self, session, part_num, http=None):
+        # Step 1: ask Mocha for a presigned URL for this part
+        presign_url     = f"{self.base_url}/api/files/multipart/presigned"
+        # Send the full session context from init so the backend signs the URL
+        # for the same object key and multipart upload session.
+        presign_payload = {**session, "partNumbers": [part_num]}
+        self.status.emit(f"[DEBUG] Presign URL: {presign_url}")
+        self.status.emit(f"[DEBUG] Presign payload: {presign_payload}")
+        request_client = http or requests
         try:
-            resp = requests.put(
-                part_url,
-                headers=self._headers(),
-                params=part_params,
-                data=chunk,
-                timeout=240,
+            presign_resp = request_client.post(
+                presign_url,
+                headers={**self._headers(), "Content-Type": "application/json"},
+                json=presign_payload,
+                timeout=30,
             )
-            resp.raise_for_status()
+            presign_resp.raise_for_status()
         except requests.HTTPError as e:
-            self.status.emit(f"[DEBUG] HTTPError: {e}")
+            self.status.emit(f"[DEBUG] HTTPError (presign): {e}")
             self.status.emit(f"[DEBUG] Response status: {getattr(e.response, 'status_code', None)}")
             self.status.emit(f"[DEBUG] Response content: {getattr(e.response, 'text', None)}")
             raise
         except Exception as e:
-            self.status.emit(f"[DEBUG] Exception: {e}")
+            self.status.emit(f"[DEBUG] Exception (presign): {e}")
             raise
-        data = resp.json()
-        etag = data.get("etag") or resp.headers.get("ETag", "")
-        if not etag:
-            raise RuntimeError(f"No ETag returned for part {part_num}: {data}")
-        return etag
+
+        presign_data = presign_resp.json()
+        signed_url = None
+        if "url" in presign_data:
+            signed_url = presign_data["url"]
+        elif "presignedUrl" in presign_data:
+            signed_url = presign_data["presignedUrl"]
+        elif "urls" in presign_data and isinstance(presign_data["urls"], list):
+            # Find the url for the current part_num
+            for entry in presign_data["urls"]:
+                if entry.get("partNumber") == part_num and "url" in entry:
+                    signed_url = entry["url"]
+                    break
+        if not signed_url:
+            raise RuntimeError(f"No presigned URL in response: {presign_data}")
+        return signed_url
+
+    @staticmethod
+    def _is_retryable_upload_error(error):
+        if isinstance(error, (requests.exceptions.SSLError, requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+            return True
+        if not isinstance(error, requests.HTTPError):
+            return False
+        response = error.response
+        status = getattr(response, "status_code", None)
+        content = getattr(response, "text", "") if response is not None else ""
+        retryable_codes = ("RequestTimeout", "SlowDown", "InternalError", "ServiceUnavailable")
+        return status in (408, 429, 500, 502, 503, 504) or any(code in content for code in retryable_codes)
 
     def _upload_part_s3(self, session, part_num, chunk):
-        """Upload one part directly to S3 via a presigned URL (strategy='s3').
-        A fresh presigned URL is fetched on every attempt so expired URLs from
-        a previous failed attempt never cause a spurious 403."""
-        chunk_size  = len(chunk)
-        max_retries = 10
-        last_exc    = None
-
-        for attempt in range(1, max_retries + 1):
-            if self._cancel:
-                return None
-
-            # ── Fetch a fresh presigned URL for this attempt ──────────────────
-            presign_url     = f"{self.base_url}/api/files/multipart/presigned"
-            presign_payload = {**session, "partNumbers": [part_num]}
-            self.status.emit(f"[DEBUG] Presign fetch attempt {attempt}/{max_retries} for part {part_num}")
-            self.status.emit(f"[DEBUG] Presign URL: {presign_url}")
-            self.status.emit(f"[DEBUG] Presign payload: {presign_payload}")
-            try:
-                presign_resp = requests.post(
-                    presign_url,
-                    headers={**self._headers(), "Content-Type": "application/json"},
-                    json=presign_payload,
-                    timeout=30,
-                )
-                presign_resp.raise_for_status()
-            except requests.HTTPError as e:
-                self.status.emit(f"[DEBUG] HTTPError (presign attempt {attempt}): {e}")
-                self.status.emit(f"[DEBUG] Response status: {getattr(e.response, 'status_code', None)}")
-                self.status.emit(f"[DEBUG] Response content: {getattr(e.response, 'text', None)}")
-                last_exc = e
-                if attempt < max_retries:
-                    wait = 2 ** attempt
-                    self.status.emit(f"[DEBUG] Retrying presign in {wait}s…")
-                    time.sleep(wait)
-                continue
-            except Exception as e:
-                self.status.emit(f"[DEBUG] Exception (presign attempt {attempt}): {e}")
-                last_exc = e
-                if attempt < max_retries:
-                    wait = 2 ** attempt
-                    self.status.emit(f"[DEBUG] Retrying presign in {wait}s…")
-                    time.sleep(wait)
-                continue
-
-            presign_data = presign_resp.json()
-            signed_url   = None
-            if "url" in presign_data:
-                signed_url = presign_data["url"]
-            elif "presignedUrl" in presign_data:
-                signed_url = presign_data["presignedUrl"]
-            elif "urls" in presign_data and isinstance(presign_data["urls"], list):
-                for entry in presign_data["urls"]:
-                    if entry.get("partNumber") == part_num and "url" in entry:
-                        signed_url = entry["url"]
-                        break
-            if not signed_url:
-                last_exc = RuntimeError(f"No presigned URL in response: {presign_data}")
-                self.status.emit(f"[DEBUG] {last_exc}")
-                if attempt < max_retries:
-                    wait = 2 ** attempt
-                    self.status.emit(f"[DEBUG] Retrying in {wait}s…")
-                    time.sleep(wait)
-                continue
-
-            # ── PUT the chunk directly to S3 ──────────────────────────────────
-            # Content-Length is required — S3 closes the connection with SSLEOFError
-            # if it's missing from a presigned PUT request.
-            self.status.emit(f"[DEBUG] S3 PUT part {part_num} attempt {attempt}/{max_retries}  ({chunk_size} bytes)")
-            try:
-                s3_resp = requests.put(
-                    signed_url,
-                    data=chunk,
-                    headers={"Content-Length": str(chunk_size)},
-                    timeout=(1000, 30000000),   # (connect timeout, read timeout)
-                )
-                s3_resp.raise_for_status()
-                etag = s3_resp.headers.get("ETag", "")
-                self.status.emit(f"[DEBUG] S3 PUT part {part_num} OK  ETag: {etag}")
-                return etag
-            except requests.HTTPError as e:
-                content = getattr(e.response, "text", "")
-                self.status.emit(f"[DEBUG] HTTPError (S3 PUT attempt {attempt}): {e}")
-                self.status.emit(f"[DEBUG] Response status: {getattr(e.response, 'status_code', None)}")
-                self.status.emit(f"[DEBUG] Response content: {content}")
-                if e.response is not None and "NoSuchUpload" in content:
-                    self._abort(session)
-                    self.error.emit(
-                        "S3 upload session expired or invalid (NoSuchUpload). "
-                        "Please retry the upload."
-                    )
+        """Upload one part directly to S3 via a presigned URL (strategy='s3')."""
+        last_error = None
+        with requests.Session() as http:
+            for attempt in range(1, PART_UPLOAD_RETRIES + 1):
+                if self._cancel:
                     return None
-                # Other HTTP errors (e.g. 403 expired URL) — retry with fresh URL
-                last_exc = e
-            except Exception as e:
-                last_exc = e
-                self.status.emit(f"[DEBUG] Exception (S3 PUT attempt {attempt}): {e}")
+                try:
+                    signed_url = self._presign_part_url(session, part_num, http)
+                    self.status.emit(f"[DEBUG] Uploading part {part_num} directly to S3 (attempt {attempt}/{PART_UPLOAD_RETRIES})…")
+                    # Step 2: PUT the chunk directly to S3 (no auth header — the URL is pre-signed)
+                    s3_resp = http.put(
+                        signed_url,
+                        data=chunk,
+                        timeout=PART_UPLOAD_TIMEOUT,
+                    )
+                    s3_resp.raise_for_status()
+                    etag = s3_resp.headers.get("ETag", "")
+                    if not etag:
+                        raise RuntimeError(f"No ETag returned for S3 part {part_num}")
+                    return etag
+                except requests.HTTPError as e:
+                    content = getattr(e.response, 'text', '')
+                    self.status.emit(f"[DEBUG] HTTPError (S3 PUT): {e}")
+                    self.status.emit(f"[DEBUG] Response status: {getattr(e.response, 'status_code', None)}")
+                    self.status.emit(f"[DEBUG] Response content: {content}")
+                    if e.response is not None and 'NoSuchUpload' in content:
+                        self._abort(session)
+                        self.error.emit("S3 upload session expired or invalid (NoSuchUpload). Please retry the upload.")
+                        return None
+                    last_error = e
+                except Exception as e:
+                    self.status.emit(f"[DEBUG] Exception (S3 PUT): {e}")
+                    last_error = e
 
-            if attempt < max_retries:
-                wait = 2 ** attempt   # 2 s, 4 s
-                self.status.emit(f"[DEBUG] Retrying part {part_num} in {wait}s with fresh presigned URL…")
-                time.sleep(wait)
+                self._wait_before_part_retry("S3", part_num, attempt, last_error)
 
-        self.status.emit(f"[DEBUG] S3 PUT part {part_num} failed after {max_retries} attempts: {last_exc}")
-        raise last_exc
+        raise last_error
 
     def _abort(self, session, part_numbers=None):
         try:
@@ -863,11 +891,11 @@ class UploadWorker(QThread):
                 f"{self.base_url}/api/files/multipart/abort",
                 headers={**self._headers(), "Content-Type": "application/json"},
                 json=payload,
-                timeout=30,
+                timeout=15,
             )
         except Exception:
             pass
-        self.status.emit("[DEBUG] Upload aborted.")
+        self.status.emit("Upload aborted.")
 
     def _ensure_folder(self, path):
         """Create a folder and all missing parents via POST /api/files/folders.
@@ -882,7 +910,7 @@ class UploadWorker(QThread):
                     f"{self.base_url}/api/files/folders",
                     headers={**self._headers(), "Content-Type": "application/json"},
                     json={"path": parent, "name": name},
-                    timeout=30,
+                    timeout=15,
                 )
                 if resp.status_code == 409:
                     self.status.emit(f"[DEBUG] Folder already exists: {parent}/{name}")
@@ -2604,22 +2632,10 @@ class MochaTools(QMainWindow):
         if not debug_enabled:
             return
         try:
-            import datetime
-            # Use the directory of the running script/executable so the log
-            # always appears in the same place regardless of cwd.
-            if getattr(sys, "frozen", False):
-                # PyInstaller bundle — executable path
-                base_dir = os.path.dirname(sys.executable)
-            else:
-                base_dir = os.path.dirname(os.path.abspath(__file__))
-            log_path = os.path.join(base_dir, "mochatools.log")
-            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"[{ts}] {msg}\n")
-                f.flush()
-        except Exception as exc:
-            # Show the write failure in the UI so it's not silently swallowed
-            self.log_label.setText(f"[LOG ERROR] {exc}")
+            with open("mochatools.log", "a", encoding="utf-8") as f:
+                f.write(msg + "\n")
+        except Exception:
+            pass
 
     def _badge(self, text, color):
         self.status_badge.setText(f"● {text}")
