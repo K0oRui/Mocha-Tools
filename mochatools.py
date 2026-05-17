@@ -39,13 +39,13 @@ from PyQt6.QtGui import (
 
 # ── Constants ────────────────────────────────────────────────────────────────
 CHUNK_THRESHOLD = 50 * 1024 * 1024   # 50 MB  → use multipart above this (API direct upload limit)
-CHUNK_SIZE      = 50 * 1024 * 1024   # 50 MB chunks (API max per chunk is 200 MB)
-PART_UPLOAD_RETRIES = 5
-PART_UPLOAD_TIMEOUT = (30, 900)
-S3_DEFAULT_CONCURRENCY = 4
-S3_MAX_CONCURRENCY = 8
-RELAY_DEFAULT_CONCURRENCY = 2
-RELAY_MAX_CONCURRENCY = 4
+CHUNK_SIZE      = 50 * 1024 * 1024   # 50 MB chunks x 5 = 250 MB in flight at once for multipart uploads
+PART_UPLOAD_RETRIES = 10
+PART_UPLOAD_TIMEOUT = 3600          # 60 min — matches presigned URL TTL
+S3_DEFAULT_CONCURRENCY = 2
+S3_MAX_CONCURRENCY = 2
+RELAY_DEFAULT_CONCURRENCY = 1
+RELAY_MAX_CONCURRENCY = 1
 APP_NAME        = "MochaTools"
 ORG_NAME        = "Mocha"
 HARDCODED_BASE_URL = "https://mocha.my"
@@ -375,6 +375,59 @@ QPushButton#tb_btn_danger:hover { background: #2a1a1a; border-color: #f8717155; 
 QPushButton#tb_btn_danger:disabled { color: #404449; border-color: #1e2024; }
 """
 
+
+# ── Progress Tracker ─────────────────────────────────────────────────────────
+class ProgressTracker:
+    """Thread-safe byte counter shared across all parallel upload workers.
+
+    Each worker calls feed(n) as bytes leave the socket. The tracker
+    accumulates totals and fires progress/speed callbacks at most once
+    every EMIT_INTERVAL seconds so the UI isn't flooded.
+    """
+    EMIT_INTERVAL = 0.25   # seconds between UI updates
+
+    def __init__(self, total_bytes, on_progress, on_speed):
+        self._total     = total_bytes
+        self._sent      = 0             # bytes confirmed sent
+        self._lock      = threading.Lock()
+        self._start     = time.monotonic()
+        self._last_emit = 0.0
+        self._on_prog   = on_progress   # callable(int pct)
+        self._on_speed  = on_speed      # callable(float bps)
+
+    def feed(self, n_bytes):
+        """Called by upload threads as bytes leave the socket."""
+        with self._lock:
+            self._sent += n_bytes
+            now     = time.monotonic()
+            elapsed = max(now - self._start, 0.001)
+            if now - self._last_emit >= self.EMIT_INTERVAL:
+                self._last_emit = now
+                pct = min(int(self._sent / self._total * 100), 99)
+                bps = self._sent / elapsed
+                self._on_prog(pct)
+                self._on_speed(bps)
+
+    def finish(self):
+        """Call once when all parts are done to snap to 100%."""
+        with self._lock:
+            elapsed = max(time.monotonic() - self._start, 0.001)
+            bps     = self._sent / elapsed
+        self._on_prog(100)
+        self._on_speed(bps)
+
+    def make_streaming_body(self, chunk: bytes, read_size: int = 65536):
+        """Return a generator that yields chunk in slices and calls feed()."""
+        offset = 0
+        length = len(chunk)
+        while offset < length:
+            end   = min(offset + read_size, length)
+            piece = chunk[offset:end]
+            yield piece
+            self.feed(len(piece))
+            offset = end
+
+
 # ── Upload Worker ────────────────────────────────────────────────────────────
 class UploadWorker(QThread):
     progress    = pyqtSignal(int)          # 0-100
@@ -427,7 +480,7 @@ class UploadWorker(QThread):
         for d in dest_dirs:
             if d == "/":
                 continue
-            self.status.emit(f"Creating folder: {d}")
+            self.status.emit(f"[DEBUG] Creating folder: {d}")
             try:
                 self._ensure_folder(d)
             except Exception as e:
@@ -548,7 +601,7 @@ class UploadWorker(QThread):
             self.status.emit(f"[DEBUG] Response body: {resp.text[:500]}")
             resp.raise_for_status()
         except UploadCancelled:
-            self.status.emit("Cancelled.")
+            self.status.emit("[DEBUG] Cancelled.")
             return None
         except requests.HTTPError as e:
             self.status.emit(f"[DEBUG] HTTPError: {e}")
@@ -564,7 +617,7 @@ class UploadWorker(QThread):
         j       = resp.json()
         file_id = j.get("fileId") or j.get("id") or j.get("file", {}).get("id")
         self.status.emit(f"[DEBUG] Parsed file ID: {file_id}  full JSON: {j}")
-        self.status.emit(f"Upload complete. File ID: {file_id}")
+        self.status.emit(f"[DEBUG] Upload complete. File ID: {file_id}")
         self.progress.emit(100)
         return file_id
 
@@ -631,7 +684,10 @@ class UploadWorker(QThread):
             "mimeType": mime_type,
         }
 
-        # Use our fixed CHUNK_SIZE (50 MB) rather than the server's partSizeBytes
+        # Use CHUNK_SIZE (10 MB) with 5 parallel workers so 50 MB is in flight
+        # at once — same throughput as a single 50 MB chunk but with smaller
+        # per-part SSL connections that the storage node handles reliably.
+        # partSizeBytes from the server is the *maximum* allowed, not a requirement.
         # (which can be up to 200 MB).  Smaller chunks are more reliable and
         # keep presigned URLs fresh within their 1-hour TTL.
         # partSizeBytes is the *maximum* allowed, not a requirement.
@@ -639,18 +695,28 @@ class UploadWorker(QThread):
         total_parts = math.ceil(file_size / chunk_size)
         mode = "direct S3" if strategy == "s3" and direct else "server relay"
         concurrency = self._multipart_concurrency(init_data, total_parts, mode)
-        self.status.emit(f"Multipart upload: {total_parts} parts… (strategy={strategy}, mode={mode}, partSize={self._fmt_size(chunk_size)}, concurrency={concurrency})")
-        self.status.emit(f"Session: {upload_id}")
+        self.status.emit(f"[DEBUG] Multipart upload: {total_parts} parts… (strategy={strategy}, mode={mode}, partSize={self._fmt_size(chunk_size)}, concurrency={concurrency})")
+        self.status.emit(f"[DEBUG] Session: {upload_id}")
 
-        parts    = []
-        uploaded = 0
-        start    = time.time()
+        # Shared progress tracker — fires UI updates as bytes leave the socket
+        # across all parallel part workers rather than only on part completion.
+        tracker = ProgressTracker(
+            file_size,
+            on_progress=lambda pct: self.progress.emit(pct),
+            on_speed=lambda bps: self.speed.emit(bps),
+        )
+
+        parts = []
+        active_parts: set[int] = set()
+        active_lock  = threading.Lock()
 
         # Each worker opens its own file handle and seeks to its part offset.
         # Sharing one file object across parallel uploads would race the read
         # position and corrupt the parts.
         def upload_part(part_num):
-            offset = (part_num - 1) * chunk_size
+            with active_lock:
+                active_parts.add(part_num)
+            offset    = (part_num - 1) * chunk_size
             read_size = min(chunk_size, file_size - offset)
             if self._cancel:
                 return None
@@ -659,12 +725,11 @@ class UploadWorker(QThread):
                 chunk = part_file.read(read_size)
             if self._cancel:
                 return None
-            self.status.emit(f"Uploading part {part_num}/{total_parts}…")
-            self.status.emit(f"[DEBUG] Chunk size: {len(chunk)} bytes")
+            self.status.emit(f"[DEBUG] Chunk size for part {part_num}: {len(chunk)} bytes")
             if strategy == "s3" and direct:
-                etag = self._upload_part_s3(session, part_num, chunk)
+                etag = self._upload_part_s3(session, part_num, chunk, tracker)
             else:
-                etag = self._upload_part_relay(session, part_num, chunk)
+                etag = self._upload_part_relay(session, part_num, chunk, tracker)
             return {"partNumber": part_num, "etag": etag, "size": len(chunk)}
 
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
@@ -672,6 +737,13 @@ class UploadWorker(QThread):
                 executor.submit(upload_part, part_num): part_num
                 for part_num in range(1, total_parts + 1)
             }
+            # Give workers a moment to register then emit the initial in-flight set
+            time.sleep(0.05)
+            with active_lock:
+                current = sorted(active_parts)
+            if current:
+                parts_str = " & ".join(f"part {p}" for p in current)
+                self.status.emit(f"[DEBUG] Uploading {parts_str} out of {total_parts} total…")
             for future in as_completed(futures):
                 if self._cancel:
                     self._stop_multipart_futures(futures, session, total_parts)
@@ -691,11 +763,10 @@ class UploadWorker(QThread):
                     return None
 
                 parts.append({"partNumber": result["partNumber"], "etag": result["etag"]})
+                done = len(parts)
 
-                uploaded += result["size"]
-                elapsed   = max(time.time() - start, 0.001)
-                self.progress.emit(int(uploaded / file_size * 100))
-                self.speed.emit(uploaded / elapsed)
+                with active_lock:
+                    active_parts.discard(result["partNumber"])
 
         # 3. Complete
         comp_resp = requests.post(
@@ -707,8 +778,8 @@ class UploadWorker(QThread):
         comp_resp.raise_for_status()
         j       = comp_resp.json()
         file_id = j.get("fileId") or j.get("id") or (j.get("file") or {}).get("id")
-        self.status.emit(f"Multipart complete. File ID: {file_id}")
-        self.progress.emit(100)
+        self.status.emit(f"[DEBUG] Multipart complete. File ID: {file_id}")
+        tracker.finish()
         return file_id
 
     @staticmethod
@@ -742,7 +813,7 @@ class UploadWorker(QThread):
         self.status.emit(f"[DEBUG] Retrying {label} part {part_num} after transient failure in {delay}s…")
         time.sleep(delay)
 
-    def _upload_part_relay(self, session, part_num, chunk):
+    def _upload_part_relay(self, session, part_num, chunk, tracker: "ProgressTracker"):
         """Upload one part through the Mocha relay."""
         part_url    = f"{self.base_url}/api/files/multipart/part"
         part_params = {
@@ -767,7 +838,7 @@ class UploadWorker(QThread):
                         part_url,
                         headers=self._headers(),
                         params=part_params,
-                        data=chunk,
+                        data=tracker.make_streaming_body(chunk),
                         timeout=PART_UPLOAD_TIMEOUT,
                     )
                     resp.raise_for_status()
@@ -843,7 +914,7 @@ class UploadWorker(QThread):
         retryable_codes = ("RequestTimeout", "SlowDown", "InternalError", "ServiceUnavailable")
         return status in (408, 429, 500, 502, 503, 504) or any(code in content for code in retryable_codes)
 
-    def _upload_part_s3(self, session, part_num, chunk):
+    def _upload_part_s3(self, session, part_num, chunk, tracker: "ProgressTracker"):
         """Upload one part directly to S3 via a presigned URL (strategy='s3')."""
         last_error = None
         with requests.Session() as http:
@@ -852,11 +923,10 @@ class UploadWorker(QThread):
                     return None
                 try:
                     signed_url = self._presign_part_url(session, part_num, http)
-                    self.status.emit(f"[DEBUG] Uploading part {part_num} directly to S3 (attempt {attempt}/{PART_UPLOAD_RETRIES})…")
                     # Step 2: PUT the chunk directly to S3 (no auth header — the URL is pre-signed)
                     s3_resp = http.put(
                         signed_url,
-                        data=chunk,
+                        data=tracker.make_streaming_body(chunk),
                         timeout=PART_UPLOAD_TIMEOUT,
                     )
                     s3_resp.raise_for_status()
@@ -895,7 +965,7 @@ class UploadWorker(QThread):
             )
         except Exception:
             pass
-        self.status.emit("Upload aborted.")
+        self.status.emit("[DEBUG] Upload aborted.")
 
     def _ensure_folder(self, path):
         """Create a folder and all missing parents via POST /api/files/folders.
@@ -1203,9 +1273,12 @@ class FolderBrowserDialog(QDialog):
         for entry in (folder_entries or []):
             # API may return folders as strings (paths) or as dicts
             if isinstance(entry, str):
-                # entry is the full path e.g. "/Music/Albums"
-                name     = entry.rstrip("/").split("/")[-1]
-                fullpath = entry
+                name = entry.rstrip("/").split("/")[-1]
+                # API returns bare names, not full paths; build the full path ourselves.
+                if entry.startswith("/"):
+                    fullpath = entry  # already absolute
+                else:
+                    fullpath = (path.rstrip("/") + "/" + name) if path != "/" else ("/" + name)
             elif isinstance(entry, dict):
                 name = (
                     entry.get("name")
@@ -1361,15 +1434,22 @@ class FilesWorker(QThread):
         self.done.emit({"op": "delete_folder", "path": full_path})
 
     def _move(self):
-        file_id  = self.kwargs.get("file_id")
-        new_path = self.kwargs["new_path"]
-        # API expects toPath to be the destination directory with a trailing slash
-        to_path = new_path if new_path.endswith("/") else new_path.rstrip("/") + "/"
-        payload  = {"toPath": to_path}
-        if file_id:
-            payload["fileId"] = file_id
+        file_id     = self.kwargs.get("file_id")
+        is_folder   = self.kwargs.get("is_folder", False)
+        new_path    = self.kwargs["new_path"]
+        to_path     = new_path if new_path.endswith("/") else new_path.rstrip("/") + "/"
+        if is_folder:
+            # Folder move: {"folderPath": "/from/folder/", "toPath": "/to/"}
+            payload = {
+                "folderPath": self.kwargs.get("source_path", ""),
+                "toPath": to_path,
+            }
+        elif file_id:
+            # File move by ID (preferred): {"fileId": "...", "toPath": "/dest/"}
+            payload = {"fileId": file_id, "toPath": to_path}
         else:
-            payload["sourcePath"] = self.kwargs.get("source_path", "")
+            # File move by path fallback
+            payload = {"sourcePath": self.kwargs.get("source_path", ""), "toPath": to_path}
         resp = requests.post(
             f"{self.base_url}/api/files/move",
             headers=self._h(),
@@ -1694,8 +1774,12 @@ class FilesBrowserTab(QWidget):
         # ── Folders ──
         for entry in raw_folders:
             if isinstance(entry, str):
-                name     = entry.rstrip("/").split("/")[-1]
-                fullpath = entry
+                name = entry.rstrip("/").split("/")[-1]
+                # API returns bare names with no parent path; build the full path ourselves.
+                if entry.startswith("/"):
+                    fullpath = entry  # already absolute
+                else:
+                    fullpath = (path.rstrip("/") + "/" + name) if path != "/" else ("/" + name)
                 print(f"[DEBUG]   String folder entry: {entry!r} -> fullpath={fullpath!r}")
                 folders.append({"name": name, "path": fullpath})
             elif isinstance(entry, dict):
@@ -1825,9 +1909,10 @@ class FilesBrowserTab(QWidget):
     def _on_selection_changed(self):
         items = self._selected_items()
         has   = len(items) > 0
-        single_file = (len(items) == 1 and
-                       items[0].data(0, Qt.ItemDataRole.UserRole).get("_type") == "file")
-        self.move_btn.setEnabled(single_file)
+        single      = len(items) == 1
+        single_file = single and items[0].data(0, Qt.ItemDataRole.UserRole).get("_type") == "file"
+        single_item = single  # files or folders can be moved
+        self.move_btn.setEnabled(single_item)
         self.share_btn.setEnabled(single_file)
         self.delete_btn.setEnabled(has)
 
@@ -1883,10 +1968,13 @@ class FilesBrowserTab(QWidget):
         items = self._selected_items()
         if len(items) != 1:
             return
-        meta  = items[0].data(0, Qt.ItemDataRole.UserRole) or {}
-        fid   = meta.get("id") or meta.get("fileId") or ""
-        src   = meta.get("path") or meta.get("name") or ""
-        name  = meta.get("name") or src.rstrip("/").split("/")[-1]
+        meta      = items[0].data(0, Qt.ItemDataRole.UserRole) or {}
+        is_folder = meta.get("_type") == "folder"
+        fid       = meta.get("id") or meta.get("fileId") or ""
+        src       = meta.get("path") or meta.get("name") or ""
+        # Folder source path must have trailing slash for the API
+        if is_folder and src and not src.endswith("/"):
+            src = src + "/"
 
         dlg = FolderBrowserDialog(self.get_api_key(), self.base_url,
                                   self.current_path, parent=self)
@@ -1895,7 +1983,8 @@ class FilesBrowserTab(QWidget):
             return
         dest_folder = dlg.selected.rstrip("/") + "/"
         self._status(f"Moving to {dest_folder}…")
-        self._run_worker("move", file_id=fid, source_path=src, new_path=dest_folder)
+        self._run_worker("move", file_id=fid, source_path=src,
+                         new_path=dest_folder, is_folder=is_folder)
 
     def _share_selected(self):
         items = self._selected_items()
@@ -1933,6 +2022,37 @@ class FilesBrowserTab(QWidget):
         self._status(f"Creating share for {name!r}…")
         self._run_worker("share", file_id=fid, expiry=expiry)
 
+    def _download_selected(self):
+        items = self._selected_items()
+        if len(items) != 1:
+            return
+        meta = items[0].data(0, Qt.ItemDataRole.UserRole) or {}
+        fid  = meta.get("id") or meta.get("fileId") or ""
+        if not fid:
+            QMessageBox.warning(self, "Download", "Cannot determine file ID.")
+            return
+        # Fetch a presigned URL server-side (auth header sent here),
+        # then open it in the browser — no API key needed in the browser.
+        api_key = self.get_api_key()
+        try:
+            resp = requests.get(
+                f"{self.base_url}/api/files/presigned",
+                headers={"Authorization": f"Bearer {api_key}"},
+                params={"fileId": fid},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            url  = data.get("url") or data.get("presignedUrl") or data.get("downloadUrl") or ""
+            if not url:
+                QMessageBox.warning(self, "Download", f"No download URL returned: {data}")
+                return
+        except Exception as e:
+            QMessageBox.warning(self, "Download", f"Failed to get download URL: {e}")
+            return
+        import webbrowser
+        webbrowser.open(url)
+
     def _context_menu(self, pos):
         item = self.tree.itemAt(pos)
         if not item:
@@ -1950,8 +2070,9 @@ class FilesBrowserTab(QWidget):
         """)
 
         if meta.get("_type") == "file":
-            menu.addAction("⤴  Share",  self._share_selected)
-            menu.addAction("↦  Move",   self._move_selected)
+            menu.addAction("⬇  Download", self._download_selected)
+            menu.addAction("⤴  Share",    self._share_selected)
+        menu.addAction("↦  Move", self._move_selected)
         menu.addSeparator()
         menu.addAction("✕  Delete", self._delete_selected)
         menu.exec(self.tree.viewport().mapToGlobal(pos))
@@ -2138,7 +2259,7 @@ class SharesTab(QWidget):
                     f"{self.base_url}/api/shares/{token}",
                     headers={"Authorization": f"Bearer {api_key}",
                              "Content-Type": "application/json"},
-                    json={"is_active": new_active},
+                    json={"isActive": new_active},
                     timeout=15,
                 )
                 resp.raise_for_status()
@@ -2503,9 +2624,9 @@ class MochaTools(QMainWindow):
         self.selected_files = file_list
         self.selected_root  = root
         if len(file_list) == 1:
-            self._log(f"Selected: {os.path.basename(file_list[0])}")
+            self._log(f"[DEBUG] Selected: {os.path.basename(file_list[0])}")
         else:
-            self._log(f"Selected folder: {len(file_list)} files")
+            self._log(f"[DEBUG] Selected folder: {len(file_list)} files")
         self.share_result.hide()
 
     # ── Settings ──────────────────────────────────────────────────────────────

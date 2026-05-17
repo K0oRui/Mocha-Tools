@@ -4,8 +4,9 @@ on:
   push:
     branches: [ "master" ]
     paths:
-        - "mochatools.py"
-        - "requirements.txt"
+      - "mochatools.py"
+      - "requirements.txt"
+      - "builditems/debian_ubuntu/VERSION"
 
 jobs:
   build:
@@ -19,6 +20,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Linux-only version loading
+      - name: Read version file (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        id: version
+        run: echo "VERSION=$(cat builditems/debian_ubuntu/VERSION)" >> $GITHUB_ENV
+
+      - name: Show version (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: echo "Building Linux version $VERSION"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -31,15 +42,46 @@ jobs:
         shell: bash
         run: |
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            pyinstaller --onefile --noconsole --icon=icon.ico mochatools.py
+            pyinstaller --onefile --noconsole \
+              --version-file ./builditems/windows/version.txt \
+              --icon=./builditems/windows/icon.ico \
+              mochatools.py
+
           elif [[ "$RUNNER_OS" == "macOS" ]]; then
-            pyinstaller --onefile --noconsole --windowed --icon=icon.icns mochatools.py
+            pyinstaller --noconsole --windowed \
+              --name "Mocha Tools" \
+              --osx-bundle-identifier com.nxllxvxxd2.mochatools \
+              --plist=./builditems/macos/Info.plist \
+              mochatools.py
+
           else
-            pyinstaller --onefile --noconsole --icon=icon.png mochatools.py
+            pyinstaller --onefile --noconsole \
+              --icon=./builditems/debian_ubuntu/icon.png \
+              mochatools.py
           fi
+
+      - name: Build .deb package (Ubuntu only)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev build-essential
+          sudo gem install --no-document fpm
+
+          mkdir -p deb_build/usr/bin
+          cp dist/mochatools deb_build/usr/bin/mochatools
+          chmod 755 deb_build/usr/bin/mochatools
+
+          fpm -s dir -t deb \
+            -n mocha-tools \
+            -v $VERSION \
+            --description "Mocha Tools" \
+            deb_build/=/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.os }}-build
-          path: dist/
+          name: ${{ matrix.os }}-build${{ env.VERSION && format('-v{0}', env.VERSION) }}
+          path: |
+            dist/
+            *.deb
