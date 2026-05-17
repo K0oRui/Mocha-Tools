@@ -7,6 +7,7 @@ on:
       - "mochatools.py"
       - "requirements.txt"
       - "builditems/debian_ubuntu/VERSION"
+      - ".github/workflows/build.yml"
 
 jobs:
   build:
@@ -20,7 +21,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Linux-only version loading
+      # Cache pip packages to prevent timeouts
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # Read version file only for Linux builds
       - name: Read version file (Linux only)
         if: matrix.os == 'ubuntu-latest'
         id: version
@@ -51,8 +61,10 @@ jobs:
             pyinstaller --noconsole --windowed \
               --name "Mocha Tools" \
               --osx-bundle-identifier com.nxllxvxxd2.mochatools \
-              --plist=./builditems/macos/Info.plist \
               mochatools.py
+
+            # Copy Info.plist manually after build
+            cp ./builditems/macos/Info.plist "dist/Mocha Tools.app/Contents/Info.plist"
 
           else
             pyinstaller --onefile --noconsole \
@@ -75,7 +87,7 @@ jobs:
           fpm -s dir -t deb \
             -n mocha-tools \
             -v $VERSION \
-            --description "Mocha Tools" \
+            --description "Mocha Tools Utility" \
             deb_build/=/
 
       - name: Upload artifact
