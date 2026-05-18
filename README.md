@@ -1,19 +1,7 @@
-
-
-```
- ███▄ ▄███▓ ▒█████   ▄████▄   ██░ ██  ▄▄▄         ▄▄▄█████▓ ▒█████   ▒█████   ██▓      ██████ 
-▓██▒▀█▀ ██▒▒██▒  ██▒▒██▀ ▀█  ▓██░ ██▒▒████▄       ▓  ██▒ ▓▒▒██▒  ██▒▒██▒  ██▒▓██▒    ▒██    ▒ 
-▓██    ▓██░▒██░  ██▒▒▓█    ▄ ▒██▀▀██░▒██  ▀█▄     ▒ ▓██░ ▒░▒██░  ██▒▒██░  ██▒▒██░    ░ ▓██▄   
-▒██    ▒██ ▒██   ██░▒▓▓▄ ▄██▒░▓█ ░██ ░██▄▄▄▄██    ░ ▓██▓ ░ ▒██   ██░▒██   ██░▒██░      ▒   ██▒
-▒██▒   ░██▒░ ████▓▒░▒ ▓███▀ ░░▓█▒░██▓ ▓█   ▓██▒     ▒██▒ ░ ░ ████▓▒░░ ████▓▒░░██████▒▒██████▒▒
-░ ▒░   ░  ░░ ▒░▒░▒░ ░ ░▒ ▒  ░ ▒ ░░▒░▒ ▒▒   ▓▒█░     ▒ ░░   ░ ▒░▒░▒░ ░ ▒░▒░▒░ ░ ▒░▓  ░▒ ▒▓▒ ▒ ░
-░  ░      ░  ░ ▒ ▒░   ░  ▒    ▒ ░▒░ ░  ▒   ▒▒ ░       ░      ░ ▒ ▒░   ░ ▒ ▒░ ░ ░ ▒  ░░ ░▒  ░ ░
-░      ░   ░ ░ ░ ▒  ░         ░  ░░ ░  ░   ▒        ░      ░ ░ ░ ▒  ░ ░ ░ ▒    ░ ░   ░  ░  ░  
-       ░       ░ ░  ░ ░       ░  ░  ░      ░  ░                ░ ░      ░ ░      ░  ░      ░  
-                    ░                                                                         
-                                                                                                
-```
-<img width="390" height="360" alt="Mocha_Tools_rLvw7zWZkd" src="https://github.com/user-attachments/assets/44b680c4-390f-44bd-83d6-a81bfca94731" />
+<img src=".github/resources/bannertest.png" alt="Mocha Tools banner" width="720">
+<p align="center">
+  <img src=".github/resources/screenshot.png" alt="Mocha Tools main window" width="720">
+</p>
 
 ## HUGE THANKS TO [BINK-LAB](https://github.com/Bink-lab) FOR MOCHA, ACCESS TO IT AND THE API, AS WELL AS CONTRIBUTIONS
 
@@ -38,6 +26,15 @@
 - Create share links with all options from within the program
 - Ability to view files and folders (note issues listed above)
 - Togglable debug mode for easier troubleshooting
+
+## Preview
+| Drag and drop uploads | Remote ingest |
+| :----: | :----: |
+| <img src=".github/resources/dragdrop.gif" alt="Uploading files with drag and drop" width="420"> | <img src=".github/resources/remoteingest.gif" alt="Starting a remote ingest job" width="420"> |
+
+| Share creation | Share management |
+| :----: | :----: |
+| <img src=".github/resources/sharecreation.gif" alt="Creating a Mocha share link" width="420"> | <img src=".github/resources/sharetab.gif" alt="Managing shares in Mocha Tools" width="420"> |
 
 ## Potential? Ideas
 | Idea | Complete? |
