@@ -39,11 +39,13 @@
 
 ## Features
 - Uploads files to Mocha with a simple drag and drop interface, or selection through file manager.
-- Folder upload support (note issues listed above)
+- Folder upload support
 - Upload speed and progress indicators
 - Create share links with all options from within the program
-- Ability to view files and folders (note issues listed above)
+- Ability to view files and folders
 - Togglable debug mode for easier troubleshooting
+- Share management, including viewing shares, toggling active or inactive, and deleting shares
+- Remote ingest support
 
 ![Divider](https://capsule-render.vercel.app/api?type=rect&color=ff0000&height=3)
 
