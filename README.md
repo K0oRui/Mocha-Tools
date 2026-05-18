@@ -1,16 +1,16 @@
 <img src=".github/resources/banner.png" alt="Mocha Tools banner" width="900">
 
-[![Typing SVG](https://readme-typing-svg.demolab.com?font=Fira+Code&pause=1000&color=FF0000&background=000000&width=800&lines=Cross+platform+uploader+for+Mocha;Written+in+Python;Designed+to+be+compiled+with+PyInstaller)](https://git.io/typing-svg)        
+[![Typing SVG](https://readme-typing-svg.demolab.com?font=Fira+Code&pause=1000&color=FF0000&background=000000&width=900&lines=Cross+platform+uploader+for+Mocha;Written+in+Python;Designed+to+be+compiled+with+PyInstaller)](https://git.io/typing-svg)        
 <p align="center">
   <img src=".github/resources/screenshot.png" alt="Mocha Tools main window" width="720">
 </p>
 
-![Activity Graph](https://github-readme-activity-graph.vercel.app/graph?username=nxllxvxxd2&bg_color=000000&color=ff0000&line=ff0000&point=ffffff&area=true&hide_border=true)
 
-![Status](https://img.shields.io/badge/STATUS-ACTIVE-red?style=for-the-badge&labelColor=000000&logo=github&logoColor=red)
+![Activity](https://github-readme-activity-graph.vercel.app/graph?username=nxllxvxxd2&repo=Mocha-Tools&bg_color=000000&color=ff0000&line=ff0000&point=ffffff&area=true&hide_border=true)![Status](https://img.shields.io/badge/STATUS-ACTIVE-red?style=for-the-badge&labelColor=000000&logo=github&logoColor=red)
 ![Last Commit](https://img.shields.io/github/last-commit/nxllxvxxd2/Mocha-Tools?style=for-the-badge&color=red&labelColor=000000&logo=github)
 ![Repo Size](https://img.shields.io/github/repo-size/nxllxvxxd2/Mocha-Tools?style=for-the-badge&color=red&labelColor=000000)
 ![License](https://img.shields.io/github/license/nxllxvxxd2/Mocha-Tools?style=for-the-badge&color=red&labelColor=000000)
+![Python](https://img.shields.io/badge/Python-3.10+-red?style=for-the-badge&labelColor=000000&logo=python&logoColor=ff0000)
 ![Divider](https://capsule-render.vercel.app/api?type=rect&color=ff0000&height=3)
 
 ## HUGE THANKS TO [BINK-LAB](https://github.com/Bink-lab) FOR MOCHA, ACCESS TO IT AND THE API, AS WELL AS CONTRIBUTIONS
