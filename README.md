@@ -13,6 +13,7 @@
                     ░                                                                         
                                                                                                 
 ```
+<img width="390" height="360" alt="Mocha_Tools_rLvw7zWZkd" src="https://github.com/user-attachments/assets/44b680c4-390f-44bd-83d6-a81bfca94731" />
 
 ## HUGE THANKS TO [BINK-LAB](https://github.com/Bink-lab) FOR MOCHA, ACCESS TO IT AND THE API, AS WELL AS CONTRIBUTIONS
 
