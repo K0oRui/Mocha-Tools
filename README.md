@@ -32,8 +32,8 @@
   <img src=".github/resources/sharecreation.gif" alt="Managing shares in Mocha Tools" width="420">
 </p>
 <p align="center"> 
-  <img src=".github/resources/remoteingest.gif" alt="Uploading files with drag and drop" width="350">
-  <img src=".github/resources/sharetab.gif" alt="Starting a remote ingest job" width="350">
+  <img src=".github/resources/remoteingest.gif" alt="Uploading files with drag and drop" width="400">
+  <img src=".github/resources/sharetab.gif" alt="Starting a remote ingest job" width="400">
 </p>
 <p align="center">
   <img src=".github/resources/dragdrop.gif" alt="Creating a Mocha share link" width="848">
