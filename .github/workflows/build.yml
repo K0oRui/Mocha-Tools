@@ -5,8 +5,12 @@ on:
     branches: [ "master" ]
     paths:
       - "mochatools.py"
+      - "mochatools_app/**"
       - "requirements.txt"
+      - "builditems/windows/**"
+      - "builditems/macos/**"
       - "builditems/debian_ubuntu/VERSION"
+      - "builditems/debian_ubuntu/icon.png"
       - ".github/workflows/build.yml"
 
 jobs:
@@ -46,13 +50,16 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
 
       - name: Build executable
         shell: bash
         run: |
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             pyinstaller --onefile --noconsole \
+              --collect-submodules mochatools_app \
               --version-file ./builditems/windows/version.txt \
               --icon=./builditems/windows/icon.ico \
               --name "Mocha Tools" \
@@ -60,7 +67,7 @@ jobs:
 
           elif [[ "$RUNNER_OS" == "macOS" ]]; then
             pyinstaller --noconsole --windowed \
-              --name "Mocha Tools" \
+              --collect-submodules mochatools_app \
               --osx-bundle-identifier com.nxllxvxxd2.mochatools \
               --name "Mocha Tools" \
               mochatools.py
@@ -70,6 +77,7 @@ jobs:
 
           else
             pyinstaller --onefile --noconsole \
+              --collect-submodules mochatools_app \
               --icon=./builditems/debian_ubuntu/icon.png \
               --name "Mocha Tools" \
               mochatools.py
@@ -84,7 +92,7 @@ jobs:
           sudo gem install --no-document fpm
 
           mkdir -p deb_build/usr/bin
-          cp dist/mochatools deb_build/usr/bin/mochatools
+          cp "dist/Mocha Tools" deb_build/usr/bin/mochatools
           chmod 755 deb_build/usr/bin/mochatools
 
           fpm -s dir -t deb \
@@ -96,7 +104,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.os }}-build${{ env.VERSION && format('-v{0}', env.VERSION) }}
+          name: ${{ matrix.os }}-build
           path: |
             dist/
             *.deb
