@@ -8,11 +8,16 @@
 ![Divider](https://capsule-render.vercel.app/api?type=rect&color=ff0000&height=3)
 
 ![Status](https://img.shields.io/badge/STATUS-ACTIVE-red?style=for-the-badge&labelColor=000000&logo=github&logoColor=red)
+
 ![Commits](https://img.shields.io/github/commit-activity/m/nxllxvxxd2/Mocha-Tools?style=for-the-badge&color=red&labelColor=000000&label=Commits+This+Month)
 ![Last Commit](https://img.shields.io/github/last-commit/nxllxvxxd2/Mocha-Tools?style=for-the-badge&color=red&labelColor=000000&logo=github)
+
 ![Repo Size](https://img.shields.io/github/repo-size/nxllxvxxd2/Mocha-Tools?style=for-the-badge&color=red&labelColor=000000)
+
 ![License](https://img.shields.io/github/license/nxllxvxxd2/Mocha-Tools?style=for-the-badge&color=red&labelColor=000000)
+
 ![Python](https://img.shields.io/badge/Python-3.10+-red?style=for-the-badge&labelColor=000000&logo=python&logoColor=ff0000)
+
 ![Contributors](https://contrib.rocks/image?repo=nxllxvxxd2/Mocha-Tools)
 
 ![Divider](https://capsule-render.vercel.app/api?type=rect&color=ff0000&height=3)
