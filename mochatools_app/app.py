@@ -41,7 +41,6 @@ from PyQt6.QtGui import (
 from .constants import (
     APP_NAME,
     CHUNK_SIZE,
-    CHUNK_THRESHOLD,
     DEFAULT_CHUNK_SIZE_MB,
     DEFAULT_MAX_CHUNKS,
     HARDCODED_BASE_URL,
