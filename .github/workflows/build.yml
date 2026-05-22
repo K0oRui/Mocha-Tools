@@ -4,14 +4,9 @@ on:
   push:
     branches: [ "master" ]
     paths:
-      - "mochatools.py"
-      - "mochatools_app/**"
-      - "requirements.txt"
       - "builditems/windows/**"
       - "builditems/macos/**"
-      - "builditems/debian_ubuntu/VERSION"
-      - "builditems/debian_ubuntu/icon.png"
-      - ".github/workflows/build.yml"
+      - "builditems/debian_ubuntu/**"
 
 jobs:
   build:
