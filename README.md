@@ -73,10 +73,10 @@
 | Complete control over files, deletion, moving, sharing, etc. | ✅ |
 | Debug and token management in its own tab | ✅ |
 | Add support for multiple files and folders at once | ❌ |
-| Configurable upload settings, such as chunk size and number of threads | ❌ |
+| Configurable upload settings, such as chunk size and number of threads | ✅ |
 
 ![Divider](https://capsule-render.vercel.app/api?type=rect&color=ff0000&height=3)
 
 |**CURRENT ISSUES**|
 | :---- |
-|<ul><li>Program is slow after canceling download</li><li>Under 50mb files are kinda buggy and drop resulting in EOF issues</li><li>100GB files not functioning (might be misreport will look into)</li><li>~~Selecting move folder doesn't select folder if inside~~</li><li>~~Upload speed and percent is buggy (especially on large files)~~</li><li>~~Unable to toggle share as active or inactive~~</li><li>~~Share link creation creates share but provides incorrect link~~</li><li>~~Folder upload just dumps all files in root without creating new folder~~</li><li>~~Original file names not being listed~~ Thank you [Bink-lab](https://github.com/Bink-lab)</li><li>~~Unable to move files~~</li><li>~~Unable to ~~create~~ or view shares~~</li><li>~~Large file upload is not working correctly~~ Thank you [Bink-lab](https://github.com/Bink-lab)</li><li>~~Uploading to specific existing folders is not functioning~~</li><li>~~Moving files or folders deeper than one folder does not function~~</li><li>~~Uploading deeper than one folder is not working~~</li></ul>|
+|<ul><li>~~Progress bar glitches after canceling upload~~</li><li>Under 50mb files are kinda buggy and drop resulting in EOF issues</li><li>100GB files not functioning (might be misreport will look into)</li><li>~~Selecting move folder doesn't select folder if inside~~</li><li>~~Upload speed and percent is buggy (especially on large files)~~</li><li>~~Unable to toggle share as active or inactive~~</li><li>~~Share link creation creates share but provides incorrect link~~</li><li>~~Folder upload just dumps all files in root without creating new folder~~</li><li>~~Original file names not being listed~~ Thank you [Bink-lab](https://github.com/Bink-lab)</li><li>~~Unable to move files~~</li><li>~~Unable to ~~create~~ or view shares~~</li><li>~~Large file upload is not working correctly~~ Thank you [Bink-lab](https://github.com/Bink-lab)</li><li>~~Uploading to specific existing folders is not functioning~~</li><li>~~Moving files or folders deeper than one folder does not function~~</li><li>~~Uploading deeper than one folder is not working~~</li></ul>|

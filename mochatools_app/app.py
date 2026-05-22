@@ -41,7 +41,8 @@ from PyQt6.QtGui import (
 from .constants import (
     APP_NAME,
     CHUNK_SIZE,
-    CHUNK_THRESHOLD,
+    DEFAULT_CHUNK_SIZE_MB,
+    DEFAULT_MAX_CHUNKS,
     HARDCODED_BASE_URL,
     ORG_NAME,
     PART_UPLOAD_RETRIES,
@@ -1358,6 +1359,56 @@ class MochaTools(QMainWindow):
         debug_lay.addWidget(debug_note)
 
         settings_lay.addWidget(debug_card)
+
+        # ── Multipart Upload ──────────────────────────────────────────────────
+        settings_lay.addWidget(self._make_section_header("Multipart Upload"))
+        chunk_card = self._make_card()
+        chunk_lay  = QVBoxLayout(chunk_card)
+        chunk_lay.setSpacing(10)
+
+        chunk_note = QLabel(
+            "Files larger than one chunk size are uploaded in multiple parts. "
+            "Larger chunks reduce overhead; more parallel chunks can increase throughput "
+            "on fast connections."
+        )
+        chunk_note.setObjectName("field_label")
+        chunk_note.setWordWrap(True)
+        chunk_lay.addWidget(chunk_note)
+
+        # Chunk size row
+        cs_row = QHBoxLayout()
+        cs_lbl = QLabel("Chunk size")
+        cs_lbl.setObjectName("field_label")
+        self.chunk_size_spin = QSpinBox()
+        self.chunk_size_spin.setRange(1, 100)
+        self.chunk_size_spin.setValue(DEFAULT_CHUNK_SIZE_MB)
+        self.chunk_size_spin.setSuffix(" MB")
+        self.chunk_size_spin.setToolTip(
+            "Size of each upload part (1–100 MB).\n"
+            "Files ≤ this size are uploaded in a single request.\n"
+            "Files larger than this are split into multiple parts."
+        )
+        cs_row.addWidget(cs_lbl)
+        cs_row.addWidget(self.chunk_size_spin, 1)
+        chunk_lay.addLayout(cs_row)
+
+        # Max concurrent chunks row
+        mc_row = QHBoxLayout()
+        mc_lbl = QLabel("Max parallel chunks")
+        mc_lbl.setObjectName("field_label")
+        self.max_chunks_spin = QSpinBox()
+        self.max_chunks_spin.setRange(1, 20)
+        self.max_chunks_spin.setValue(DEFAULT_MAX_CHUNKS)
+        self.max_chunks_spin.setSuffix(" chunks")
+        self.max_chunks_spin.setToolTip(
+            "Maximum number of upload parts sent in parallel (1–20).\n"
+            "Higher values improve throughput on fast connections but use more memory."
+        )
+        mc_row.addWidget(mc_lbl)
+        mc_row.addWidget(self.max_chunks_spin, 1)
+        chunk_lay.addLayout(mc_row)
+
+        settings_lay.addWidget(chunk_card)
         settings_lay.addStretch()
 
         self.tabs.addTab(upload_tab, "↑  Upload")
@@ -1571,10 +1622,18 @@ class MochaTools(QMainWindow):
         self.remember_cb.setChecked(remember)
         debug = self.settings.value("debug", False, type=bool)
         self.debug_cb.setChecked(debug)
+        self.chunk_size_spin.setValue(
+            self.settings.value("chunk_size_mb", DEFAULT_CHUNK_SIZE_MB, type=int)
+        )
+        self.max_chunks_spin.setValue(
+            self.settings.value("max_chunks", DEFAULT_MAX_CHUNKS, type=int)
+        )
 
     def _save_settings(self):
-        # Always persist debug toggle regardless of remember_cb
+        # Always persist debug toggle and chunk config regardless of remember_cb
         self.settings.setValue("debug", self.debug_cb.isChecked())
+        self.settings.setValue("chunk_size_mb", self.chunk_size_spin.value())
+        self.settings.setValue("max_chunks",    self.max_chunks_spin.value())
         if self.remember_cb.isChecked():
             self.settings.setValue("api_key",     self.api_key_edit.text())
             self.settings.setValue("upload_path", self.upload_path_edit.text())
@@ -1633,7 +1692,9 @@ class MochaTools(QMainWindow):
 
         self.worker = UploadWorker(
             api_key, base_url, file_pairs,
-            self.create_share_cb.isChecked(), expiry_hours, max_dl
+            self.create_share_cb.isChecked(), expiry_hours, max_dl,
+            chunk_size_mb=self.chunk_size_spin.value(),
+            max_chunks=self.max_chunks_spin.value(),
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.speed.connect(self._on_speed)
@@ -1645,8 +1706,22 @@ class MochaTools(QMainWindow):
     def _cancel_upload(self):
         if self.worker:
             self.worker.cancel()
+            # Disconnect live signals so in-flight thread callbacks don't
+            # update the UI after the user has already cancelled.
+            try:
+                self.worker.progress.disconnect()
+                self.worker.speed.disconnect()
+                self.worker.status.disconnect()
+                self.worker.finished.disconnect()
+                self.worker.error.disconnect()
+            except RuntimeError:
+                pass  # already disconnected
         self._set_uploading(False)
         self._badge("Cancelled", "#9ca3af")
+        self.progress_bar.setValue(0)
+        self.pct_label.setText("0%")
+        self.speed_label.setText("")
+        self.share_result.hide()
         self._log("Upload cancelled by user.")
 
     def _set_uploading(self, active):
@@ -1786,4 +1861,3 @@ if __name__ == "__main__":
 #   Expiration values are sent as expiresInHours.
 #   Max downloads = 0 means "Unlimited" (field omitted from request).
 # ═══════════════════════════════════════════════════════════════════════════
-

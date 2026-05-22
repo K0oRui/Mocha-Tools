@@ -9,7 +9,8 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from .constants import (
     CHUNK_SIZE,
-    CHUNK_THRESHOLD,
+    DEFAULT_CHUNK_SIZE_MB,
+    DEFAULT_MAX_CHUNKS,
     PART_UPLOAD_RETRIES,
     PART_UPLOAD_TIMEOUT,
     RELAY_DEFAULT_CONCURRENCY,
@@ -61,15 +62,31 @@ class ProgressTracker:
         self._on_speed(bps)
 
     def make_streaming_body(self, chunk: bytes, read_size: int = 65536):
-        """Return a generator that yields chunk in slices and calls feed()."""
-        offset = 0
-        length = len(chunk)
-        while offset < length:
-            end   = min(offset + read_size, length)
-            piece = chunk[offset:end]
-            yield piece
-            self.feed(len(piece))
-            offset = end
+        class ChunkStream:
+            def __init__(self, chunk_bytes: bytes, tracker, block_size: int):
+                self.chunk = chunk_bytes
+                self.tracker = tracker
+                self.block_size = block_size
+                self.offset = 0
+                self.length = len(chunk_bytes)
+                self.len = self.length
+
+            def read(self, size=-1):
+                if self.offset >= self.length:
+                    return b""
+                if size is None or size < 0:
+                    size = self.block_size
+                end = min(self.offset + size, self.length)
+                piece = self.chunk[self.offset:end]
+                if piece:
+                    self.tracker.feed(len(piece))
+                    self.offset = end
+                return piece
+
+            def __len__(self):
+                return self.length
+
+        return ChunkStream(chunk, self, read_size)
 
 
 # ── Upload Worker ────────────────────────────────────────────────────────────
@@ -81,11 +98,14 @@ class UploadWorker(QThread):
     error       = pyqtSignal(str)
 
     def __init__(self, api_key, base_url, file_pairs,
-                 create_share, share_expiry, share_max_downloads):
+                 create_share, share_expiry, share_max_downloads,
+                 chunk_size_mb=None, max_chunks=None):
         """
         file_pairs: list of (local_abs_path, remote_dest_path) tuples.
         remote_dest_path is already the full absolute path on Mocha,
         e.g. '/Music/Album/CD1/track.flac'.
+        chunk_size_mb: size of each multipart chunk in MB (1–100).
+        max_chunks: maximum number of in-flight parallel chunks (1–20).
         """
         super().__init__()
         self.api_key             = api_key
@@ -94,6 +114,11 @@ class UploadWorker(QThread):
         self.create_share        = create_share
         self.share_expiry_hours  = share_expiry  # int hours or None
         self.share_max_downloads = share_max_downloads
+        # Chunk config — clamp to valid ranges
+        mb = int(chunk_size_mb) if chunk_size_mb is not None else DEFAULT_CHUNK_SIZE_MB
+        self._chunk_size  = max(1, min(mb, 100)) * 1024 * 1024  # bytes
+        mc = int(max_chunks) if max_chunks is not None else DEFAULT_MAX_CHUNKS
+        self._max_chunks  = max(1, min(mc, 20))
         self._cancel             = False
 
     def cancel(self):
@@ -151,14 +176,10 @@ class UploadWorker(QThread):
                 self.status.emit(f"{prefix}{file_name}  ({self._fmt_size(file_size)})")
                 self.status.emit(f"[DEBUG] Local path: {local_path}")
                 self.status.emit(f"[DEBUG] Remote dest: {dest_path}")
-                self.status.emit(f"[DEBUG] File size (bytes): {file_size}  threshold: {CHUNK_THRESHOLD}")
+                self.status.emit(f"[DEBUG] File size (bytes): {file_size}")
 
-                if file_size <= CHUNK_THRESHOLD:
-                    self.status.emit(f"[DEBUG] Strategy: simple upload (≤ {self._fmt_size(CHUNK_THRESHOLD)})")
-                    file_id = self._simple_upload(file_size, local_path, dest_path)
-                else:
-                    self.status.emit(f"[DEBUG] Strategy: multipart upload (> {self._fmt_size(CHUNK_THRESHOLD)})")
-                    file_id = self._multipart_upload(file_size, local_path, dest_path)
+                self.status.emit("[DEBUG] Strategy: multipart upload")
+                file_id = self._multipart_upload(file_size, local_path, dest_path)
 
                 if self._cancel or file_id is None:
                     return
@@ -177,93 +198,7 @@ class UploadWorker(QThread):
 
         self.finished.emit({"file_id": last_file_id, "share_url": last_share_url})
 
-    # ── simple upload (≤ 50 MB) ──────────────────────────────────────────────
-    def _simple_upload(self, file_size, local_path, dest_path):
-        file_name  = os.path.basename(local_path)
-        dest_dir   = "/".join(dest_path.rstrip("/").split("/")[:-1]) or "/"  # sent as x-file-path header
-        url        = f"{self.base_url}/api/files"
 
-        start    = time.time()
-        uploaded = 0
-
-        class UploadCancelled(Exception):
-            pass
-
-        class UploadStream:
-            def __init__(self, path, worker):
-                self._file = open(path, "rb")
-                self._worker = worker
-
-            def read(self, size=-1):
-                nonlocal uploaded
-                if self._worker._cancel:
-                    raise UploadCancelled
-                if size is None or size < 0:
-                    size = 65536
-                chunk = self._file.read(size)
-                if chunk:
-                    uploaded += len(chunk)
-                    elapsed = max(time.time() - start, 0.001)
-                    self._worker.progress.emit(int(uploaded / file_size * 100))
-                    self._worker.speed.emit(uploaded / elapsed)
-                return chunk
-
-            def close(self):
-                self._file.close()
-
-        import mimetypes
-        mime_type = mimetypes.guess_type(local_path)[0] or "application/octet-stream"
-        # Ensure dest_dir ends with a trailing slash as the API expects (e.g. /test/)
-        dest_dir_hdr = dest_dir.rstrip("/") + "/"
-
-        req_headers = self._headers(file_name)
-        req_headers["x-file-path"]    = dest_dir_hdr
-        req_headers["x-file-type"]    = mime_type
-        req_headers["Content-Length"] = str(file_size)
-
-        self.status.emit(f"[DEBUG] Upload URL: {url}")
-        self.status.emit(f"[DEBUG] Full dest path: {dest_path}")
-        self.status.emit(f"[DEBUG] x-file-path header: {dest_dir_hdr}")
-        self.status.emit(f"[DEBUG] x-file-name header: {file_name}")
-        self.status.emit(f"[DEBUG] x-file-type header: {mime_type}")
-        self.status.emit(f"[DEBUG] Content-Length: {file_size}  ({self._fmt_size(file_size)})")
-        debug_headers = dict(req_headers)
-        debug_headers["Authorization"] = "(hidden)"
-        self.status.emit(f"[DEBUG] Request headers: {debug_headers}")
-        t0 = time.time()
-        data = UploadStream(local_path, self)
-        try:
-            resp = requests.post(
-                url,
-                headers=req_headers,
-                data=data,
-                timeout=PART_UPLOAD_TIMEOUT,
-            )
-            elapsed_ms = (time.time() - t0) * 1000
-            self.status.emit(f"[DEBUG] Response status: {resp.status_code}  elapsed: {elapsed_ms:.0f} ms")
-            self.status.emit(f"[DEBUG] Response headers: {dict(resp.headers)}")
-            self.status.emit(f"[DEBUG] Response body: {resp.text[:500]}")
-            resp.raise_for_status()
-        except UploadCancelled:
-            self.status.emit("[DEBUG] Cancelled.")
-            return None
-        except requests.HTTPError as e:
-            self.status.emit(f"[DEBUG] HTTPError: {e}")
-            self.status.emit(f"[DEBUG] Response status: {getattr(e.response, 'status_code', None)}")
-            self.status.emit(f"[DEBUG] Response content: {getattr(e.response, 'text', None)}")
-            raise
-        except Exception as e:
-            self.status.emit(f"[DEBUG] Exception: {e}")
-            raise
-        finally:
-            data.close()
-
-        j       = resp.json()
-        file_id = j.get("fileId") or j.get("id") or j.get("file", {}).get("id")
-        self.status.emit(f"[DEBUG] Parsed file ID: {file_id}  full JSON: {j}")
-        self.status.emit(f"[DEBUG] Upload complete. File ID: {file_id}")
-        self.progress.emit(100)
-        return file_id
 
     # ── multipart upload (> 50 MB) ───────────────────────────────────────────
     def _multipart_upload(self, file_size, local_path, dest_path):
@@ -328,17 +263,12 @@ class UploadWorker(QThread):
             "mimeType": mime_type,
         }
 
-        # Use CHUNK_SIZE (10 MB) with 5 parallel workers so 50 MB is in flight
-        # at once — same throughput as a single 50 MB chunk but with smaller
-        # per-part SSL connections that the storage node handles reliably.
+        # Use configured chunk size; max concurrent parts is capped by _max_chunks.
         # partSizeBytes from the server is the *maximum* allowed, not a requirement.
-        # (which can be up to 200 MB).  Smaller chunks are more reliable and
-        # keep presigned URLs fresh within their 1-hour TTL.
-        # partSizeBytes is the *maximum* allowed, not a requirement.
-        chunk_size  = CHUNK_SIZE
+        chunk_size  = self._chunk_size
         total_parts = math.ceil(file_size / chunk_size)
         mode = "direct S3" if strategy == "s3" and direct else "server relay"
-        concurrency = self._multipart_concurrency(init_data, total_parts, mode)
+        concurrency = self._multipart_concurrency(init_data, total_parts, mode, self._max_chunks)
         self.status.emit(f"[DEBUG] Multipart upload: {total_parts} parts… (strategy={strategy}, mode={mode}, partSize={self._fmt_size(chunk_size)}, concurrency={concurrency})")
         self.status.emit(f"[DEBUG] Session: {upload_id}")
 
@@ -413,23 +343,54 @@ class UploadWorker(QThread):
                     active_parts.discard(result["partNumber"])
 
         # 3. Complete
-        comp_resp = requests.post(
-            f"{self.base_url}/api/files/multipart/complete",
-            headers={**self._headers(), "Content-Type": "application/json"},
-            json={**session, "parts": sorted(parts, key=lambda part: part["partNumber"])},
-            timeout=60,
-        )
-        comp_resp.raise_for_status()
-        j       = comp_resp.json()
+        complete_payload = {**session, "parts": sorted(parts, key=lambda part: part["partNumber"])}
+        j = self._complete_multipart_upload(complete_payload)
         file_id = j.get("fileId") or j.get("id") or (j.get("file") or {}).get("id")
         self.status.emit(f"[DEBUG] Multipart complete. File ID: {file_id}")
         tracker.finish()
         return file_id
 
+    def _complete_multipart_upload(self, payload):
+        url = f"{self.base_url}/api/files/multipart/complete"
+        last_error = None
+        for attempt in range(1, 9):
+            if self._cancel:
+                return {}
+            try:
+                self.status.emit(f"[DEBUG] Completing multipart upload… attempt {attempt}/8")
+                resp = requests.post(
+                    url,
+                    headers={**self._headers(), "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=180,
+                )
+                self.status.emit(f"[DEBUG] Complete response status: {resp.status_code}")
+                self.status.emit(f"[DEBUG] Complete response body: {resp.text[:500]}")
+                resp.raise_for_status()
+                return resp.json()
+            except requests.HTTPError as e:
+                last_error = e
+                status = getattr(e.response, "status_code", None)
+                body = getattr(e.response, "text", "") or ""
+                if status not in (409, 423, 429, 500, 502, 503, 504, 524) and "524" not in body:
+                    raise
+                self.status.emit(f"[DEBUG] Multipart complete still pending/retryable ({status}): {body[:200]}")
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                last_error = e
+                self.status.emit(f"[DEBUG] Multipart complete connection issue: {e}")
+
+            wait_seconds = min(10 * attempt, 60)
+            self.status.emit(f"[DEBUG] Waiting {wait_seconds}s before checking complete again…")
+            time.sleep(wait_seconds)
+
+        raise last_error
+
     @staticmethod
-    def _multipart_concurrency(init_data, total_parts, mode):
+    def _multipart_concurrency(init_data, total_parts, mode, user_max_chunks=None):
         default = S3_DEFAULT_CONCURRENCY if mode == "direct S3" else RELAY_DEFAULT_CONCURRENCY
         maximum = S3_MAX_CONCURRENCY if mode == "direct S3" else RELAY_MAX_CONCURRENCY
+        if user_max_chunks is not None:
+            maximum = user_max_chunks
         value = init_data.get("partUploadConcurrency", default)
         try:
             parsed = int(value)
