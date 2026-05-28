@@ -1,6 +1,6 @@
 <img src=".github/resources/banner.png" alt="Mocha Tools banner" width="900">
 
-[![Typing SVG](https://readme-typing-svg.demolab.com?font=Fira+Code&pause=1000&color=FF0000&background=000000&width=900&lines=Cross+platform+uploader+for+Mocha+written+in+Python;Designed+to+be+compiled+with+PyInstaller)](https://git.io/typing-svg)        
+[![Typing SVG](https://readme-typing-svg.demolab.com?font=Fira+Code&pause=1000&color=FF0000&background=000000&width=900&lines=Cross+platform+tools+for+Mocha+written+in+Python;Designed+to+be+compiled+with+PyInstaller)](https://git.io/typing-svg)        
 <p align="center">
   <img src=".github/resources/screenshot.png" alt="Mocha Tools main window" width="720">
 </p>
