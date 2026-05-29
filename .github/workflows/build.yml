@@ -207,6 +207,15 @@ jobs:
           cd dist
           zip -r "../Mocha-Tools-macOS-universal.zip" "Mocha Tools.app"
 
+      # FIX: free up disk space after merging — the two large artifact
+      # folders are no longer needed and were causing "no space left on
+      # device" when hdiutil tried to create the DMG.
+      - name: Free up disk space before DMG
+        shell: bash
+        run: |
+          rm -rf arm64-dist x86-dist
+          df -h /
+
       - name: Build macOS DMG
         shell: bash
         run: |

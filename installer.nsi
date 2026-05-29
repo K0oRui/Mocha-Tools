@@ -71,7 +71,8 @@ Section "Install" SecInstall
   SetOutPath "$INSTDIR"
 
   ; Main executable — expects Mocha-Tools-windows.exe in the same dir as this script
-  File /oname=${APP_EXE} "Mocha-Tools-windows.exe"
+  ; FIX: single-quote the /oname flag so the space in "Mocha Tools.exe" is handled correctly
+  File '/oname=${APP_EXE}' "Mocha-Tools-windows.exe"
 
   ; Optional: icon file for shortcuts
   File "builditems\windows\icon.ico"
