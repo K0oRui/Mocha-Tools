@@ -93,7 +93,6 @@ hdiutil detach "$MOUNT_DIR" -force
 hdiutil convert "$TMP_DMG" \
     -format     UDZO \
     -imagekey   zlib-level=9 \
-    -scratchdir /private/tmp \
     -o "$DMG_NAME"
 
 # ── 6. Clean up ───────────────────────────────────────────────────────────────
