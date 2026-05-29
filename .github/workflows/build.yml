@@ -142,9 +142,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Read version
-        run: echo "VERSION=$(cat VERSION | tr -d '\r\n')" >> $GITHUB_ENV
-
       - name: Download arm64 app
         uses: actions/download-artifact@v4
         with:
@@ -212,7 +209,8 @@ jobs:
       - name: Build macOS DMG
         shell: bash
         run: |
-          bash builditems/macos/create_dmg.sh "dist/Mocha Tools.app" "${{ env.VERSION }}"
+          VERSION=$(cat VERSION | tr -d '\r\n')
+          bash builditems/macos/create_dmg.sh "dist/Mocha Tools.app" "$VERSION"
 
       - name: Upload universal macOS artifact
         uses: actions/upload-artifact@v4
@@ -246,6 +244,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
+
+      - name: Stamp version into Info.plist
+        shell: bash
+        run: |
+          VERSION=$(cat VERSION | tr -d '\r\n')
+          python3 builditems/macos/patch_info_plist.py "$VERSION"
 
       - name: Build arm64 .app
         shell: bash
@@ -287,6 +291,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
+
+      - name: Stamp version into Info.plist
+        shell: bash
+        run: |
+          VERSION=$(cat VERSION | tr -d '\r\n')
+          python3 builditems/macos/patch_info_plist.py "$VERSION"
 
       - name: Build x86_64 .app
         shell: bash
