@@ -81,9 +81,9 @@ jobs:
           chmod 755 deb_build/usr/bin/mochatools
           fpm -s dir -t deb \
             -n mocha-tools \
-            -v ${{ env.VERSION }} \
+            -v "${{ env.VERSION }}" \
             --description "Mocha Tools" \
-            deb_build/=/
+            "deb_build/=/"
 
       - name: Bundle Linux installer script (Ubuntu only)
         if: matrix.os == 'ubuntu-latest'
