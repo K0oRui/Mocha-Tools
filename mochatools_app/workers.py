@@ -693,6 +693,8 @@ class FilesWorker(QThread):
                 self._list_shares()
             elif self.op == "delete_folder":
                 self._delete_folder()
+            elif self.op == "delete_shares":
+                self._delete_shares()
         except Exception as e:
             self.error.emit(str(e))
 
@@ -839,6 +841,28 @@ class FilesWorker(QThread):
         )
         resp.raise_for_status()
         self.done.emit({"op": "mkdir", "path": full_path})
+
+    def _delete_shares(self):
+        """Delete multiple shares by token. Attempts all; collects errors."""
+        tokens  = self.kwargs.get("tokens", [])
+        deleted = 0
+        errors  = []
+        for token in tokens:
+            try:
+                resp = requests.delete(
+                    f"{self.base_url}/api/shares/{token}",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                deleted += 1
+            except Exception as e:
+                errors.append(f"{token}: {e}")
+        self.done.emit({
+            "op":      "delete_shares",
+            "deleted": deleted,
+            "errors":  errors,
+        })
 
     def _list_shares(self):
         resp = requests.get(

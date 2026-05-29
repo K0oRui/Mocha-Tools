@@ -1099,7 +1099,11 @@ class SharesTab(QWidget):
         self._status("Loading…")
         self.tree.clear()
         self.copy_bar.hide()
-        w = FilesWorker("shares", api_key, self.base_url)
+        self._run_worker("shares")
+
+    def _run_worker(self, op, **kwargs):
+        api_key = self.get_api_key()
+        w = FilesWorker(op, api_key, self.base_url, **kwargs)
         w.done.connect(self._on_done)
         w.error.connect(self._on_error)
         w.finished.connect(lambda: self._workers.remove(w) if w in self._workers else None)
@@ -1107,44 +1111,57 @@ class SharesTab(QWidget):
         w.start()
 
     def _on_done(self, result):
-        if result.get("op") != "shares":
-            return
-        data   = result["data"]
-        shares = data.get("shares", data) if isinstance(data, dict) else data
-        self.tree.setSortingEnabled(False)
-        self.tree.clear()
+        op = result.get("op")
 
-        for s in shares:
-            token     = s.get("token", "")
-            file_name = (
-                s.get("originalName")
-                or s.get("original_name")
-                or s.get("name")
-                or s.get("fileName")
-                or s.get("file_name")
-                or token
-            )
-            is_active = s.get("is_active", s.get("isActive", True))
-            expires   = s.get("expires_at") or s.get("expiresAt") or s.get("expiry") or "Never"
-            if expires and expires != "Never" and len(expires) > 10:
-                expires = expires[:10]
-            url = f"{self.base_url}/share/{token}" if token else ""
+        if op == "shares":
+            data   = result["data"]
+            shares = data.get("shares", data) if isinstance(data, dict) else data
+            self.tree.setSortingEnabled(False)
+            self.tree.clear()
 
-            active_text  = "● Active"   if is_active else "○ Inactive"
-            active_color = "#4ade80"    if is_active else "#9ca3af"
+            for s in shares:
+                token     = s.get("token", "")
+                file_name = (
+                    s.get("originalName")
+                    or s.get("original_name")
+                    or s.get("name")
+                    or s.get("fileName")
+                    or s.get("file_name")
+                    or token
+                )
+                is_active = s.get("is_active", s.get("isActive", True))
+                expires   = s.get("expires_at") or s.get("expiresAt") or s.get("expiry") or "Never"
+                if expires and expires != "Never" and len(expires) > 10:
+                    expires = expires[:10]
+                url = f"{self.base_url}/share/{token}" if token else ""
 
-            item = QTreeWidgetItem([file_name, url, active_text, expires])
-            item.setData(0, Qt.ItemDataRole.UserRole, {
-                "token": token, "url": url,
-                "is_active": is_active, "file_name": file_name,
-            })
-            item.setForeground(2, QColor(active_color))
-            item.setForeground(1, QColor("#9ca3af"))
-            self.tree.addTopLevelItem(item)
+                active_text  = "● Active"   if is_active else "○ Inactive"
+                active_color = "#4ade80"    if is_active else "#9ca3af"
 
-        self.tree.setSortingEnabled(True)
-        count = self.tree.topLevelItemCount()
-        self._status(f"{count} share{'s' if count != 1 else ''}")
+                item = QTreeWidgetItem([file_name, url, active_text, expires])
+                item.setData(0, Qt.ItemDataRole.UserRole, {
+                    "token": token, "url": url,
+                    "is_active": is_active, "file_name": file_name,
+                })
+                item.setForeground(2, QColor(active_color))
+                item.setForeground(1, QColor("#9ca3af"))
+                self.tree.addTopLevelItem(item)
+
+            self.tree.setSortingEnabled(True)
+            count = self.tree.topLevelItemCount()
+            self._status(f"{count} share{'s' if count != 1 else ''}")
+
+        elif op == "delete_shares":
+            errors  = result.get("errors", [])
+            deleted = result.get("deleted", 0)
+            if errors:
+                QMessageBox.warning(
+                    self, "Partial Error",
+                    f"Deleted {deleted} share(s).\n"
+                    f"{len(errors)} failed:\n" + "\n".join(errors),
+                )
+            self._status(f"✓ Deleted {deleted} share{'s' if deleted != 1 else ''}")
+            self.refresh()
 
     def _on_error(self, msg):
         self._status(f"✗ {msg}")
@@ -1209,21 +1226,13 @@ class SharesTab(QWidget):
                                 QMessageBox.StandardButton.No
                                 ) != QMessageBox.StandardButton.Yes:
             return
-        api_key = self.get_api_key()
-        import requests as _req
-        for meta in items:
-            try:
-                resp = _req.delete(
-                    f"{self.base_url}/api/shares/{meta['token']}",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    timeout=15,
-                )
-                resp.raise_for_status()
-            except Exception as e:
-                QMessageBox.warning(self, "Error", str(e))
-                return
+        tokens = [meta["token"] for meta in items if meta.get("token")]
+        if not tokens:
+            return
+        self.delete_btn.setEnabled(False)
+        self._status(f"Deleting {len(tokens)} share{'s' if len(tokens) != 1 else ''}…")
         self.copy_bar.hide()
-        self.refresh()
+        self._run_worker("delete_shares", tokens=tokens)
 
     def _context_menu(self, pos):
         item = self.tree.itemAt(pos)
