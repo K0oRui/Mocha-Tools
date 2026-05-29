@@ -108,10 +108,24 @@ jobs:
         shell: bash
         run: |
           choco install nsis --no-progress -y
-          cp "dist/Mocha Tools.exe" Mocha-Tools-windows.exe
+
+          if [[ ! -f installer.nsi ]]; then
+            echo 'ERROR: installer.nsi not found in repo root.' && exit 1
+          fi
+          if [[ ! -f 'dist/Mocha Tools.exe' ]]; then
+            echo 'ERROR: dist/Mocha Tools.exe not found.' && exit 1
+          fi
+
+          cp 'dist/Mocha Tools.exe' Mocha-Tools-windows.exe
+
+          # Stamp version into installer.nsi and version.txt via helper script
           VERSION=$(cat mochatools_app/VERSION | tr -d '\r\n')
-          sed -i "s/!define APP_VERSION.*$/!define APP_VERSION \"${VERSION#v}\"/" installer.nsi
-          makensis installer.nsi
+          python3 builditems/windows/patch_version.py "${VERSION#v}"
+
+          # Use cmd.exe to call makensis — Chocolatey doesn't add it to
+          # the Git Bash PATH in the same shell session, but the Win32
+          # path is always predictable after a Chocolatey install.
+          cmd.exe //C '"C:\Program Files (x86)\NSIS\makensis.exe" installer.nsi'
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
