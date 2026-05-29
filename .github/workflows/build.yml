@@ -181,12 +181,19 @@ jobs:
           cp -R "$ARM_APP" "dist/Mocha Tools.app"
           OUT_APP="dist/Mocha Tools.app"
 
-          find "$OUT_APP/Contents/MacOS" -type f | while read -r arm_file; do
-            rel="${arm_file#$OUT_APP/Contents/MacOS/}"
-            x86_file="$X86_APP/Contents/MacOS/$rel"
+          # Merge ALL Mach-O binaries under Contents (MacOS + Frameworks + plugins)
+          # This is critical — Qt/PyQt6 ships architecture-specific .dylib and .so
+          # files under Contents/Frameworks which also need to be lipo'd.
+          find "$OUT_APP/Contents" -type f | while read -r arm_file; do
+            rel="${arm_file#$OUT_APP/Contents/}"
+            x86_file="$X86_APP/Contents/$rel"
             if [[ -f "$x86_file" ]]; then
-              echo "lipo merging: $rel"
-              lipo -create "$arm_file" "$x86_file" -output "$arm_file"
+              if file "$arm_file" | grep -qE 'Mach-O|ar archive'; then
+                echo "lipo merging: $rel"
+                lipo -create "$arm_file" "$x86_file" -output "$arm_file" || {
+                  echo "WARNING: lipo failed for $rel, keeping arm64 version"
+                }
+              fi
             fi
           done
 
@@ -245,21 +252,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
-      - name: Stamp version into Info.plist
-        shell: bash
-        run: |
-          VERSION=$(cat VERSION | tr -d '\r\n')
-          python3 builditems/macos/patch_info_plist.py "$VERSION"
-
       - name: Build arm64 .app
         shell: bash
         run: |
           pyinstaller --noconsole --windowed \
             --collect-submodules mochatools_app \
+            --icon=./builditems/macos/icon.icns \
             --osx-bundle-identifier com.nxllxvxxd2.mochatools \
             --target-arch arm64 \
             --name "Mocha Tools" \
             mochatools.py
+
+      - name: Stamp version into built Info.plist
+        shell: bash
+        run: |
+          VERSION=$(cat VERSION | tr -d '\r\n')
+          python3 builditems/macos/patch_info_plist.py "dist/Mocha Tools.app/Contents/Info.plist" "$VERSION"
 
       - name: Upload arm64 app
         uses: actions/upload-artifact@v4
@@ -292,21 +300,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
-      - name: Stamp version into Info.plist
-        shell: bash
-        run: |
-          VERSION=$(cat VERSION | tr -d '\r\n')
-          python3 builditems/macos/patch_info_plist.py "$VERSION"
-
       - name: Build x86_64 .app
         shell: bash
         run: |
           pyinstaller --noconsole --windowed \
             --collect-submodules mochatools_app \
+            --icon=./builditems/macos/icon.icns \
             --osx-bundle-identifier com.nxllxvxxd2.mochatools \
             --target-arch x86_64 \
             --name "Mocha Tools" \
             mochatools.py
+
+      - name: Stamp version into built Info.plist
+        shell: bash
+        run: |
+          VERSION=$(cat VERSION | tr -d '\r\n')
+          python3 builditems/macos/patch_info_plist.py "dist/Mocha Tools.app/Contents/Info.plist" "$VERSION"
 
       - name: Upload x86_64 app
         uses: actions/upload-artifact@v4
