@@ -7,6 +7,7 @@ on:
       - "builditems/windows/**"
       - "builditems/macos/**"
       - "builditems/debian_ubuntu/**"
+      - "VERSION"
   workflow_dispatch:
 
 jobs:
@@ -32,14 +33,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      - name: Read version file (Linux only)
-        if: matrix.os == 'ubuntu-latest'
-        id: version
-        run: echo "VERSION=$(cat builditems/debian_ubuntu/VERSION)" >> $GITHUB_ENV
+      - name: Read version
+        shell: bash
+        run: echo "VERSION=$(cat VERSION | tr -d '\r\n')" >> $GITHUB_ENV
 
-      - name: Show version (Linux only)
-        if: matrix.os == 'ubuntu-latest'
-        run: echo "Building Linux version $VERSION"
+      - name: Show version
+        shell: bash
+        run: echo "Building version ${{ env.VERSION }}"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -81,7 +81,7 @@ jobs:
           chmod 755 deb_build/usr/bin/mochatools
           fpm -s dir -t deb \
             -n mocha-tools \
-            -v $VERSION \
+            -v ${{ env.VERSION }} \
             --description "Mocha Tools" \
             deb_build/=/
 
@@ -98,8 +98,7 @@ jobs:
             mkdir -p linux-installer/builditems/debian_ubuntu
             cp builditems/debian_ubuntu/icon.png linux-installer/builditems/debian_ubuntu/icon.png
           fi
-          VERSION=$(cat mochatools_app/VERSION | tr -d '\r\n')
-          tar -czf "MochaTools-${VERSION}-linux.tar.gz" -C linux-installer .
+          tar -czf "MochaTools-${{ env.VERSION }}-linux.tar.gz" -C linux-installer .
 
       - name: Build NSIS installer (Windows only)
         if: matrix.os == 'windows-latest'
@@ -116,8 +115,8 @@ jobs:
 
           cp 'dist/Mocha Tools.exe' Mocha-Tools-windows.exe
 
-          VERSION=$(cat mochatools_app/VERSION | tr -d '\r\n')
-          PYTHONUTF8=1 python3 builditems/windows/patch_version.py "${VERSION#v}"
+          # Stamp version from root VERSION file into installer.nsi and version.txt
+          PYTHONUTF8=1 python3 builditems/windows/patch_version.py "${{ env.VERSION }}"
 
           powershell.exe -Command "& 'C:\Program Files (x86)\NSIS\makensis.exe' installer.nsi"
 
@@ -142,6 +141,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Read version
+        run: echo "VERSION=$(cat VERSION | tr -d '\r\n')" >> $GITHUB_ENV
 
       - name: Download arm64 app
         uses: actions/download-artifact@v4
@@ -196,21 +198,13 @@ jobs:
           cd dist
           zip -r "../Mocha-Tools-macOS-universal.zip" "Mocha Tools.app"
 
-      # FIX: Aggressively free disk space after merging and before DMG creation.
-      # The runner arrives here with two full Qt .app artifact folders plus the
-      # merged dist/ — this triples the footprint and exhausts the runner disk.
-      # We delete everything no longer needed; create_dmg.sh then *moves* (not
-      # copies) the .app into staging, avoiding another duplication.
       - name: Free up disk space before DMG
         shell: bash
         run: |
-          # Artifact folders are fully consumed by the merge step
           rm -rf arm64-dist x86-dist
-          # Xcode derived data and simulator caches (several GB on macOS runners)
           sudo rm -rf ~/Library/Developer/Xcode/DerivedData || true
           sudo rm -rf ~/Library/Developer/CoreSimulator/Caches || true
           sudo rm -rf /Library/Developer/CoreSimulator/Volumes/ || true
-          # Homebrew cache
           brew cleanup --prune=all 2>/dev/null || true
           echo "=== Disk space after cleanup ==="
           df -h /
@@ -218,8 +212,7 @@ jobs:
       - name: Build macOS DMG
         shell: bash
         run: |
-          VERSION=$(cat mochatools_app/VERSION | tr -d '\r\n')
-          bash builditems/macos/create_dmg.sh "dist/Mocha Tools.app" "$VERSION"
+          bash builditems/macos/create_dmg.sh "dist/Mocha Tools.app" "${{ env.VERSION }}"
 
       - name: Upload universal macOS artifact
         uses: actions/upload-artifact@v4
@@ -328,7 +321,7 @@ jobs:
 
       - name: Read version
         id: version
-        run: echo "VERSION=$(cat mochatools_app/VERSION | tr -d '\r\n')" >> $GITHUB_OUTPUT
+        run: echo "VERSION=$(cat VERSION | tr -d '\r\n')" >> $GITHUB_OUTPUT
 
       - name: Download Windows build
         uses: actions/download-artifact@v4
