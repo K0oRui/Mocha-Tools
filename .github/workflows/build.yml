@@ -193,7 +193,7 @@ jobs:
 
   build-macos-x86:
     name: Build macOS (x86_64)
-    runs-on: macos-13          # Last Intel runner GitHub provides
+    runs-on: macos-15-intel    # Dedicated x86_64 runner (macos-13 was retired Dec 2025)
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
