@@ -97,7 +97,7 @@ jobs:
   # ──────────────────────────────────────────────
   build-macos:
     name: Build macOS Universal Binary
-    runs-on: ubuntu-latest   # orchestrator only; real work in sub-jobs below
+    runs-on: macos-15          # needs lipo, which is a macOS tool
     needs: [build-macos-arm64, build-macos-x86]
     steps:
       - name: Checkout code
@@ -115,9 +115,7 @@ jobs:
           name: macos-x86-app
           path: x86-dist
 
-      # lipo is a macOS tool — run the merge step on a macOS runner
       - name: Merge into universal .app
-        runs-on: macos-15
         shell: bash
         run: |
           set -euo pipefail
