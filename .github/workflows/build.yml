@@ -199,17 +199,35 @@ jobs:
 
           cp ./builditems/macos/Info.plist "$OUT_APP/Contents/Info.plist"
 
+          # Remove source arch dirs immediately — no need to keep them after merge
+          rm -rf arm64-dist x86-dist
+
           cd dist
           zip -r "../Mocha-Tools-macOS-universal.zip" "Mocha Tools.app"
 
       - name: Free up disk space before DMG
         shell: bash
         run: |
-          rm -rf arm64-dist x86-dist
+          # Xcode / simulator caches (biggest wins on macos-15 runners)
           sudo rm -rf ~/Library/Developer/Xcode/DerivedData || true
           sudo rm -rf ~/Library/Developer/CoreSimulator/Caches || true
           sudo rm -rf /Library/Developer/CoreSimulator/Volumes/ || true
+          sudo rm -rf ~/Library/Developer/Xcode/iOS\ DeviceSupport || true
+          sudo rm -rf ~/Library/Developer/Xcode/watchOS\ DeviceSupport || true
+          sudo rm -rf /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/DeviceSupport || true
+          sudo rm -rf /Applications/Xcode.app/Contents/Developer/Platforms/WatchOS.platform/DeviceSupport || true
+
+          # Homebrew
           brew cleanup --prune=all 2>/dev/null || true
+          rm -rf "$(brew --cache)" 2>/dev/null || true
+
+          # pip cache
+          pip cache purge 2>/dev/null || true
+          rm -rf ~/Library/Caches/pip || true
+
+          # macOS system caches safe to drop in CI
+          sudo rm -rf /private/var/folders/* 2>/dev/null || true
+
           echo "=== Disk space after cleanup ==="
           df -h /
 
