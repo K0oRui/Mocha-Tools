@@ -116,23 +116,43 @@ jobs:
           name: macos-x86-app
           path: x86-dist
 
+      - name: Inspect downloaded artifacts
+        shell: bash
+        run: |
+          echo "=== arm64-dist ==="
+          find arm64-dist -maxdepth 4
+          echo "=== x86-dist ==="
+          find x86-dist -maxdepth 4
+
       - name: Merge into universal .app
         shell: bash
         run: |
           set -euo pipefail
 
-          ARM_BINARY="arm64-dist/Mocha Tools.app/Contents/MacOS/Mocha Tools"
-          X86_BINARY="x86-dist/Mocha Tools.app/Contents/MacOS/Mocha Tools"
-          OUT_APP="dist/Mocha Tools.app"
+          # Artifact upload strips the leading path component, so the .app
+          # lands directly inside the download folder (not inside dist/).
+          ARM_APP="arm64-dist/Mocha Tools.app"
+          X86_APP="x86-dist/Mocha Tools.app"
 
-          # Start from the arm64 bundle as base
-          cp -R "arm64-dist/Mocha Tools.app" "$OUT_APP"
+          # Verify both bundles are present before proceeding
+          if [[ ! -d "$ARM_APP" ]]; then
+            echo "ERROR: arm64 bundle not found at: $ARM_APP" && exit 1
+          fi
+          if [[ ! -d "$X86_APP" ]]; then
+            echo "ERROR: x86_64 bundle not found at: $X86_APP" && exit 1
+          fi
+
+          # Create output dir and copy arm64 bundle as the base
+          mkdir -p dist
+          cp -R "$ARM_APP" "dist/Mocha Tools.app"
+          OUT_APP="dist/Mocha Tools.app"
 
           # Replace every Mach-O binary inside MacOS/ with a fat universal binary
           find "$OUT_APP/Contents/MacOS" -type f | while read -r arm_file; do
             rel="${arm_file#$OUT_APP/Contents/MacOS/}"
-            x86_file="x86-dist/Mocha Tools.app/Contents/MacOS/$rel"
+            x86_file="$X86_APP/Contents/MacOS/$rel"
             if [[ -f "$x86_file" ]]; then
+              echo "lipo merging: $rel"
               lipo -create "$arm_file" "$x86_file" -output "$arm_file"
             fi
           done
