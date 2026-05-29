@@ -25,24 +25,34 @@ echo "→ Building DMG for ${APP_NAME} ${VERSION}"
 echo "  App bundle : ${APP_BUNDLE}"
 echo "  Output     : ${DMG_NAME}"
 
+# Show available disk space before we start
+echo "  Disk space before DMG build:"
+df -h /
+
 # ── 1. Prepare staging directory ─────────────────────────────────────────────
 rm -rf "$STAGING"
 mkdir -p "$STAGING"
 
-# Copy the .app into staging
-cp -R "$APP_BUNDLE" "$STAGING/${APP_NAME}.app"
+# FIX: Move instead of copy — the .app is no longer needed in dist/ after
+# this point, so moving avoids doubling the disk footprint on an already
+# tight GitHub Actions runner.
+mv "$APP_BUNDLE" "$STAGING/${APP_NAME}.app"
 
 # Symlink to /Applications so users can drag-and-drop
 ln -s /Applications "$STAGING/Applications"
 
 # ── 2. Create a read/write DMG from the staging folder ───────────────────────
+# FIX: -scratchdir /private/tmp redirects hdiutil's internal temp files away
+# from the main volume (which is nearly full) onto the /tmp filesystem, which
+# has its own separate allocation on macOS runners.
 hdiutil create \
-    -srcfolder "$STAGING" \
-    -volname   "$VOL_NAME" \
-    -fs        HFS+ \
-    -fsargs    "-c c=16,a=16,b=16" \
-    -format    UDRW \
-    -size      200m \
+    -srcfolder  "$STAGING" \
+    -volname    "$VOL_NAME" \
+    -fs         HFS+ \
+    -fsargs     "-c c=16,a=16,b=16" \
+    -format     UDRW \
+    -size       400m \
+    -scratchdir /private/tmp \
     "$TMP_DMG"
 
 # ── 3. Mount the RW DMG ───────────────────────────────────────────────────────
@@ -87,9 +97,11 @@ APPLESCRIPT
 sync
 hdiutil detach "$MOUNT_DIR" -force
 
+# FIX: -scratchdir /private/tmp here too, for the same reason as above.
 hdiutil convert "$TMP_DMG" \
-    -format UDZO \
-    -imagekey zlib-level=9 \
+    -format    UDZO \
+    -imagekey  zlib-level=9 \
+    -scratchdir /private/tmp \
     -o "$DMG_NAME"
 
 # ── 6. Clean up ───────────────────────────────────────────────────────────────

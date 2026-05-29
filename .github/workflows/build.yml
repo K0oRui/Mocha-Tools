@@ -89,13 +89,11 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
-          # Produce a self-contained installer bundle: binary + installer.sh
           mkdir -p linux-installer
           cp "dist/Mocha Tools" linux-installer/Mocha-Tools-linux
           chmod +x linux-installer/Mocha-Tools-linux
           cp installer.sh linux-installer/installer.sh
           chmod +x linux-installer/installer.sh
-          # Copy icon if present
           if [[ -f builditems/debian_ubuntu/icon.png ]]; then
             mkdir -p linux-installer/builditems/debian_ubuntu
             cp builditems/debian_ubuntu/icon.png linux-installer/builditems/debian_ubuntu/icon.png
@@ -118,13 +116,11 @@ jobs:
 
           cp 'dist/Mocha Tools.exe' Mocha-Tools-windows.exe
 
-          # Stamp version into installer.nsi and version.txt via helper script
           VERSION=$(cat mochatools_app/VERSION | tr -d '\r\n')
           PYTHONUTF8=1 python3 builditems/windows/patch_version.py "${VERSION#v}"
 
-          # Use powershell to invoke makensis with its full path --
-          # Chocolatey does not add NSIS to PATH in the current shell session.
           powershell.exe -Command "& 'C:\Program Files (x86)\NSIS\makensis.exe' installer.nsi"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -141,7 +137,7 @@ jobs:
   # ──────────────────────────────────────────────
   build-macos:
     name: Build macOS Universal Binary
-    runs-on: macos-15          # needs lipo, which is a macOS tool
+    runs-on: macos-15
     needs: [build-macos-arm64, build-macos-x86]
     steps:
       - name: Checkout code
@@ -172,12 +168,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Artifact upload strips the leading path component, so the .app
-          # lands directly inside the download folder (not inside dist/).
           ARM_APP="arm64-dist/Mocha Tools.app"
           X86_APP="x86-dist/Mocha Tools.app"
 
-          # Verify both bundles are present before proceeding
           if [[ ! -d "$ARM_APP" ]]; then
             echo "ERROR: arm64 bundle not found at: $ARM_APP" && exit 1
           fi
@@ -185,12 +178,10 @@ jobs:
             echo "ERROR: x86_64 bundle not found at: $X86_APP" && exit 1
           fi
 
-          # Create output dir and copy arm64 bundle as the base
           mkdir -p dist
           cp -R "$ARM_APP" "dist/Mocha Tools.app"
           OUT_APP="dist/Mocha Tools.app"
 
-          # Replace every Mach-O binary inside MacOS/ with a fat universal binary
           find "$OUT_APP/Contents/MacOS" -type f | while read -r arm_file; do
             rel="${arm_file#$OUT_APP/Contents/MacOS/}"
             x86_file="$X86_APP/Contents/MacOS/$rel"
@@ -200,20 +191,28 @@ jobs:
             fi
           done
 
-          # Overwrite Info.plist with the canonical one
           cp ./builditems/macos/Info.plist "$OUT_APP/Contents/Info.plist"
 
-          # Zip up the .app so it survives the artifact upload
           cd dist
           zip -r "../Mocha-Tools-macOS-universal.zip" "Mocha Tools.app"
 
-      # FIX: free up disk space after merging — the two large artifact
-      # folders are no longer needed and were causing "no space left on
-      # device" when hdiutil tried to create the DMG.
+      # FIX: Aggressively free disk space after merging and before DMG creation.
+      # The runner arrives here with two full Qt .app artifact folders plus the
+      # merged dist/ — this triples the footprint and exhausts the runner disk.
+      # We delete everything no longer needed; create_dmg.sh then *moves* (not
+      # copies) the .app into staging, avoiding another duplication.
       - name: Free up disk space before DMG
         shell: bash
         run: |
+          # Artifact folders are fully consumed by the merge step
           rm -rf arm64-dist x86-dist
+          # Xcode derived data and simulator caches (several GB on macOS runners)
+          sudo rm -rf ~/Library/Developer/Xcode/DerivedData || true
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches || true
+          sudo rm -rf /Library/Developer/CoreSimulator/Volumes/ || true
+          # Homebrew cache
+          brew cleanup --prune=all 2>/dev/null || true
+          echo "=== Disk space after cleanup ==="
           df -h /
 
       - name: Build macOS DMG
@@ -232,7 +231,7 @@ jobs:
 
   build-macos-arm64:
     name: Build macOS (arm64)
-    runs-on: macos-15          # Apple Silicon runner (M-series)
+    runs-on: macos-15
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -273,7 +272,7 @@ jobs:
 
   build-macos-x86:
     name: Build macOS (x86_64)
-    runs-on: macos-15-intel    # Dedicated x86_64 runner (macos-13 was retired Dec 2025)
+    runs-on: macos-15-intel
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -319,7 +318,6 @@ jobs:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
     needs: [build, build-macos]
-    # Only release on pushes to master, not manual runs (unless you want that)
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     permissions:
       contents: write
@@ -356,38 +354,31 @@ jobs:
           set -euo pipefail
           mkdir -p final-assets
 
-          # Windows — PyInstaller onefile output
           WIN_EXE=$(find release-assets/windows -name "Mocha Tools.exe" | head -1)
           cp "$WIN_EXE" "final-assets/Mocha-Tools-windows.exe"
 
-          # Windows NSIS installer (if built)
           SETUP=$(find release-assets/windows -name "MochaTools-Setup-*.exe" | head -1)
           if [[ -f "$SETUP" ]]; then
             cp "$SETUP" "final-assets/$(basename $SETUP)"
           fi
 
-          # Linux — PyInstaller onefile output
           LIN_BIN=$(find release-assets/linux -name "Mocha Tools" -not -name "*.deb" | head -1)
           cp "$LIN_BIN" "final-assets/Mocha-Tools-linux"
           chmod +x "final-assets/Mocha-Tools-linux"
 
-          # Linux .deb (if built)
           DEB=$(find release-assets/linux -name "*.deb" | head -1)
           if [[ -f "$DEB" ]]; then
             cp "$DEB" "final-assets/mocha-tools-${{ steps.version.outputs.VERSION }}.deb"
           fi
 
-          # macOS universal zip
           cp "release-assets/macos/Mocha-Tools-macOS-universal.zip" \
              "final-assets/Mocha-Tools-macOS-universal.zip"
 
-          # macOS DMG (if built)
           DMG=$(find release-assets/macos -name "MochaTools-*-macOS.dmg" | head -1)
           if [[ -f "$DMG" ]]; then
             cp "$DMG" "final-assets/$(basename $DMG)"
           fi
 
-          # Linux installer tarball (if built)
           TARBALL=$(find release-assets/linux -name "MochaTools-*-linux.tar.gz" | head -1)
           if [[ -f "$TARBALL" ]]; then
             cp "$TARBALL" "final-assets/$(basename $TARBALL)"
