@@ -7,8 +7,12 @@ on:
       - "builditems/windows/**"
       - "builditems/macos/**"
       - "builditems/debian_ubuntu/**"
+  workflow_dispatch:
 
 jobs:
+  # ──────────────────────────────────────────────
+  # Windows & Linux build (single job, matrix)
+  # ──────────────────────────────────────────────
   build:
     name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
