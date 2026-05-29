@@ -12,3 +12,9 @@ DEFAULT_MAX_CHUNKS    = 20    # 1–20 parallel chunks in flight at once
 APP_NAME = "MochaTools"
 ORG_NAME = "Mocha"
 HARDCODED_BASE_URL = "https://mocha.my"
+
+# Version — must match the tag pushed to GitHub (e.g. "v1.2.3")
+APP_VERSION = "v3.0.0"
+
+# Auto-updater — points at the GitHub Releases API for this repo
+UPDATE_CHECK_URL = "https://api.github.com/repos/nxllxvxxd2/Mocha-Tools/releases/latest"

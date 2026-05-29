@@ -85,6 +85,34 @@ jobs:
             --description "Mocha Tools" \
             deb_build/=/
 
+      - name: Bundle Linux installer script (Ubuntu only)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          # Produce a self-contained installer bundle: binary + installer.sh
+          mkdir -p linux-installer
+          cp "dist/Mocha Tools" linux-installer/Mocha-Tools-linux
+          chmod +x linux-installer/Mocha-Tools-linux
+          cp installer.sh linux-installer/installer.sh
+          chmod +x linux-installer/installer.sh
+          # Copy icon if present
+          if [[ -f builditems/debian_ubuntu/icon.png ]]; then
+            mkdir -p linux-installer/builditems/debian_ubuntu
+            cp builditems/debian_ubuntu/icon.png linux-installer/builditems/debian_ubuntu/icon.png
+          fi
+          VERSION=$(cat mochatools_app/VERSION | tr -d '\r\n')
+          tar -czf "MochaTools-${VERSION}-linux.tar.gz" -C linux-installer .
+
+      - name: Build NSIS installer (Windows only)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          choco install nsis --no-progress -y
+          cp "dist/Mocha Tools.exe" Mocha-Tools-windows.exe
+          VERSION=$(cat mochatools_app/VERSION | tr -d '\r\n')
+          sed -i "s/!define APP_VERSION.*$/!define APP_VERSION \"${VERSION#v}\"/" installer.nsi
+          makensis installer.nsi
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -92,6 +120,9 @@ jobs:
           path: |
             dist/
             *.deb
+            *.exe
+            MochaTools-Setup-*.exe
+            MochaTools-*-linux.tar.gz
 
   # ──────────────────────────────────────────────
   # macOS — build arm64 + x86_64, then lipo merge
@@ -164,11 +195,19 @@ jobs:
           cd dist
           zip -r "../Mocha-Tools-macOS-universal.zip" "Mocha Tools.app"
 
+      - name: Build macOS DMG
+        shell: bash
+        run: |
+          VERSION=$(cat mochatools_app/VERSION | tr -d '\r\n')
+          bash builditems/macos/create_dmg.sh "dist/Mocha Tools.app" "$VERSION"
+
       - name: Upload universal macOS artifact
         uses: actions/upload-artifact@v4
         with:
           name: macos-universal-build
-          path: Mocha-Tools-macOS-universal.zip
+          path: |
+            Mocha-Tools-macOS-universal.zip
+            MochaTools-*-macOS.dmg
 
   build-macos-arm64:
     name: Build macOS (arm64)
@@ -251,3 +290,103 @@ jobs:
         with:
           name: macos-x86-app
           path: dist/
+
+  # ──────────────────────────────────────────────
+  # Publish GitHub Release with all three assets
+  # ──────────────────────────────────────────────
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build, build-macos]
+    # Only release on pushes to master, not manual runs (unless you want that)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: echo "VERSION=$(cat mochatools_app/VERSION | tr -d '\r\n')" >> $GITHUB_OUTPUT
+
+      - name: Download Windows build
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-latest-build
+          path: release-assets/windows
+
+      - name: Download Linux build
+        uses: actions/download-artifact@v4
+        with:
+          name: ubuntu-latest-build
+          path: release-assets/linux
+
+      - name: Download macOS universal build
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-universal-build
+          path: release-assets/macos
+
+      - name: Rename assets to expected names
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p final-assets
+
+          # Windows — PyInstaller onefile output
+          WIN_EXE=$(find release-assets/windows -name "Mocha Tools.exe" | head -1)
+          cp "$WIN_EXE" "final-assets/Mocha-Tools-windows.exe"
+
+          # Windows NSIS installer (if built)
+          SETUP=$(find release-assets/windows -name "MochaTools-Setup-*.exe" | head -1)
+          if [[ -f "$SETUP" ]]; then
+            cp "$SETUP" "final-assets/$(basename $SETUP)"
+          fi
+
+          # Linux — PyInstaller onefile output
+          LIN_BIN=$(find release-assets/linux -name "Mocha Tools" -not -name "*.deb" | head -1)
+          cp "$LIN_BIN" "final-assets/Mocha-Tools-linux"
+          chmod +x "final-assets/Mocha-Tools-linux"
+
+          # Linux .deb (if built)
+          DEB=$(find release-assets/linux -name "*.deb" | head -1)
+          if [[ -f "$DEB" ]]; then
+            cp "$DEB" "final-assets/mocha-tools-${{ steps.version.outputs.VERSION }}.deb"
+          fi
+
+          # macOS universal zip
+          cp "release-assets/macos/Mocha-Tools-macOS-universal.zip" \
+             "final-assets/Mocha-Tools-macOS-universal.zip"
+
+          # macOS DMG (if built)
+          DMG=$(find release-assets/macos -name "MochaTools-*-macOS.dmg" | head -1)
+          if [[ -f "$DMG" ]]; then
+            cp "$DMG" "final-assets/$(basename $DMG)"
+          fi
+
+          # Linux installer tarball (if built)
+          TARBALL=$(find release-assets/linux -name "MochaTools-*-linux.tar.gz" | head -1)
+          if [[ -f "$TARBALL" ]]; then
+            cp "$TARBALL" "final-assets/$(basename $TARBALL)"
+          fi
+
+          echo "=== Release assets ==="
+          ls -lh final-assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.VERSION }}
+          name: Mocha Tools ${{ steps.version.outputs.VERSION }}
+          body_path: CHANGELOG.md
+          fail_on_unmatched_files: false
+          files: |
+            final-assets/Mocha-Tools-windows.exe
+            final-assets/MochaTools-Setup-*.exe
+            final-assets/Mocha-Tools-linux
+            final-assets/MochaTools-*-linux.tar.gz
+            final-assets/Mocha-Tools-macOS-universal.zip
+            final-assets/MochaTools-*-macOS.dmg
+            final-assets/mocha-tools-*.deb

@@ -61,6 +61,8 @@ from .workers import FilesWorker, RemoteWorker, UploadWorker
 
 
 from .dialogs import FolderBrowserDialog, ShareLinkDialog
+from .updater import UpdateCheckWorker, UpdateDownloadWorker
+from .constants import APP_VERSION
 
 
 # ── Drop Zone Widget ─────────────────────────────────────────────────────────
@@ -1099,11 +1101,7 @@ class SharesTab(QWidget):
         self._status("Loading…")
         self.tree.clear()
         self.copy_bar.hide()
-        self._run_worker("shares")
-
-    def _run_worker(self, op, **kwargs):
-        api_key = self.get_api_key()
-        w = FilesWorker(op, api_key, self.base_url, **kwargs)
+        w = FilesWorker("shares", api_key, self.base_url)
         w.done.connect(self._on_done)
         w.error.connect(self._on_error)
         w.finished.connect(lambda: self._workers.remove(w) if w in self._workers else None)
@@ -1111,57 +1109,44 @@ class SharesTab(QWidget):
         w.start()
 
     def _on_done(self, result):
-        op = result.get("op")
+        if result.get("op") != "shares":
+            return
+        data   = result["data"]
+        shares = data.get("shares", data) if isinstance(data, dict) else data
+        self.tree.setSortingEnabled(False)
+        self.tree.clear()
 
-        if op == "shares":
-            data   = result["data"]
-            shares = data.get("shares", data) if isinstance(data, dict) else data
-            self.tree.setSortingEnabled(False)
-            self.tree.clear()
+        for s in shares:
+            token     = s.get("token", "")
+            file_name = (
+                s.get("originalName")
+                or s.get("original_name")
+                or s.get("name")
+                or s.get("fileName")
+                or s.get("file_name")
+                or token
+            )
+            is_active = s.get("is_active", s.get("isActive", True))
+            expires   = s.get("expires_at") or s.get("expiresAt") or s.get("expiry") or "Never"
+            if expires and expires != "Never" and len(expires) > 10:
+                expires = expires[:10]
+            url = f"{self.base_url}/share/{token}" if token else ""
 
-            for s in shares:
-                token     = s.get("token", "")
-                file_name = (
-                    s.get("originalName")
-                    or s.get("original_name")
-                    or s.get("name")
-                    or s.get("fileName")
-                    or s.get("file_name")
-                    or token
-                )
-                is_active = s.get("is_active", s.get("isActive", True))
-                expires   = s.get("expires_at") or s.get("expiresAt") or s.get("expiry") or "Never"
-                if expires and expires != "Never" and len(expires) > 10:
-                    expires = expires[:10]
-                url = f"{self.base_url}/share/{token}" if token else ""
+            active_text  = "● Active"   if is_active else "○ Inactive"
+            active_color = "#4ade80"    if is_active else "#9ca3af"
 
-                active_text  = "● Active"   if is_active else "○ Inactive"
-                active_color = "#4ade80"    if is_active else "#9ca3af"
+            item = QTreeWidgetItem([file_name, url, active_text, expires])
+            item.setData(0, Qt.ItemDataRole.UserRole, {
+                "token": token, "url": url,
+                "is_active": is_active, "file_name": file_name,
+            })
+            item.setForeground(2, QColor(active_color))
+            item.setForeground(1, QColor("#9ca3af"))
+            self.tree.addTopLevelItem(item)
 
-                item = QTreeWidgetItem([file_name, url, active_text, expires])
-                item.setData(0, Qt.ItemDataRole.UserRole, {
-                    "token": token, "url": url,
-                    "is_active": is_active, "file_name": file_name,
-                })
-                item.setForeground(2, QColor(active_color))
-                item.setForeground(1, QColor("#9ca3af"))
-                self.tree.addTopLevelItem(item)
-
-            self.tree.setSortingEnabled(True)
-            count = self.tree.topLevelItemCount()
-            self._status(f"{count} share{'s' if count != 1 else ''}")
-
-        elif op == "delete_shares":
-            errors  = result.get("errors", [])
-            deleted = result.get("deleted", 0)
-            if errors:
-                QMessageBox.warning(
-                    self, "Partial Error",
-                    f"Deleted {deleted} share(s).\n"
-                    f"{len(errors)} failed:\n" + "\n".join(errors),
-                )
-            self._status(f"✓ Deleted {deleted} share{'s' if deleted != 1 else ''}")
-            self.refresh()
+        self.tree.setSortingEnabled(True)
+        count = self.tree.topLevelItemCount()
+        self._status(f"{count} share{'s' if count != 1 else ''}")
 
     def _on_error(self, msg):
         self._status(f"✗ {msg}")
@@ -1226,13 +1211,21 @@ class SharesTab(QWidget):
                                 QMessageBox.StandardButton.No
                                 ) != QMessageBox.StandardButton.Yes:
             return
-        tokens = [meta["token"] for meta in items if meta.get("token")]
-        if not tokens:
-            return
-        self.delete_btn.setEnabled(False)
-        self._status(f"Deleting {len(tokens)} share{'s' if len(tokens) != 1 else ''}…")
+        api_key = self.get_api_key()
+        import requests as _req
+        for meta in items:
+            try:
+                resp = _req.delete(
+                    f"{self.base_url}/api/shares/{meta['token']}",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    timeout=15,
+                )
+                resp.raise_for_status()
+            except Exception as e:
+                QMessageBox.warning(self, "Error", str(e))
+                return
         self.copy_bar.hide()
-        self._run_worker("delete_shares", tokens=tokens)
+        self.refresh()
 
     def _context_menu(self, pos):
         item = self.tree.itemAt(pos)
@@ -1317,6 +1310,11 @@ class MochaTools(QMainWindow):
         self.shares_tab = SharesTab(
             get_api_key=lambda: self.api_key_edit.text().strip(),
         )
+
+        # Update worker state
+        self._update_tag: str = ""
+        self._update_url: str = ""
+        self._update_dl_worker: UpdateDownloadWorker | None = None
 
         # ── Settings tab ─────────────────────────────────────────────────────
         settings_tab = QWidget()
@@ -1418,6 +1416,38 @@ class MochaTools(QMainWindow):
         chunk_lay.addLayout(mc_row)
 
         settings_lay.addWidget(chunk_card)
+
+        # ── Updates ──────────────────────────────────────────────────────────
+        settings_lay.addWidget(self._make_section_header("Updates"))
+        update_card = self._make_card()
+        update_lay  = QVBoxLayout(update_card)
+        update_lay.setSpacing(8)
+
+        self.update_status_lbl = QLabel(f"Current version: {APP_VERSION}")
+        self.update_status_lbl.setObjectName("field_label")
+        self.update_status_lbl.setWordWrap(True)
+        update_lay.addWidget(self.update_status_lbl)
+
+        self.update_progress = QProgressBar()
+        self.update_progress.setValue(0)
+        self.update_progress.hide()
+        update_lay.addWidget(self.update_progress)
+
+        update_btn_row = QHBoxLayout()
+        self.check_update_btn = QPushButton("Check for updates")
+        self.check_update_btn.setObjectName("browse_btn")
+        self.check_update_btn.clicked.connect(self._check_for_updates)
+        update_btn_row.addWidget(self.check_update_btn)
+
+        self.install_update_btn = QPushButton("↓  Install update")
+        self.install_update_btn.setObjectName("upload_btn")
+        self.install_update_btn.clicked.connect(self._install_update)
+        self.install_update_btn.hide()
+        update_btn_row.addWidget(self.install_update_btn)
+        update_btn_row.addStretch()
+        update_lay.addLayout(update_btn_row)
+
+        settings_lay.addWidget(update_card)
         settings_lay.addStretch()
 
         self.tabs.addTab(upload_tab, "↑  Upload")
@@ -1799,6 +1829,78 @@ class MochaTools(QMainWindow):
         elif index != 4:
             self._save_settings()
 
+
+    # ── Auto-update ───────────────────────────────────────────────────────────
+
+    def _check_for_updates(self, silent: bool = False):
+        """Kick off a background update check. silent=True suppresses 'up to date' toast."""
+        self.check_update_btn.setEnabled(False)
+        self.update_status_lbl.setText("Checking for updates…")
+        w = UpdateCheckWorker(self)
+        w.update_available.connect(self._on_update_available)
+        w.up_to_date.connect(lambda: self._on_up_to_date(silent))
+        w.error.connect(lambda msg: self._on_update_error(msg, silent))
+        w.finished.connect(lambda: self.check_update_btn.setEnabled(True))
+        w.start()
+
+    def _on_update_available(self, tag: str, url: str, notes: str):
+        self._update_tag = tag
+        self._update_url = url
+        self.update_status_lbl.setText(
+            f"Update available: {tag}  (current: {APP_VERSION})"
+        )
+        self.install_update_btn.setVisible(bool(url))
+        if not url:
+            self.update_status_lbl.setText(
+                f"Update {tag} available — no binary for this platform. "
+                "Download manually from github.com/nxllxvxxd2/Mocha-Tools/releases"
+            )
+
+    def _on_up_to_date(self, silent: bool):
+        self.update_status_lbl.setText(f"You're up to date ({APP_VERSION})")
+        self.install_update_btn.hide()
+        if not silent:
+            QMessageBox.information(self, "Up to date", f"Mocha Tools {APP_VERSION} is the latest version.")
+
+    def _on_update_error(self, msg: str, silent: bool):
+        self.update_status_lbl.setText(f"Update check failed: {msg}")
+        if not silent:
+            QMessageBox.warning(self, "Update check failed", msg)
+
+    def _install_update(self):
+        if not self._update_url:
+            return
+        self.install_update_btn.setEnabled(False)
+        self.update_progress.setValue(0)
+        self.update_progress.show()
+
+        w = UpdateDownloadWorker(self._update_url, self)
+        w.progress.connect(self.update_progress.setValue)
+        w.status.connect(self.update_status_lbl.setText)
+        w.done.connect(self._on_update_done)
+        w.error.connect(self._on_update_dl_error)
+        w.start()
+        self._update_dl_worker = w
+
+    def _on_update_done(self):
+        self.update_progress.setValue(100)
+        self.install_update_btn.hide()
+        result = QMessageBox.question(
+            self, "Restart required",
+            f"Mocha Tools {self._update_tag} has been installed.\n\nRestart now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if result == QMessageBox.StandardButton.Yes:
+            import subprocess, sys
+            subprocess.Popen([sys.executable] + sys.argv)
+            QApplication.quit()
+
+    def _on_update_dl_error(self, msg: str):
+        self.update_progress.hide()
+        self.install_update_btn.setEnabled(True)
+        self.update_status_lbl.setText(f"Download failed: {msg}")
+        QMessageBox.warning(self, "Update failed", msg)
+
     def closeEvent(self, event):
         self._save_settings()
         # Stop any running workers
@@ -1833,6 +1935,8 @@ def main():
 
     win = MochaTools()
     win.show()
+    # Silent background update check on every launch
+    QTimer.singleShot(2000, lambda: win._check_for_updates(silent=True))
     sys.exit(app.exec())
 
 
