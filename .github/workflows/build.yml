@@ -120,7 +120,7 @@ jobs:
 
           # Stamp version into installer.nsi and version.txt via helper script
           VERSION=$(cat mochatools_app/VERSION | tr -d '\r\n')
-          python3 builditems/windows/patch_version.py "${VERSION#v}"
+          PYTHONUTF8=1 python3 builditems/windows/patch_version.py "${VERSION#v}"
 
           # Use cmd.exe to call makensis — Chocolatey doesn't add it to
           # the Git Bash PATH in the same shell session, but the Win32

@@ -1,16 +1,20 @@
 """
-patch_version.py — stamps the current version into installer.nsi and version.txt
+patch_version.py -- stamps the current version into installer.nsi and version.txt
 
 Called by build.yml:
     python3 builditems/windows/patch_version.py <bare_version>
     e.g.    python3 builditems/windows/patch_version.py 1.2.3
 """
+import io
 import re
 import sys
 from pathlib import Path
 
+# Force UTF-8 stdout so Windows cp1252 console doesn't choke on any characters
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+
 def patch(bare: str):
-    # ── installer.nsi ─────────────────────────────────────────────────────────
+    # -- installer.nsi --------------------------------------------------------
     nsi = Path("installer.nsi")
     if nsi.exists():
         content = nsi.read_text(encoding="utf-8")
@@ -20,13 +24,13 @@ def patch(bare: str):
             content,
         )
         nsi.write_text(content, encoding="utf-8")
-        print(f"  installer.nsi   → APP_VERSION = {bare}")
+        print(f"  installer.nsi   : APP_VERSION = {bare}")
 
-    # ── builditems/windows/version.txt ────────────────────────────────────────
+    # -- builditems/windows/version.txt ---------------------------------------
     vtxt = Path("builditems/windows/version.txt")
     if vtxt.exists():
         parts = bare.split(".")
-        # Pad to four parts: 1.2.3 → (1, 2, 3, 0)
+        # Pad to four parts: 1.2.3 -> (1, 2, 3, 0)
         while len(parts) < 4:
             parts.append("0")
         tuple_str = f"({', '.join(parts)})"
@@ -45,7 +49,7 @@ def patch(bare: str):
             content,
         )
         vtxt.write_text(content, encoding="utf-8")
-        print(f"  version.txt     → {tuple_str}  /  {bare}.0")
+        print(f"  version.txt     : {tuple_str} / {bare}.0")
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
