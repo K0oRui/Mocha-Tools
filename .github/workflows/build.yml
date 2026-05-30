@@ -4,9 +4,6 @@ on:
   push:
     branches: [ "master" ]
     paths:
-      - "builditems/windows/**"
-      - "builditems/macos/**"
-      - "builditems/debian_ubuntu/**"
       - "VERSION"
   workflow_dispatch:
 
