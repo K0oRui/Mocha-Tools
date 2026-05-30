@@ -13,8 +13,24 @@ APP_NAME = "MochaTools"
 ORG_NAME = "Mocha"
 HARDCODED_BASE_URL = "https://mocha.my"
 
-# Version — must match the tag pushed to GitHub (e.g. "v1.2.3")
-APP_VERSION = "v3.0.0"
+# Version — read from the VERSION file in the repo root at runtime.
+# Falls back to the hardcoded string only if the file cannot be found
+# (e.g. inside a frozen PyInstaller bundle that didn't bundle VERSION).
+import os as _os
+
+def _read_version() -> str:
+    # Walk up from this file's directory to find VERSION in the repo root
+    here = _os.path.dirname(_os.path.abspath(__file__))
+    for _ in range(4):  # check up to 4 levels up
+        candidate = _os.path.join(here, "VERSION")
+        if _os.path.isfile(candidate):
+            v = open(candidate).read().strip()
+            return v if v else "v0.0.0"
+        here = _os.path.dirname(here)
+    return "v3.0.0"  # last-resort fallback
+
+APP_VERSION = _read_version()
+del _read_version, _os
 
 # Auto-updater — points at the GitHub Releases API for this repo
 UPDATE_CHECK_URL = "https://api.github.com/repos/nxllxvxxd2/Mocha-Tools/releases/latest"
