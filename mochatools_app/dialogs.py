@@ -62,15 +62,22 @@ class FolderBrowserDialog(QDialog):
         btn_row.addStretch()
 
         cancel_btn = QPushButton("Cancel")
-        cancel_btn.setFixedHeight(38)
-        cancel_btn.setMinimumWidth(100)
+        cancel_btn.setFixedSize(160, 36)
+        cancel_btn.setStyleSheet(
+            "min-height: 0px; padding: 0px 16px; font-size: 13px; font-weight: 600;"
+            "background: #1e1c19; color: #f0ece6; border: 1px solid #3d3a35; border-radius: 7px;"
+        )
         cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(cancel_btn)
 
         ok_btn = QPushButton("Select this folder")
         ok_btn.setObjectName("upload_btn")
-        ok_btn.setFixedHeight(38)
-        ok_btn.setMinimumWidth(150)
+        ok_btn.setFixedSize(160, 36)
+        # Override the stylesheet min-height so it doesn't inflate the button
+        ok_btn.setStyleSheet(
+            "min-height: 0px; padding: 0px 16px; font-size: 13px; font-weight: 700;"
+            "background: #c8a96e; color: #111010; border: none; border-radius: 7px;"
+        )
         ok_btn.clicked.connect(self._on_accept)
         btn_row.addWidget(ok_btn)
 

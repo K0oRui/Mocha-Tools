@@ -743,12 +743,14 @@ class RemoteTab(QWidget):
         ingest_lay.addLayout(name_row)
 
         dest_row = QHBoxLayout()
+        dest_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         dest_lbl = QLabel("Folder")
         dest_lbl.setObjectName("field_label")
         self.path_edit = QLineEdit()
         self.path_edit.setText("/")
         browse_btn = QPushButton("Browse…")
         browse_btn.setObjectName("browse_btn")
+        browse_btn.setFixedSize(80, 34)
         browse_btn.clicked.connect(self._browse_dest)
         dest_row.addWidget(dest_lbl)
         dest_row.addWidget(self.path_edit, 1)
@@ -1252,10 +1254,93 @@ class SharesTab(QWidget):
 
 
 # ── Main Window ──────────────────────────────────────────────────────────────
+
+def _make_app_icon():
+    """
+    Build a 256x256 Mocha Tools icon programmatically:
+      * Rounded square in dark #181614
+      * Warm gold (#c8a96e) stylised coffee-cup silhouette
+    Returns a QIcon usable for both the window title bar and taskbar.
+    """
+    from PyQt6.QtGui import QPixmap, QPainter, QColor, QPainterPath, QPen
+    from PyQt6.QtCore import QRectF, Qt
+
+    SIZE = 256
+    px = QPixmap(SIZE, SIZE)
+    px.fill(Qt.GlobalColor.transparent)
+
+    p = QPainter(px)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    # Rounded background square
+    bg_path = QPainterPath()
+    bg_path.addRoundedRect(QRectF(0, 0, SIZE, SIZE), 52, 52)
+    p.fillPath(bg_path, QColor("#181614"))
+
+    gold = QColor("#c8a96e")
+    dark = QColor("#111010")
+
+    # Cup body (trapezoid)
+    cup = QPainterPath()
+    cup.moveTo(68,  90)
+    cup.lineTo(188, 90)
+    cup.lineTo(174, 185)
+    cup.lineTo(82,  185)
+    cup.closeSubpath()
+    p.fillPath(cup, gold)
+
+    # Cup handle
+    handle = QPainterPath()
+    handle.addEllipse(QRectF(172, 108, 46, 52))
+    inner_h = QPainterPath()
+    inner_h.addEllipse(QRectF(182, 118, 26, 32))
+    handle -= inner_h
+    clip = QPainterPath()
+    clip.addRect(QRectF(185, 100, 80, 80))
+    handle = handle.intersected(clip)
+    p.fillPath(handle, gold)
+
+    # Saucer
+    saucer = QPainterPath()
+    saucer.addRoundedRect(QRectF(58, 183, 140, 14), 7, 7)
+    p.fillPath(saucer, gold)
+
+    # Steam wisps
+    pen = QPen(gold, 7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+
+    wl = QPainterPath()
+    wl.moveTo(103, 82)
+    wl.cubicTo(103, 68, 115, 64, 115, 52)
+    p.drawPath(wl)
+
+    wm = QPainterPath()
+    wm.moveTo(128, 82)
+    wm.cubicTo(128, 64, 116, 60, 116, 44)
+    p.drawPath(wm)
+
+    wr = QPainterPath()
+    wr.moveTo(153, 82)
+    wr.cubicTo(153, 68, 141, 64, 141, 52)
+    p.drawPath(wr)
+
+    # Liquid surface line inside cup
+    pen2 = QPen(dark, 5)
+    p.setPen(pen2)
+    surf = QPainterPath()
+    surf.moveTo(75, 112)
+    surf.lineTo(181, 112)
+    p.drawPath(surf)
+
+    p.end()
+    return QIcon(px)
+
 class MochaTools(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Mocha Tools")
+        self.setWindowIcon(_make_app_icon())
         self.setMinimumWidth(520)
         self.setMaximumWidth(640)
         self.selected_files = []   # list of local absolute paths
@@ -1476,11 +1561,13 @@ class MochaTools(QMainWindow):
         dest_lay.setSpacing(8)
 
         dest_row = QHBoxLayout()
+        dest_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         dest_lbl = QLabel("Folder")
         dest_lbl.setObjectName("field_label")
         self.upload_path_edit.setPlaceholderText("/")
         browse_dest_btn = QPushButton("Browse…")
         browse_dest_btn.setObjectName("browse_btn")
+        browse_dest_btn.setFixedSize(80, 34)
         browse_dest_btn.setToolTip("Browse remote folders to pick an upload destination")
         browse_dest_btn.clicked.connect(self._browse_upload_dest)
         dest_row.addWidget(dest_lbl)

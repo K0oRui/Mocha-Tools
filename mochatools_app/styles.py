@@ -46,10 +46,12 @@ QLineEdit {
     background-color: #1e1c19;
     border: 1px solid #2e2b27;
     border-radius: 8px;
-    padding: 7px 10px;
+    padding: 0px 10px;
     color: #f0ece6;
     font-size: 13px;
     selection-background-color: #c8a96e;
+    min-height: 34px;
+    max-height: 34px;
 }
 QLineEdit:focus {
     border: 1px solid #c8a96e;
@@ -96,7 +98,6 @@ QPushButton#upload_btn {
     font-size: 13px;
     font-weight: 700;
     letter-spacing: 0.3px;
-    min-height: 38px;
 }
 QPushButton#upload_btn:hover   { background: #d4b87a; }
 QPushButton#upload_btn:pressed { background: #a88950; }
@@ -106,9 +107,10 @@ QPushButton#browse_btn {
     color: #c8a96e;
     border: 1px solid #c8a96e44;
     border-radius: 8px;
-    padding: 6px 14px;
+    padding: 0px 14px;
     font-size: 12px;
-    min-height: 32px;
+    min-height: 34px;
+    max-height: 34px;
 }
 QPushButton#browse_btn:hover { background-color: #252320; border-color: #c8a96e88; }
 QCheckBox {
@@ -247,12 +249,12 @@ QMenu::item:selected { background: #c8a96e33; }
 QMenu::separator { height: 1px; background: #2e2b27; margin: 4px 8px; }
 QDialog { background-color: #181614; }
 QDialogButtonBox QPushButton {
-    min-width: 110px;
-    min-height: 34px;
+    min-width: 72px;
+    min-height: 30px;
     border-radius: 7px;
     font-size: 12px;
     font-weight: 600;
-    padding: 6px 16px;
+    padding: 4px 16px;
     background: #1e1c19;
     color: #f0ece6;
     border: 1px solid #3d3a35;
