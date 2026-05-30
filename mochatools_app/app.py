@@ -84,7 +84,7 @@ class DropZone(QFrame):
 
         icon = QLabel("↑")
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setStyleSheet("color: #404449; font-size: 24px; background: transparent;")
+        icon.setStyleSheet("color: #4a4a4a; font-size: 24px; background: transparent;")
 
         row = QHBoxLayout()
         row.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -103,7 +103,7 @@ class DropZone(QFrame):
 
         self.file_label = QLabel("")
         self.file_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.file_label.setStyleSheet("color: #e11d48; font-size: 12px; font-weight:600; background:transparent;")
+        self.file_label.setStyleSheet("color: #c8a96e; font-size: 12px; font-weight:600; background:transparent;")
         layout.addWidget(self.file_label)
 
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -289,7 +289,10 @@ class FilesBrowserTab(QWidget):
         self.share_bar.setWordWrap(True)
         self.share_bar.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse |
-            Qt.TextInteractionFlag.LinksAccessibleByMouse)
+            Qt.TextInteractionFlag.TextSelectableByKeyboard |
+            Qt.TextInteractionFlag.LinksAccessibleByMouse |
+            Qt.TextInteractionFlag.LinksAccessibleByKeyboard)
+        self.share_bar.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
         self.share_bar.setOpenExternalLinks(True)
         self.share_bar.hide()
         outer.addWidget(self.share_bar)
@@ -441,7 +444,7 @@ class FilesBrowserTab(QWidget):
                 f"📁  {f['name']}", "", "folder", "", ""
             ])
             item.setData(0, Qt.ItemDataRole.UserRole, {"_type": "folder", **f})
-            item.setForeground(0, QColor("#e11d48"))
+            item.setForeground(0, QColor("#c8a96e"))
             self.tree.addTopLevelItem(item)
 
         # Add file rows
@@ -616,7 +619,7 @@ class FilesBrowserTab(QWidget):
             )
             if ans == QMessageBox.StandardButton.No:
                 self.share_bar.setText(
-                    f'Share link: <a href="{existing_url}" style="color:#e11d48;">'
+                    f'Share link: <a href="{existing_url}" style="color:#c8a96e;">'
                     f'{existing_url}</a>')
                 self.share_bar.show()
                 return
@@ -675,10 +678,10 @@ class FilesBrowserTab(QWidget):
 
         menu = QMenu(self)
         menu.setStyleSheet("""
-            QMenu { background:#1a1c1f; border:1px solid #2a2d32;
-                    color:#e0e0e0; font-size:12px; }
+            QMenu { background:#1f1f1f; border:1px solid #3a3a3a; border-radius:8px;
+                    color:#f0f0f0; font-size:12px; }
             QMenu::item { padding:6px 24px; }
-            QMenu::item:selected { background:#e11d4833; }
+            QMenu::item:selected { background:#c8a96e33; }
         """)
 
         if meta.get("_type") == "file":
@@ -1233,10 +1236,10 @@ class SharesTab(QWidget):
             return
         menu = QMenu(self)
         menu.setStyleSheet("""
-            QMenu { background:#1a1c1f; border:1px solid #2a2d32;
-                    color:#e0e0e0; font-size:12px; }
+            QMenu { background:#1f1f1f; border:1px solid #3a3a3a; border-radius:8px;
+                    color:#f0f0f0; font-size:12px; }
             QMenu::item { padding:6px 24px; }
-            QMenu::item:selected { background:#e11d4833; }
+            QMenu::item:selected { background:#c8a96e33; }
         """)
         menu.addAction("⧉  Copy Link",     self._copy_selected)
         menu.addAction("◎  Toggle Active", self._toggle_selected)
@@ -1536,8 +1539,11 @@ class MochaTools(QMainWindow):
         self.share_result.setWordWrap(True)
         self.share_result.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse |
-            Qt.TextInteractionFlag.LinksAccessibleByMouse
+            Qt.TextInteractionFlag.TextSelectableByKeyboard |
+            Qt.TextInteractionFlag.LinksAccessibleByMouse |
+            Qt.TextInteractionFlag.LinksAccessibleByKeyboard
         )
+        self.share_result.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
         self.share_result.setOpenExternalLinks(True)
         self.share_result.hide()
         status_lay.addWidget(self.share_result)
@@ -1703,7 +1709,7 @@ class MochaTools(QMainWindow):
         self.progress_bar.setValue(0)
         self.pct_label.setText("0%")
         self.speed_label.setText("")
-        self._badge("Uploading", "#e11d48")
+        self._badge("Uploading", "#c8a96e")
 
         expiry_hours = self._expiry_map[self.expiry_combo.currentIndex()][1] if self.create_share_cb.isChecked() else None
         max_dl       = self.max_dl_spin.value() if self.create_share_cb.isChecked() else 0
@@ -1787,7 +1793,7 @@ class MochaTools(QMainWindow):
         self._log(f"✓ Done! File ID: {result['file_id']}")
         if result.get("share_url"):
             url = result["share_url"]
-            self.share_result.setText(f'<a href="{url}" style="color:#e11d48;">{url}</a>')
+            self.share_result.setText(f'<a href="{url}" style="color:#c8a96e;">{url}</a>')
             self.share_result.show()
 
     def _on_error(self, msg):
@@ -1923,14 +1929,14 @@ def main():
     app.setStyleSheet(STYLESHEET)
 
     palette = QPalette()
-    palette.setColor(QPalette.ColorRole.Window,           QColor("#050506"))
-    palette.setColor(QPalette.ColorRole.WindowText,       QColor("#e0e0e0"))
-    palette.setColor(QPalette.ColorRole.Base,             QColor("#08090b"))
-    palette.setColor(QPalette.ColorRole.Text,             QColor("#e0e0e0"))
-    palette.setColor(QPalette.ColorRole.Button,           QColor("#101114"))
-    palette.setColor(QPalette.ColorRole.ButtonText,       QColor("#e0e0e0"))
-    palette.setColor(QPalette.ColorRole.Highlight,        QColor("#e11d48"))
-    palette.setColor(QPalette.ColorRole.HighlightedText,  QColor("#050506"))
+    palette.setColor(QPalette.ColorRole.Window,           QColor("#111010"))
+    palette.setColor(QPalette.ColorRole.WindowText,       QColor("#f0ece6"))
+    palette.setColor(QPalette.ColorRole.Base,             QColor("#141210"))
+    palette.setColor(QPalette.ColorRole.Text,             QColor("#f0ece6"))
+    palette.setColor(QPalette.ColorRole.Button,           QColor("#1e1c19"))
+    palette.setColor(QPalette.ColorRole.ButtonText,       QColor("#f0ece6"))
+    palette.setColor(QPalette.ColorRole.Highlight,        QColor("#c8a96e"))
+    palette.setColor(QPalette.ColorRole.HighlightedText,  QColor("#111010"))
     app.setPalette(palette)
 
     win = MochaTools()

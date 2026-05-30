@@ -245,7 +245,37 @@ jobs:
         shell: bash
         run: |
           VERSION=$(cat VERSION | tr -d '\r\n')
-          bash builditems/macos/create_dmg.sh "dist/Mocha Tools.app" "$VERSION"
+          APP="dist/Mocha Tools.app"
+          DMG_NAME="MochaTools-${VERSION}-macOS.dmg"
+
+          # The zip is already uploaded as an artifact; remove it to free space
+          rm -f Mocha-Tools-macOS-universal.zip || true
+
+          echo "=== Disk space before DMG ==="
+          df -h /
+
+          # Use create-dmg (Homebrew) — much lighter than hdiutil directly.
+          # It builds a read-write image, copies the app in, then converts to
+          # compressed UDZO — far less peak disk usage than hdiutil create alone.
+          brew install create-dmg 2>/dev/null || true
+
+          create-dmg \
+            --volname "Mocha Tools" \
+            --window-size 540 380 \
+            --icon-size 128 \
+            --icon "Mocha Tools.app" 130 160 \
+            --app-drop-link 390 160 \
+            --no-internet-enable \
+            "$DMG_NAME" \
+            "$APP" || {
+              # Fallback: bare hdiutil if create-dmg still fails
+              echo "create-dmg failed, falling back to hdiutil"
+              hdiutil create \
+                -volname "Mocha Tools" \
+                -srcfolder "$APP" \
+                -ov -format UDZO \
+                "$DMG_NAME"
+            }
 
       - name: Upload universal macOS artifact
         uses: actions/upload-artifact@v4

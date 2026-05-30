@@ -5,7 +5,6 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
-    QDialogButtonBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -43,30 +42,39 @@ class FolderBrowserDialog(QDialog):
         # Folder list
         self.list = QListWidget()
         self.list.setStyleSheet("""
-            QListWidget { background:#0e1012; border:1px solid #2a2d32;
-                          border-radius:0px; color:#e0e0e0; font-size:13px; }
+            QListWidget { background:#141210; border:1px solid #2e2b27;
+                          border-radius:0px; color:#f0ece6; font-size:13px; }
             QListWidget::item { padding:6px 10px; }
-            QListWidget::item:selected { background:#e11d4833; color:#e0e0e0; }
-            QListWidget::item:hover { background:#15161a; }
+            QListWidget::item:selected { background:#c8a96e33; color:#f0ece6; }
+            QListWidget::item:hover { background:#1e1c19; }
         """)
         self.list.itemDoubleClicked.connect(self._on_double_click)
         lay.addWidget(self.list)
 
         # Status
         self.status_lbl = QLabel("")
-        self.status_lbl.setStyleSheet("color:#9ca3af; font-size:11px; background:transparent;")
+        self.status_lbl.setStyleSheet("color:#9c9484; font-size:11px; background:transparent;")
         lay.addWidget(self.status_lbl)
 
-        # Buttons
-        btns = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        btns.accepted.connect(self._on_accept)
-        btns.rejected.connect(self.reject)
-        # Style the OK button
-        btns.button(QDialogButtonBox.StandardButton.Ok).setObjectName("upload_btn")
-        btns.button(QDialogButtonBox.StandardButton.Ok).setText("Select this folder")
-        lay.addWidget(btns)
+        # Buttons — manual layout so both buttons get identical sizing
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        btn_row.addStretch()
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setFixedHeight(38)
+        cancel_btn.setMinimumWidth(100)
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+
+        ok_btn = QPushButton("Select this folder")
+        ok_btn.setObjectName("upload_btn")
+        ok_btn.setFixedHeight(38)
+        ok_btn.setMinimumWidth(150)
+        ok_btn.clicked.connect(self._on_accept)
+        btn_row.addWidget(ok_btn)
+
+        lay.addLayout(btn_row)
 
         self._navigate(self.current)
 
@@ -100,7 +108,7 @@ class FolderBrowserDialog(QDialog):
             parent = parent if parent != "/" else "/"
             item = QListWidgetItem("↑  .. (go up)")
             item.setData(Qt.ItemDataRole.UserRole, ("dir", parent))
-            item.setForeground(QColor("#9ca3af"))
+            item.setForeground(QColor("#9c9484"))
             self.list.addItem(item)
 
         # Collect folders — API returns {"files": [...], "folders": [...], ...}
@@ -186,7 +194,7 @@ class ShareLinkDialog(QDialog):
         self.url_edit.setReadOnly(True)
         self.url_edit.setStyleSheet(
             "background:#08090b; border:1px solid #35101a; border-radius:0px;"
-            "padding:8px 10px; color:#e11d48; font-family:'Consolas','Fira Code','Courier New',monospace;"
+            "padding:8px 10px; color:#c8a96e; font-family:'Consolas','Fira Code','Courier New',monospace;"
             "font-size:12px;"
         )
         layout.addWidget(self.url_edit)
@@ -219,4 +227,3 @@ class ShareLinkDialog(QDialog):
         QApplication.clipboard().setText(self.url)
         self.copy_btn.setText("✓  Copied!")
         QTimer.singleShot(2000, lambda: self.copy_btn.setText("⧉  Copy URL"))
-
