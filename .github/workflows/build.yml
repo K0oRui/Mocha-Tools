@@ -1,381 +1,114 @@
-name: Build Multi-Platform
+#!/usr/bin/env python3
+"""
+build.py — Cross-platform build script for Mocha Tools
 
-on:
-  push:
-    branches: [ "master" ]
-    paths:
-      - "VERSION"
-  workflow_dispatch:
+Usage:
+    python build.py
 
-jobs:
-  # ──────────────────────────────────────────────
-  # Windows & Linux build (single job, matrix)
-  # ──────────────────────────────────────────────
-  build:
-    name: Build on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
+Produces:
+    Windows : dist/windows-<version>.zip        (contains the .exe)
+    macOS   : dist/macos-<arch>-<version>.zip   (contains Mocha Tools.app)
+    Linux   : dist/debian_ubuntu-<version>.zip  (contains the binary)
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+Why --onedir on macOS?
+    PyQt6 on macOS requires Qt frameworks and plugins to sit in a fixed
+    relative directory structure next to the binary.  --onefile breaks
+    that by extracting everything to a random temp path at launch, which
+    causes a segmentation fault before the event loop even starts.
+    --onedir (packaged as a .app bundle) keeps the structure intact.
+    Windows and Linux do not have this constraint so --onefile is fine.
+"""
 
-      - name: Cache pip packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
+import os
+import platform
+import shutil
+import subprocess
+import sys
+import zipfile
 
-      - name: Read version
-        shell: bash
-        run: echo "VERSION=$(cat VERSION | tr -d '\r\n')" >> $GITHUB_ENV
+# ── Read version ──────────────────────────────────────────────────────────────
+VERSION_FILE = os.path.join(os.path.dirname(__file__), "VERSION")
+if not os.path.isfile(VERSION_FILE):
+    print("ERROR: VERSION file not found in repo root.")
+    sys.exit(1)
 
-      - name: Show version
-        shell: bash
-        run: echo "Building version ${{ env.VERSION }}"
+VERSION = open(VERSION_FILE).read().strip()
+print(f"Building Mocha Tools {VERSION}")
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+SYSTEM  = platform.system()
+MACHINE = platform.machine().lower()   # x86_64 | arm64
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
+# ── Shared PyInstaller flags ───────────────────────────────────────────────────
+BASE_CMD = [
+    sys.executable, "-m", "PyInstaller",
+    "--noconsole",
+    "--windowed",
+    "--name", "Mocha Tools",
+    "--add-data", f"VERSION{';' if SYSTEM == 'Windows' else ':'}.",
+    "mochatools.py",
+]
 
-      - name: Build executable
-        shell: bash
-        run: |
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            pyinstaller --onefile --noconsole \
-              --collect-submodules mochatools_app \
-              --version-file ./builditems/windows/version.txt \
-              --icon=./builditems/windows/icon.ico \
-              --name "Mocha Tools" \
-              mochatools.py
-          else
-            pyinstaller --onefile --noconsole \
-              --collect-submodules mochatools_app \
-              --icon=./builditems/debian_ubuntu/icon.png \
-              --name "Mocha Tools" \
-              mochatools.py
-          fi
+# ── Platform-specific flags ───────────────────────────────────────────────────
+if SYSTEM == "Darwin":
+    # --onedir is REQUIRED on macOS with PyQt6 — --onefile causes a segfault
+    # because Qt cannot locate its plugin/framework paths from a temp dir.
+    CMD = BASE_CMD + ["--onedir"]
+    ARCH_TAG = "arm64" if MACHINE == "arm64" else "x86_64"
+    ASSET_NAME = f"macos-{ARCH_TAG}-{VERSION}"
+elif SYSTEM == "Windows":
+    CMD = BASE_CMD + ["--onefile"]
+    ASSET_NAME = f"windows-{VERSION}"
+else:
+    # Linux
+    CMD = BASE_CMD + ["--onefile"]
+    ASSET_NAME = f"debian_ubuntu-{VERSION}"
 
-      - name: Build .deb package (Ubuntu only)
-        if: matrix.os == 'ubuntu-latest'
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ruby ruby-dev build-essential
-          sudo gem install --no-document fpm
-          mkdir -p deb_build/usr/bin
-          cp "dist/Mocha Tools" deb_build/usr/bin/mochatools
-          chmod 755 deb_build/usr/bin/mochatools
-          fpm -s dir -t deb \
-            -n mocha-tools \
-            -v "${{ env.VERSION }}" \
-            --description "Mocha Tools" \
-            "deb_build/=/"
+# ── Clean previous build ───────────────────────────────────────────────────────
+for d in ("build", "dist"):
+    if os.path.exists(d):
+        shutil.rmtree(d)
 
-      - name: Bundle Linux installer script (Ubuntu only)
-        if: matrix.os == 'ubuntu-latest'
-        shell: bash
-        run: |
-          mkdir -p linux-installer
-          cp "dist/Mocha Tools" linux-installer/Mocha-Tools-linux
-          chmod +x linux-installer/Mocha-Tools-linux
-          cp installer.sh linux-installer/installer.sh
-          chmod +x linux-installer/installer.sh
-          if [[ -f builditems/debian_ubuntu/icon.png ]]; then
-            mkdir -p linux-installer/builditems/debian_ubuntu
-            cp builditems/debian_ubuntu/icon.png linux-installer/builditems/debian_ubuntu/icon.png
-          fi
-          tar -czf "MochaTools-${{ env.VERSION }}-linux.tar.gz" -C linux-installer .
+# ── Run PyInstaller ───────────────────────────────────────────────────────────
+print(f"Running: {' '.join(CMD)}")
+result = subprocess.run(CMD)
+if result.returncode != 0:
+    print("PyInstaller failed.")
+    sys.exit(result.returncode)
 
-      - name: Build NSIS installer (Windows only)
-        if: matrix.os == 'windows-latest'
-        shell: bash
-        run: |
-          choco install nsis --no-progress -y
+# ── Package into zip ──────────────────────────────────────────────────────────
+os.makedirs("dist", exist_ok=True)
+zip_path = os.path.join("dist", f"{ASSET_NAME}.zip")
 
-          if [[ ! -f installer.nsi ]]; then
-            echo 'ERROR: installer.nsi not found in repo root.' && exit 1
-          fi
-          if [[ ! -f 'dist/Mocha Tools.exe' ]]; then
-            echo 'ERROR: dist/Mocha Tools.exe not found.' && exit 1
-          fi
+if SYSTEM == "Darwin":
+    # dist/ contains "Mocha Tools.app" (a directory bundle)
+    app_bundle = os.path.join("dist", "Mocha Tools.app")
+    if not os.path.exists(app_bundle):
+        print(f"ERROR: expected .app bundle at {app_bundle}")
+        sys.exit(1)
+    print(f"Zipping {app_bundle} → {zip_path}")
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, _dirs, files in os.walk(app_bundle):
+            for file in files:
+                full = os.path.join(root, file)
+                arcname = os.path.relpath(full, os.path.dirname(app_bundle))
+                zf.write(full, arcname)
 
-          cp 'dist/Mocha Tools.exe' Mocha-Tools-windows.exe
+elif SYSTEM == "Windows":
+    exe = os.path.join("dist", "Mocha Tools.exe")
+    if not os.path.exists(exe):
+        print(f"ERROR: expected exe at {exe}")
+        sys.exit(1)
+    print(f"Zipping {exe} → {zip_path}")
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(exe, "Mocha Tools.exe")
 
-          # Stamp version from root VERSION file into installer.nsi and version.txt
-          PYTHONUTF8=1 python3 builditems/windows/patch_version.py "${{ env.VERSION }}"
+else:
+    binary = os.path.join("dist", "Mocha Tools")
+    if not os.path.exists(binary):
+        print(f"ERROR: expected binary at {binary}")
+        sys.exit(1)
+    print(f"Zipping {binary} → {zip_path}")
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(binary, "Mocha Tools")
 
-          powershell.exe -Command "& 'C:\Program Files (x86)\NSIS\makensis.exe' installer.nsi"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.os }}-build
-          path: |
-            dist/
-            *.deb
-            *.exe
-            MochaTools-Setup-*.exe
-            MochaTools-*-linux.tar.gz
-
-  # ──────────────────────────────────────────────
-  # macOS — build arm64 + x86_64, then lipo merge
-  # ──────────────────────────────────────────────
-  build-macos:
-    name: Build macOS Universal Binary
-    runs-on: macos-15
-    needs: [build-macos-arm64, build-macos-x86]
-    steps:
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          swap-storage: false
-
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download arm64 app
-        uses: actions/download-artifact@v4
-        with:
-          name: macos-arm64-app
-          path: arm64-dist
-
-      - name: Download x86_64 app
-        uses: actions/download-artifact@v4
-        with:
-          name: macos-x86-app
-          path: x86-dist
-
-      - name: Inspect downloaded artifacts
-        shell: bash
-        run: |
-          echo "=== arm64-dist ==="
-          find arm64-dist -maxdepth 4
-          echo "=== x86-dist ==="
-          find x86-dist -maxdepth 4
-
-      - name: Merge into universal .app
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ARM_APP="arm64-dist/Mocha Tools.app"
-          X86_APP="x86-dist/Mocha Tools.app"
-
-          if [[ ! -d "$ARM_APP" ]]; then
-            echo "ERROR: arm64 bundle not found at: $ARM_APP" && exit 1
-          fi
-          if [[ ! -d "$X86_APP" ]]; then
-            echo "ERROR: x86_64 bundle not found at: $X86_APP" && exit 1
-          fi
-
-          mkdir -p dist
-          cp -R "$ARM_APP" "dist/Mocha Tools.app"
-          OUT_APP="dist/Mocha Tools.app"
-
-          # Merge ALL Mach-O binaries under Contents (MacOS + Frameworks + plugins)
-          # This is critical — Qt/PyQt6 ships architecture-specific .dylib and .so
-          # files under Contents/Frameworks which also need to be lipo'd.
-          find "$OUT_APP/Contents" -type f | while read -r arm_file; do
-            rel="${arm_file#$OUT_APP/Contents/}"
-            x86_file="$X86_APP/Contents/$rel"
-            if [[ -f "$x86_file" ]]; then
-              if file "$arm_file" | grep -qE 'Mach-O|ar archive'; then
-                echo "lipo merging: $rel"
-                lipo -create "$arm_file" "$x86_file" -output "$arm_file" || {
-                  echo "WARNING: lipo failed for $rel, keeping arm64 version"
-                }
-              fi
-            fi
-          done
-
-          cp ./builditems/macos/Info.plist "$OUT_APP/Contents/Info.plist"
-
-          # Remove source arch dirs immediately — no need to keep them after merge
-          rm -rf arm64-dist x86-dist
-
-          cd dist
-          zip -r "../Mocha-Tools-macOS-universal.zip" "Mocha Tools.app"
-
-      - name: Free up disk space before DMG
-        shell: bash
-        run: |
-          # Xcode / simulator caches (biggest wins on macos-15 runners)
-          sudo rm -rf ~/Library/Developer/Xcode/DerivedData || true
-          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches || true
-          sudo rm -rf /Library/Developer/CoreSimulator/Volumes/ || true
-          sudo rm -rf ~/Library/Developer/Xcode/iOS\ DeviceSupport || true
-          sudo rm -rf ~/Library/Developer/Xcode/watchOS\ DeviceSupport || true
-          sudo rm -rf /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/DeviceSupport || true
-          sudo rm -rf /Applications/Xcode.app/Contents/Developer/Platforms/WatchOS.platform/DeviceSupport || true
-
-          # Homebrew
-          brew cleanup --prune=all 2>/dev/null || true
-          rm -rf "$(brew --cache)" 2>/dev/null || true
-
-          # pip cache
-          pip cache purge 2>/dev/null || true
-          rm -rf ~/Library/Caches/pip || true
-
-          # macOS system caches safe to drop in CI
-          sudo rm -rf /private/var/folders/* 2>/dev/null || true
-
-          echo "=== Disk space after cleanup ==="
-          df -h /
-
-      - name: Build macOS DMG
-        shell: bash
-        run: |
-          VERSION=$(cat VERSION | tr -d '\r\n')
-          APP="dist/Mocha Tools.app"
-          DMG_NAME="MochaTools-${VERSION}-macOS.dmg"
-
-          # The zip is already uploaded as an artifact; remove it to free space
-          rm -f Mocha-Tools-macOS-universal.zip || true
-
-          echo "=== Disk space before DMG ==="
-          df -h /
-
-          # Use create-dmg (Homebrew) — much lighter than hdiutil directly.
-          # It builds a read-write image, copies the app in, then converts to
-          # compressed UDZO — far less peak disk usage than hdiutil create alone.
-          brew install create-dmg 2>/dev/null || true
-
-          create-dmg \
-            --volname "Mocha Tools" \
-            --window-size 540 380 \
-            --icon-size 128 \
-            --icon "Mocha Tools.app" 130 160 \
-            --app-drop-link 390 160 \
-            --no-internet-enable \
-            "$DMG_NAME" \
-            "$APP" || {
-              # Fallback: bare hdiutil if create-dmg still fails
-              echo "create-dmg failed, falling back to hdiutil"
-              hdiutil create \
-                -volname "Mocha Tools" \
-                -srcfolder "$APP" \
-                -ov -format UDZO \
-                "$DMG_NAME"
-            }
-
-      - name: Upload universal macOS artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-universal-build
-          path: |
-            Mocha-Tools-macOS-universal.zip
-            MochaTools-*-macOS.dmg
-
-  build-macos-arm64:
-    name: Build macOS (arm64)
-    runs-on: macos-15
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Cache pip packages
-        uses: actions/cache@v4
-        with:
-          path: ~/Library/Caches/pip
-          key: macos-arm64-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            macos-arm64-pip-
-
-      - name: Set up Python (arm64 native)
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller pyinstaller-hooks-contrib
-
-      - name: Build arm64 .app
-        shell: bash
-        run: |
-          pyinstaller --noconsole --windowed \
-            --collect-submodules mochatools_app \
-            --collect-all PyQt6 \
-            --icon=./builditems/macos/icon.icns \
-            --osx-bundle-identifier com.nxllxvxxd2.mochatools \
-            --target-arch arm64 \
-            --name "Mocha Tools" \
-            mochatools.py
-
-      - name: Stamp version into built Info.plist
-        shell: bash
-        run: |
-          VERSION=$(cat VERSION | tr -d '\r\n')
-          python3 builditems/macos/patch_info_plist.py "dist/Mocha Tools.app/Contents/Info.plist" "$VERSION"
-
-      - name: Upload arm64 app
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-arm64-app
-          path: dist/
-
-  build-macos-x86:
-    name: Build macOS (x86_64)
-    runs-on: macos-15-intel
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Cache pip packages
-        uses: actions/cache@v4
-        with:
-          path: ~/Library/Caches/pip
-          key: macos-x86-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            macos-x86-pip-
-
-      - name: Set up Python (x86_64 native)
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller pyinstaller-hooks-contrib
-
-      - name: Build x86_64 .app
-        shell: bash
-        run: |
-          pyinstaller --noconsole --windowed \
-            --collect-submodules mochatools_app \
-            --collect-all PyQt6 \
-            --icon=./builditems/macos/icon.icns \
-            --osx-bundle-identifier com.nxllxvxxd2.mochatools \
-            --target-arch x86_64 \
-            --name "Mocha Tools" \
-            mochatools.py
-
-      - name: Stamp version into built Info.plist
-        shell: bash
-        run: |
-          VERSION=$(cat VERSION | tr -d '\r\n')
-          python3 builditems/macos/patch_info_plist.py "dist/Mocha Tools.app/Contents/Info.plist" "$VERSION"
-
-      - name: Upload x86_64 app
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-x86-app
-          path: dist/
+print(f"\nDone! Asset ready: {zip_path}")

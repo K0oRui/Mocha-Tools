@@ -3,7 +3,13 @@ Mocha Tools
 A cross-platform PyQt6 application for uploading files to mocha
 Written by nxllxvxxd && Bink-lab
 To compile:
-    pyinstaller --onefile --windowed --noconsole mochatools.py
+    python build.py
+
+    DO NOT use --onefile on macOS — PyQt6 segfaults because Qt cannot
+    locate its plugin/framework paths from the temp extraction directory.
+    Use build.py which handles per-platform flags automatically:
+      Windows / Linux : --onefile  (single executable, zipped)
+      macOS           : --onedir   (packaged as .app bundle, zipped)
 
 Android:
     Use Buildozer with Kivy — PyQt6 is not supported on Android natively.
@@ -1884,7 +1890,7 @@ class MochaTools(QMainWindow):
         self.update_progress.setValue(0)
         self.update_progress.show()
 
-        w = UpdateDownloadWorker(self._update_url, self._update_tag, self)
+        w = UpdateDownloadWorker(self._update_url, self)
         w.progress.connect(self.update_progress.setValue)
         w.status.connect(self.update_status_lbl.setText)
         w.done.connect(self._on_update_done)
