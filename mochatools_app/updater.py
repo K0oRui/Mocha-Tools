@@ -12,9 +12,10 @@ Flow:
      prompt a restart.
 
 Asset naming convention (must match build.yml):
-  Windows : Mocha-Tools-windows.exe
-  macOS   : Mocha-Tools-macOS-universal.zip   (contains "Mocha Tools.app")
-  Linux   : Mocha-Tools-linux
+  Windows : windows-<version>.zip         e.g. windows-v3.0.1.zip
+  Ubuntu  : debian_ubuntu-<version>.zip   e.g. debian_ubuntu-v3.0.1.zip
+  macOS   : macos-<arch>-<version>.zip    e.g. macos-arm64-v3.0.1.zip
+              arch is one of: x86_64 | arm64 | universal
 """
 
 from __future__ import annotations
@@ -52,13 +53,28 @@ def _current_exe() -> str:
     return ""
 
 
-def _platform_asset_name() -> str:
+def _asset_prefix() -> str:
+    """
+    Return the platform-specific filename prefix used in GitHub release assets.
+    The full asset name is  <prefix>-<tag>.zip  e.g. windows-v3.0.1.zip
+    """
     system = platform.system()
     if system == "Windows":
-        return "Mocha-Tools-windows.exe"
+        return "windows"
     if system == "Darwin":
-        return "Mocha-Tools-macOS-universal.zip"
-    return "Mocha-Tools-linux"
+        machine = platform.machine().lower()   # 'x86_64' or 'arm64'
+        if machine == "arm64":
+            return "macos-arm64"
+        if machine == "x86_64":
+            return "macos-x86_64"
+        return "macos-universal"               # fallback for fat/unknown
+    # Linux — treat all distros as debian_ubuntu for now
+    return "debian_ubuntu"
+
+
+def _asset_name(tag: str) -> str:
+    """Build the full expected asset filename for this platform and release tag."""
+    return f"{_asset_prefix()}-{tag}.zip"
 
 
 def _is_newer(latest: str, current: str) -> bool:
@@ -98,8 +114,8 @@ class UpdateCheckWorker(QThread):
             self.up_to_date.emit()
             return
 
-        # Find the right asset for this platform
-        want = _platform_asset_name()
+        # Find the right asset for this platform + version tag
+        want = _asset_name(latest_tag)
         url  = next(
             (a["browser_download_url"] for a in assets if a["name"] == want),
             "",
@@ -117,9 +133,10 @@ class UpdateDownloadWorker(QThread):
     done     = pyqtSignal()             # update installed; caller should prompt restart
     error    = pyqtSignal(str)
 
-    def __init__(self, download_url: str, parent=None):
+    def __init__(self, download_url: str, tag: str = "", parent=None):
         super().__init__(parent)
         self.download_url = download_url
+        self.tag          = tag          # version tag e.g. "v3.0.1"
 
     def run(self):
         try:
@@ -146,7 +163,7 @@ class UpdateDownloadWorker(QThread):
         fetched = 0
         tmp_dir = tempfile.mkdtemp(prefix="mochatools_update_")
 
-        asset_name = _platform_asset_name()
+        asset_name = _asset_name(self.tag) if self.tag else _asset_prefix() + ".zip"
         tmp_asset  = os.path.join(tmp_dir, asset_name)
 
         with open(tmp_asset, "wb") as fh:
@@ -166,7 +183,7 @@ class UpdateDownloadWorker(QThread):
         elif system == "Darwin":
             self._install_macos(tmp_asset, target, tmp_dir)
         else:
-            self._install_linux(tmp_asset, target)
+            self._install_linux(tmp_asset, target, tmp_dir)
 
         self.progress.emit(100)
         self.status.emit("Update installed. Restart to apply.")
@@ -174,15 +191,28 @@ class UpdateDownloadWorker(QThread):
 
     # ── Platform installers ──────────────────────────────────────────────────
 
-    def _install_windows(self, src: str, target: str, tmp_dir: str):
+    def _install_windows(self, zip_path: str, target: str, tmp_dir: str):
         """
-        On Windows the running .exe is locked, so we write a small batch
-        script that waits for this process to exit, copies the new binary
-        over the old one, then restarts the app.
+        Unzip the release archive, then use a batch script to swap the binary
+        after this process exits (the running .exe is locked on Windows).
         """
-        bat = os.path.join(tmp_dir, "update.bat")
-        new_target = target  # same path — we're replacing in-place
+        extract_dir = os.path.join(tmp_dir, "extracted")
+        os.makedirs(extract_dir, exist_ok=True)
 
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(extract_dir)
+
+        # Find the .exe inside the extracted folder
+        new_exe = next(
+            (os.path.join(extract_dir, f)
+             for f in os.listdir(extract_dir) if f.lower().endswith(".exe")),
+            None,
+        )
+        if not new_exe:
+            # Fall back: maybe the zip itself is the executable (flat layout)
+            raise RuntimeError("No .exe found inside the downloaded zip.")
+
+        bat = os.path.join(tmp_dir, "update.bat")
         script = (
             "@echo off\n"
             ":wait\n"
@@ -191,8 +221,8 @@ class UpdateDownloadWorker(QThread):
             "    timeout /t 1 /nobreak >NUL\n"
             "    goto wait\n"
             ")\n"
-            f'copy /Y "{src}" "{new_target}"\n'
-            f'start "" "{new_target}"\n'
+            f'copy /Y "{new_exe}" "{target}"\n'
+            f'start "" "{target}"\n'
         )
         with open(bat, "w") as fh:
             fh.write(script)
@@ -237,11 +267,31 @@ class UpdateDownloadWorker(QThread):
             check=False,
         )
 
-    def _install_linux(self, src: str, target: str):
-        """Replace the binary directly (safe since the old inode stays mapped)."""
+    def _install_linux(self, zip_path: str, target: str, tmp_dir: str):
+        """Unzip, find the binary, replace the running one (safe — old inode stays mapped)."""
+        extract_dir = os.path.join(tmp_dir, "extracted")
+        os.makedirs(extract_dir, exist_ok=True)
+
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(extract_dir)
+
+        # Find the executable: prefer a non-.zip, non-.sh file that is executable,
+        # or just the first file if nothing obvious stands out.
+        candidates = [
+            os.path.join(extract_dir, f)
+            for f in os.listdir(extract_dir)
+            if not f.endswith((".zip", ".sh", ".txt", ".md"))
+        ]
+        if not candidates:
+            candidates = [os.path.join(extract_dir, f) for f in os.listdir(extract_dir)]
+        if not candidates:
+            raise RuntimeError("No binary found inside the downloaded zip.")
+
+        new_bin = candidates[0]
+
         backup = target + ".bak"
         if os.path.exists(backup):
             os.remove(backup)
         shutil.copy2(target, backup)
-        shutil.move(src, target)
+        shutil.move(new_bin, target)
         os.chmod(target, os.stat(target).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
