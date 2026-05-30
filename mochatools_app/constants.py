@@ -27,7 +27,7 @@ def _read_version() -> str:
             v = open(candidate).read().strip()
             return v if v else "v0.0.0"
         here = _os.path.dirname(here)
-    return "v3.0.0"  # last-resort fallback
+    return "v3.0.5"  # last-resort fallback
 
 APP_VERSION = _read_version()
 del _read_version, _os
