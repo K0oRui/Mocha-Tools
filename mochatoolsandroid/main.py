@@ -1,16 +1,16 @@
 """
-Mocha Tools — Android (Kivy)
+Mocha Tools - Android (Kivy)
 Rewrite of the PyQt6 desktop app for Android using Kivy.
 
 All API/upload logic is ported directly from workers.py.
 UI is rebuilt in Kivy with KivyMD for Material Design components.
 
 Tabs:
-  1. Upload       — pick file, multipart upload, progress, share
-  2. Files        — browse remote folders, delete, move, new folder
-  3. Remote       — server-side URL ingest + job list
-  4. Shares       — list and delete share links
-  5. Settings     — API key (persisted), chunk config
+  1. Upload       - pick file, multipart upload, progress, share
+  2. Files        - browse remote folders, delete, move, new folder
+  3. Remote       - server-side URL ingest + job list
+  4. Shares       - list and delete share links
+  5. Settings     - API key (persisted), chunk config
 """
 
 import os
@@ -29,6 +29,7 @@ kivy.require("2.3.0")
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.window import Window
+from kivy.core.clipboard import Clipboard
 from kivy.metrics import dp
 from kivy.properties import StringProperty, BooleanProperty, NumericProperty
 from kivy.storage.jsonstore import JsonStore
@@ -42,6 +43,7 @@ from kivy.uix.textinput import TextInput
 from kivy.uix.widget import Widget
 
 from kivymd.app import MDApp
+from kivymd.uix.behaviors import RectangularRippleBehavior
 from kivymd.uix.bottomnavigation import MDBottomNavigation, MDBottomNavigationItem
 from kivymd.uix.button import MDFlatButton, MDRaisedButton, MDIconButton
 from kivymd.uix.card import MDCard
@@ -105,8 +107,105 @@ def fmt_size(n):
 
 
 def toast(msg, duration=3):
-    Snackbar(text=msg, snackbar_x=dp(8), snackbar_y=dp(8),
-             size_hint_x=0.95, duration=duration).open()
+    """Show a snackbar notification. KivyMD 1.2.0 compatible."""
+    try:
+        from kivymd.uix.snackbar import Snackbar as _SB
+        sb = _SB(snackbar_x=dp(8), snackbar_y=dp(8),
+                 size_hint_x=0.95, duration=duration)
+        try:
+            sb.ids.label.text = str(msg)
+        except Exception:
+            pass
+        sb.open()
+    except Exception:
+        pass
+
+
+def _android_paste():
+    """Return clipboard text via Android ClipboardManager, falls back to Kivy."""
+    try:
+        from jnius import autoclass
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+        Context = autoclass('android.content.Context')
+        activity = PythonActivity.mActivity
+        cm = activity.getSystemService(Context.CLIPBOARD_SERVICE)
+        if cm is not None and cm.hasPrimaryClip():
+            clip = cm.getPrimaryClip()
+            if clip and clip.getItemCount() > 0:
+                return str(clip.getItemAt(0).coerceToText(activity))
+    except Exception:
+        pass
+    try:
+        return Clipboard.paste() or ""
+    except Exception:
+        return ""
+
+
+def _request_storage_permission(callback=None):
+    """
+    Grant the broadest possible file access on Android:
+      - Android 11+ (API 30+): launches the system "All Files Access" settings
+        page for MANAGE_EXTERNAL_STORAGE, then calls callback when the user
+        returns to the app.
+      - Android 6–10: requests READ/WRITE_EXTERNAL_STORAGE at runtime.
+      - Android 13+: also requests READ_MEDIA_IMAGES/VIDEO/AUDIO.
+      - Non-Android: calls callback immediately.
+    """
+    try:
+        from jnius import autoclass
+        Build = autoclass('android.os.Build')
+        sdk_int = Build.VERSION.SDK_INT
+
+        if sdk_int >= 30:
+            # Android 11+ - need MANAGE_EXTERNAL_STORAGE via Settings intent
+            try:
+                Environment = autoclass('android.os.Environment')
+                if not Environment.isExternalStorageManager():
+                    Intent = autoclass('android.content.Intent')
+                    Settings = autoclass('android.provider.Settings')
+                    Uri = autoclass('android.net.Uri')
+                    PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                    activity = PythonActivity.mActivity
+                    intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                    intent.setData(Uri.parse(f"package:{activity.getPackageName()}"))
+                    activity.startActivity(intent)
+                    # Watch for the permission to be granted (poll every 500 ms)
+                    def _poll(dt):
+                        if Environment.isExternalStorageManager():
+                            if callback:
+                                callback()
+                            return False  # cancel the interval
+                    Clock.schedule_interval(_poll, 0.5)
+                    return
+            except Exception:
+                pass  # fall through to standard permissions
+
+        # Android 6–12 (and fallback for 11+)
+        from android.permissions import request_permissions, Permission
+        perms = []
+        for attr in (
+            "READ_EXTERNAL_STORAGE",
+            "WRITE_EXTERNAL_STORAGE",
+            "READ_MEDIA_IMAGES",
+            "READ_MEDIA_VIDEO",
+            "READ_MEDIA_AUDIO",
+        ):
+            try:
+                perms.append(getattr(Permission, attr))
+            except AttributeError:
+                pass
+
+        def _cb(permissions, grants):
+            if callback:
+                Clock.schedule_once(lambda dt: callback())
+
+        request_permissions(perms, _cb)
+        return
+    except Exception:
+        pass
+    # Not on Android - invoke callback immediately
+    if callback:
+        callback()
 
 
 def confirm_dialog(title, text, on_yes):
@@ -211,7 +310,9 @@ class UploadTask:
                  on_progress, on_speed, on_status,
                  on_done, on_error,
                  chunk_size_mb=DEFAULT_CHUNK_SIZE_MB,
-                 max_chunks=DEFAULT_MAX_CHUNKS):
+                 max_chunks=DEFAULT_MAX_CHUNKS,
+                 original_name=None,
+                 cleanup_path=None):
         self.api_key              = api_key
         self.base_url             = base_url.rstrip("/")
         self.local_path           = local_path
@@ -224,6 +325,8 @@ class UploadTask:
         self.on_status            = on_status
         self.on_done              = on_done
         self.on_error             = on_error
+        self.original_name        = original_name
+        self.cleanup_path         = cleanup_path
         self._chunk_size          = max(1, min(chunk_size_mb, 100)) * 1024 * 1024
         self._max_chunks          = max(1, min(max_chunks, 20))
         self._cancel              = False
@@ -247,8 +350,15 @@ class UploadTask:
 
     def _run(self):
         try:
-            file_name = os.path.basename(self.local_path)
-            file_size = os.path.getsize(self.local_path)
+            # Prefer the provided original name (useful if the selected path is a temp file from a content URI)
+            file_name = self.original_name if self.original_name else os.path.basename(self.local_path)
+            try:
+                file_size = os.path.getsize(self.local_path)
+            except Exception:
+                # Provide a clear error if the path is not a regular file (e.g. content:// URI)
+                Clock.schedule_once(lambda dt: self.on_error("Unable to access file. Content URIs are not supported in this build."))
+                return
+
             if file_size == 0:
                 Clock.schedule_once(lambda dt: self.on_error("File is empty."))
                 return
@@ -256,17 +366,33 @@ class UploadTask:
             # Ensure destination folder exists
             dest_dir = "/".join(self.dest_path.rstrip("/").split("/")[:-1]) or "/"
             if dest_dir != "/":
-                self._ensure_folder(dest_dir)
+                try:
+                    self._ensure_folder(dest_dir)
+                except Exception as e:
+                    err = str(e)
+                    Clock.schedule_once(lambda dt, _err=err: self.on_error(f"Failed to create dest folder: {_err}"))
+                    return
 
-            self._emit_status(f"Uploading {file_name} ({fmt_size(file_size)})…")
-            file_id = self._multipart_upload(file_size, self.local_path, self.dest_path)
+            self._emit_status(f"Uploading {file_name} ({fmt_size(file_size)})...")
+            try:
+                file_id = self._multipart_upload(file_size, self.local_path, self.dest_path)
+            except Exception as e:
+                # Surface multipart errors via on_error
+                err = str(e)
+                Clock.schedule_once(lambda dt, _err=err: self.on_error(_err))
+                return
+
             if self._cancel or file_id is None:
                 return
 
             share_url = None
             if self.create_share:
-                self._emit_status("Creating share link…")
-                share_url = self._create_share(file_id)
+                self._emit_status("Creating share link...")
+                try:
+                    share_url = self._create_share(file_id)
+                except Exception as e:
+                    err = str(e)
+                    Clock.schedule_once(lambda dt, _err=err: self.on_error(f"Share creation failed: {_err}"))
 
             result = {"file_id": file_id, "share_url": share_url}
             Clock.schedule_once(lambda dt: self.on_done(result))
@@ -274,6 +400,14 @@ class UploadTask:
         except Exception as e:
             err = str(e)
             Clock.schedule_once(lambda dt: self.on_error(err))
+        finally:
+            # Cleanup temporary file if requested
+            if self.cleanup_path:
+                try:
+                    if os.path.exists(self.cleanup_path):
+                        os.remove(self.cleanup_path)
+                except Exception:
+                    pass
 
     def _ensure_folder(self, path):
         parts = path.rstrip("/").rsplit("/", 1)
@@ -284,7 +418,7 @@ class UploadTask:
             headers={**self._headers(), "Content-Type": "application/json"},
             json={"path": parent, "name": name},
             timeout=15,
-        )  # ignore errors — folder may already exist
+        )  # ignore errors - folder may already exist
 
     def _multipart_upload(self, file_size, local_path, dest_path):
         file_name = os.path.basename(local_path)
@@ -563,11 +697,12 @@ class UploadScreen(MDScreen):
             padding=dp(16), spacing=dp(8),
             size_hint_y=None, height=dp(120),
             md_bg_color=C_CARD,
+            elevation=4, radius=[12,12,12,12],
         )
         self._pick_label = MDLabel(
             text="No file selected",
             halign="center", theme_text_color="Custom",
-            text_color=C_MUTED,
+            text_color=C_MUTED, font_style="Subtitle1",
         )
         pick_btn = MDRaisedButton(
             text="Choose File",
@@ -601,7 +736,7 @@ class UploadScreen(MDScreen):
             theme_text_color="Custom", text_color=C_MUTED,
         )
         expiry_btn = MDFlatButton(
-            text="▾",
+            text="v",
             on_release=self._open_expiry_menu,
             size_hint_x=None, width=dp(40),
         )
@@ -611,7 +746,7 @@ class UploadScreen(MDScreen):
 
         self._expiry = "Never"
         self._expiry_menu = MDDropdownMenu(
-            items=[{"text": e, "on_release": lambda x, e=e: self._set_expiry(e)} for e in EXPIRY_OPTIONS],
+            items=[{"text": e, "on_release": lambda e=e: self._set_expiry(e)} for e in EXPIRY_OPTIONS],
             width_mult=3,
         )
 
@@ -640,7 +775,7 @@ class UploadScreen(MDScreen):
             text="Ready",
             theme_text_color="Custom", text_color=C_MUTED,
             size_hint_y=None, height=dp(40),
-            halign="center",
+            halign="center", font_style="Caption",
         )
         layout.add_widget(self._status_label)
 
@@ -648,7 +783,7 @@ class UploadScreen(MDScreen):
         self._share_result = MDLabel(
             text="", theme_text_color="Custom", text_color=C_ACCENT,
             size_hint_y=None, height=dp(40),
-            halign="center",
+            halign="center", font_style="Caption",
         )
         layout.add_widget(self._share_result)
 
@@ -656,24 +791,56 @@ class UploadScreen(MDScreen):
         self.add_widget(layout)
 
     def _pick_file(self, *a):
-        # On Android, use plyer filechooser
-        try:
-            from plyer import filechooser
-            filechooser.open_file(on_selection=self._on_file_chosen)
-        except Exception as e:
-            toast(f"File picker error: {e}")
+        # Request storage permissions first, then open the picker
+        def _do_pick():
+            try:
+                from plyer import filechooser
+                filechooser.open_file(on_selection=self._on_file_chosen)
+            except Exception as e:
+                toast(f"File picker error: {e}")
+        _request_storage_permission(callback=_do_pick)
 
     def _on_file_chosen(self, selection):
         if not selection:
             return
         path = selection[0]
         self._file_path = path
-        name = os.path.basename(path)
-        size = os.path.getsize(path)
-        self._pick_label.text = f"{name}  ({fmt_size(size)})"
+        original_name = None
+        size = 0
+        # If the filechooser returned a content:// URI, attempt to query metadata via pyjnius
+        if path.startswith("content://"):
+            try:
+                from jnius import autoclass
+                Uri = autoclass('android.net.Uri')
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                activity = PythonActivity.mActivity
+                cr = activity.getContentResolver()
+                uri = Uri.parse(path)
+                cursor = cr.query(uri, None, None, None, None)
+                if cursor is not None and cursor.moveToFirst():
+                    idx_name = cursor.getColumnIndex("_display_name")
+                    if idx_name != -1:
+                        original_name = cursor.getString(idx_name)
+                    idx_size = cursor.getColumnIndex("_size")
+                    if idx_size != -1:
+                        size = cursor.getLong(idx_size)
+                    cursor.close()
+            except Exception:
+                original_name = None
+                size = 0
+        else:
+            try:
+                original_name = os.path.basename(path)
+                size = os.path.getsize(path)
+            except Exception:
+                original_name = os.path.basename(path)
+                size = 0
+
+        display_name = original_name or os.path.basename(path)
+        self._pick_label.text = f"{display_name}  ({fmt_size(size)})"
         # Auto-set dest path to /filename if not customised
         if self._dest_field.text.strip() in ("", "/"):
-            self._dest_field.text = f"/{name}"
+            self._dest_field.text = f"/{display_name}"
 
     def _on_dest_changed(self, instance, value):
         self._dest_path = value.strip() or "/"
@@ -700,6 +867,56 @@ class UploadScreen(MDScreen):
         self._progress_bar.value  = 0
         self._share_result.text   = ""
 
+        stored = (self.app.store.get("settings").get("value", {}) if self.app.store.exists("settings") else {})
+        chunk_mb = int(stored.get("chunk_mb", DEFAULT_CHUNK_SIZE_MB))
+        max_chunks = int(stored.get("max_chunks", DEFAULT_MAX_CHUNKS))
+
+        # Handle content:// URIs returned by plyer by copying to a temp file
+        original_name = None
+        cleanup_tmp = None
+        if self._file_path.startswith("content://"):
+            try:
+                tmp_dir = App.get_running_app().user_data_dir
+                os.makedirs(tmp_dir, exist_ok=True)
+                tmp_path = os.path.join(tmp_dir, f"mocha_tmp_{int(time.time())}")
+                from android.storage import primary_external_storage_path
+                # Use pyjnius to open content resolver stream if available
+                try:
+                    from jnius import autoclass
+                    PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                    Uri = autoclass('android.net.Uri')
+                    activity = PythonActivity.mActivity
+                    cr = activity.getContentResolver()
+                    uri = Uri.parse(self._file_path)
+                    cursor = cr.query(uri, None, None, None, None)
+                    display_name = None
+                    size = None
+                    if cursor is not None and cursor.moveToFirst():
+                        idx_name = cursor.getColumnIndex("_display_name")
+                        if idx_name != -1:
+                            display_name = cursor.getString(idx_name)
+                        idx_size = cursor.getColumnIndex("_size")
+                        if idx_size != -1:
+                            size = cursor.getLong(idx_size)
+                        cursor.close()
+                    inp = cr.openInputStream(uri)
+                    out_f = open(tmp_path, "wb")
+                    buf = bytearray(65536)
+                    while True:
+                        read = inp.read(buf)
+                        if read is None or read <= 0:
+                            break
+                        out_f.write(buf[:read])
+                    out_f.close()
+                    inp.close()
+                    original_name = display_name or os.path.basename(self._file_path)
+                    cleanup_tmp = tmp_path
+                    self._file_path = tmp_path
+                except Exception:
+                    toast("Failed to copy content:// URI - try selecting via Files app instead.")
+            except Exception:
+                toast("Failed to prepare temporary file for upload.")
+
         self._task = UploadTask(
             api_key        = api_key,
             base_url       = HARDCODED_BASE_URL,
@@ -713,6 +930,10 @@ class UploadScreen(MDScreen):
             on_status      = self._on_status,
             on_done        = self._on_done,
             on_error       = self._on_error,
+            chunk_size_mb  = chunk_mb,
+            max_chunks     = max_chunks,
+            original_name  = original_name,
+            cleanup_path   = cleanup_tmp,
         )
         self._task.start()
 
@@ -734,16 +955,16 @@ class UploadScreen(MDScreen):
 
     def _on_done(self, result):
         self._upload_btn.disabled = False
-        self._status_label.text   = f"✓ Done! File ID: {result['file_id']}"
+        self._status_label.text   = f"Done! File ID: {result['file_id']}"
         if result.get("share_url"):
             self._share_result.text = result["share_url"]
-            toast("Upload complete — share link ready!")
+            toast("Upload complete - share link ready!")
         else:
             toast("Upload complete!")
 
     def _on_error(self, msg):
         self._upload_btn.disabled = False
-        self._status_label.text   = f"✗ {msg}"
+        self._status_label.text   = f"Error: {msg}"
         toast(f"Upload failed: {msg}", duration=5)
 
 
@@ -765,6 +986,7 @@ class FilesScreen(MDScreen):
         self._path_field = MDTextField(
             text="/", hint_text="Path",
             size_hint_y=None, height=dp(48),
+            size_hint_x=0.9
         )
         go_btn = MDIconButton(icon="arrow-right", on_release=lambda *a: self._navigate(self._path_field.text.strip() or "/"))
         up_btn = MDIconButton(icon="arrow-up",    on_release=lambda *a: self._go_up())
@@ -805,7 +1027,7 @@ class FilesScreen(MDScreen):
             return
         self._current = path
         self._path_field.text = path
-        self._status_lbl.text = "Loading…"
+        self._status_lbl.text = "Loading..."
         self._list.clear_widgets()
         self._items_meta = {}
 
@@ -831,7 +1053,7 @@ class FilesScreen(MDScreen):
 
         # Add parent navigation if not at root
         if self._current != "/":
-            item = OneLineListItem(text="↑  .. (go up)", on_release=lambda *a: self._go_up())
+            item = OneLineListItem(text=".. (go up)", on_release=lambda *a: self._go_up())
             self._list.add_widget(item)
 
         for entry in raw_folders:
@@ -845,7 +1067,7 @@ class FilesScreen(MDScreen):
                 continue
             if not name:
                 continue
-            key = f"📁 {name}"
+            key = f"[D] {name}"
             self._items_meta[key] = {"_type": "folder", "name": name, "path": fullpath}
             item = TwoLineListItem(
                 text=key, secondary_text=fullpath,
@@ -860,7 +1082,7 @@ class FilesScreen(MDScreen):
                     or entry.get("name") or entry.get("fileName") or "unknown")
             size = entry.get("size") or entry.get("fileSize") or 0
             fid  = entry.get("id") or entry.get("fileId") or ""
-            key  = f"📄 {name}"
+            key  = f"[F] {name}"
             self._items_meta[key] = {"_type": "file", "name": name, "id": fid, "size": size}
             item = TwoLineListItem(
                 text=key, secondary_text=fmt_size(size),
@@ -920,7 +1142,7 @@ class FilesScreen(MDScreen):
 
     def _share_file(self, fid, name):
         items = [
-            {"text": e, "on_release": lambda x, e=e, f=fid: self._do_share(f, e)}
+            {"text": e, "on_release": lambda e=e, f=fid: self._do_share(f, e)}
             for e in EXPIRY_OPTIONS
         ]
         menu = MDDropdownMenu(items=items, width_mult=3)
@@ -991,19 +1213,26 @@ class RemoteScreen(MDScreen):
         self._build_ui()
 
     def _build_ui(self):
-        layout = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(12))
+        # Outer scroll so nothing is ever clipped on small screens
+        outer_scroll = ScrollView()
+        outer_layout = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(12),
+                                 size_hint_y=None)
+        outer_layout.bind(minimum_height=outer_layout.setter("height"))
 
+        # ── Ingest card - no fixed height, expands to fit content ──
         card = MDCard(orientation="vertical", padding=dp(16), spacing=dp(10),
-                      size_hint_y=None, height=dp(260), md_bg_color=C_CARD)
+                      size_hint_y=None, md_bg_color=C_CARD, elevation=4,
+                      radius=[12, 12, 12, 12])
+        card.bind(minimum_height=card.setter("height"))
 
-        self._url_field = MDTextField(hint_text="Source URL", size_hint_y=None, height=dp(48))
-        self._name_field = MDTextField(hint_text="Filename (optional)", size_hint_y=None, height=dp(48))
+        self._url_field = MDTextField(hint_text="Source URL", size_hint_y=None, height=dp(56))
+        self._name_field = MDTextField(hint_text="Filename (optional)", size_hint_y=None, height=dp(56))
         self._path_field = MDTextField(hint_text="Destination folder", text="/",
-                                       size_hint_y=None, height=dp(48))
+                                       size_hint_y=None, height=dp(56))
 
         ingest_btn = MDRaisedButton(
-            text="⇣  Remote Ingest", md_bg_color=C_ACCENT,
-            size_hint_x=1, height=dp(44),
+            text="Remote Ingest", md_bg_color=C_ACCENT,
+            size_hint_x=1, size_hint_y=None, height=dp(46),
             on_release=self._start_ingest,
         )
 
@@ -1012,26 +1241,34 @@ class RemoteScreen(MDScreen):
             size_hint_y=None, height=dp(32),
         )
 
-        for w in (self._url_field, self._name_field, self._path_field, ingest_btn, self._result_label):
+        for w in (self._url_field, self._name_field, self._path_field,
+                  ingest_btn, self._result_label):
             card.add_widget(w)
-        layout.add_widget(card)
+        outer_layout.add_widget(card)
 
-        # ── Jobs list ──
+        # ── Jobs toolbar ──
         jobs_tb = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
-        jobs_tb.add_widget(MDRaisedButton(text="Refresh Jobs", on_release=lambda *a: self._refresh_jobs()))
+        jobs_tb.add_widget(MDRaisedButton(
+            text="Refresh Jobs", size_hint_y=None, height=dp(36),
+            on_release=lambda *a: self._refresh_jobs(),
+        ))
         self._active_only = MDCheckbox(active=True, size_hint_x=None, width=dp(40))
         jobs_tb.add_widget(self._active_only)
-        jobs_tb.add_widget(MDLabel(text="Active only", theme_text_color="Custom", text_color=C_TEXT))
+        jobs_tb.add_widget(MDLabel(
+            text="Active only", theme_text_color="Custom", text_color=C_TEXT,
+        ))
         self._jobs_status = MDLabel(text="", theme_text_color="Custom", text_color=C_MUTED)
         jobs_tb.add_widget(self._jobs_status)
-        layout.add_widget(jobs_tb)
+        outer_layout.add_widget(jobs_tb)
 
-        scroll = ScrollView()
+        # ── Jobs list - fixed height scroll area ──
+        jobs_scroll = ScrollView(size_hint_y=None, height=dp(300))
         self._jobs_list = MDList()
-        scroll.add_widget(self._jobs_list)
-        layout.add_widget(scroll)
+        jobs_scroll.add_widget(self._jobs_list)
+        outer_layout.add_widget(jobs_scroll)
 
-        self.add_widget(layout)
+        outer_scroll.add_widget(outer_layout)
+        self.add_widget(outer_scroll)
 
     def _start_ingest(self, *a):
         if not self.app.api_key:
@@ -1043,7 +1280,7 @@ class RemoteScreen(MDScreen):
             return
         name = self._name_field.text.strip() or src.rstrip("/").split("/")[-1]
         path = self._path_field.text.strip() or "/"
-        self._result_label.text = "Submitting…"
+        self._result_label.text = "Submitting..."
         api_post(
             self.app.api_key, HARDCODED_BASE_URL,
             "/api/files/remote-download",
@@ -1053,7 +1290,7 @@ class RemoteScreen(MDScreen):
         )
 
     def _on_ingest_done(self, data):
-        self._result_label.text = f"✓ Job submitted"
+        self._result_label.text = f"Job submitted"
         toast("Remote ingest started!")
         self._refresh_jobs()
 
@@ -1124,13 +1361,15 @@ class SharesScreen(MDScreen):
 
     def _refresh(self):
         if not self.app.api_key:
+            self._status.text = "No API key set."
             return
-        self._status.text = "Loading…"
+        self._status.text = "Loading..."
+        self._list.clear_widgets()
         api_get(
             self.app.api_key, HARDCODED_BASE_URL,
             "/api/shares",
             on_done=self._on_done,
-            on_error=lambda e: toast(f"Error: {e}"),
+            on_error=lambda e: (setattr(self._status, "text", f"Error: {e}"), toast(f"Shares error: {e}")),
         )
 
     def _on_done(self, data):
@@ -1138,18 +1377,55 @@ class SharesScreen(MDScreen):
         shares = data.get("shares", data) if isinstance(data, dict) else data
         if not isinstance(shares, list):
             shares = []
+        self._status.text = f"{len(shares)} share(s)"
         for share in shares:
             token   = share.get("token", "")
-            name    = share.get("originalName") or share.get("fileName") or token[:12]
             expires = share.get("expiresAt") or share.get("expires") or "Never"
             url     = f"{HARDCODED_BASE_URL}/share/{token}"
+            # Use whatever name the list endpoint gives us immediately
+            name = (
+                share.get("originalName")
+                or share.get("fileName")
+                or share.get("file_name")
+                or share.get("name")
+                or ""
+            )
+            display = name if name else token[:16]
             item = TwoLineListItem(
-                text=name,
-                secondary_text=f"Expires: {expires}  |  {url[:40]}",
-                on_release=lambda *a, t=token, n=name: self._share_menu(t, n),
+                text=display,
+                secondary_text=f"Expires: {expires}  |  {url}",
+                on_release=lambda *a, t=token, n=display: self._share_menu(t, n),
             )
             self._list.add_widget(item)
-        self._status.text = f"{len(shares)} share(s)"
+            # If no name was in the list response, fetch the detail endpoint
+            if not name and token:
+                self._fetch_share_detail(item, token, expires, url)
+
+    def _fetch_share_detail(self, item, token, expires, url):
+        """Background fetch of /api/shares/<token> to get the real filename."""
+        def _run():
+            try:
+                r = requests.get(
+                    f"{HARDCODED_BASE_URL}/api/shares/{token}",
+                    headers={"Authorization": f"Bearer {self.app.api_key}"},
+                    timeout=10,
+                )
+                r.raise_for_status()
+                meta = r.json()
+                share_meta = meta.get("share", meta)
+                name = (
+                    share_meta.get("originalName")
+                    or share_meta.get("fileName")
+                    or share_meta.get("file_name")
+                    or share_meta.get("name")
+                    or token[:16]
+                )
+                def _update(dt):
+                    item.text = name
+                Clock.schedule_once(_update)
+            except Exception:
+                pass  # keep token[:16] as fallback
+        threading.Thread(target=_run, daemon=True).start()
 
     def _share_menu(self, token, name):
         url = f"{HARDCODED_BASE_URL}/share/{token}"
@@ -1180,60 +1456,196 @@ class SharesScreen(MDScreen):
 class SettingsScreen(MDScreen):
     def __init__(self, app, **kwargs):
         super().__init__(**kwargs)
-        self.app   = app
+        self.app = app
+        self._show_key = False
         self._build_ui()
 
-    def _build_ui(self):
-        layout = BoxLayout(orientation="vertical", padding=dp(20), spacing=dp(16))
+    def _section_label(self, text):
+        """Desktop-style uppercase section header - matches desktop's section_header style."""
+        lbl = MDLabel(
+            text=text.upper(),
+            theme_text_color="Custom",
+            text_color=C_MUTED,
+            font_style="Caption",
+            size_hint_y=None, height=dp(28),
+        )
+        return lbl
 
+    def _build_ui(self):
+        scroll = ScrollView()
+        layout = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(14),
+                           size_hint_y=None)
+        layout.bind(minimum_height=layout.setter("height"))
+
+        # ── Header ────────────────────────────────────────────────────────────
         layout.add_widget(MDLabel(
             text="Settings",
             font_style="H5",
             theme_text_color="Custom", text_color=C_TEXT,
-            size_hint_y=None, height=dp(48),
+            size_hint_y=None, height=dp(44),
         ))
 
-        self._key_field = MDTextField(
-            hint_text="API Key",
+        # ══ API ═══════════════════════════════════════════════════════════════
+        layout.add_widget(self._section_label("API"))
+
+        api_card = MDCard(
+            orientation="vertical", padding=dp(14), spacing=dp(8),
+            size_hint_y=None, height=dp(210),
+            md_bg_color=C_CARD, elevation=2, radius=[8, 8, 8, 8],
+        )
+
+        # Label row
+        api_card.add_widget(MDLabel(
+            text="API key",
+            theme_text_color="Custom", text_color=C_MUTED,
+            font_style="Caption",
+            size_hint_y=None, height=dp(20),
+        ))
+
+        # Key field — native TextInput so Android long-press gives the system
+        # Paste / Select All context menu without any extra code.
+        stored = (self.app.store.get("settings").get("value", {})
+                  if self.app.store.exists("settings") else {})
+        self._key_field = TextInput(
+            hint_text="mocha_your_api_key_here",
             password=True,
             text=self.app.api_key,
             size_hint_y=None, height=dp(48),
+            background_color=(30/255, 28/255, 25/255, 1),
+            foreground_color=(240/255, 236/255, 230/255, 1),
+            cursor_color=(200/255, 169/255, 110/255, 1),
+            hint_text_color=(90/255, 86/255, 80/255, 1),
+            font_size=dp(14),
+            padding=[dp(10), dp(12), dp(10), dp(12)],
+            multiline=False,
+            use_bubble=True,   # enables Android long-press paste context menu
+            use_handles=True,
         )
-        layout.add_widget(self._key_field)
+        api_card.add_widget(self._key_field)
 
+        # Button row: Paste | Show/Hide | Save
+        # Paste is gold so it's clearly visible against the dark card.
+        btn_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
+
+        paste_btn = MDRaisedButton(
+            text="Paste",
+            md_bg_color=C_ACCENT,                          # gold — clearly visible
+            theme_text_color="Custom",
+            text_color=(17/255, 16/255, 16/255, 1),        # dark text on gold
+            size_hint_x=None, width=dp(100),
+            on_release=self._paste_key,
+        )
+        self._show_btn = MDRaisedButton(
+            text="Show",
+            md_bg_color=C_SURFACE,
+            theme_text_color="Custom", text_color=C_MUTED,
+            size_hint_x=None, width=dp(80),
+            on_release=self._toggle_show_key,
+        )
         save_btn = MDRaisedButton(
             text="Save",
             md_bg_color=C_ACCENT,
-            size_hint_x=None, width=dp(120),
+            size_hint_x=None, width=dp(100),
             on_release=self._save,
         )
-        layout.add_widget(save_btn)
+        btn_row.add_widget(paste_btn)
+        btn_row.add_widget(self._show_btn)
+        btn_row.add_widget(Widget())   # spacer
+        btn_row.add_widget(save_btn)
+        api_card.add_widget(btn_row)
 
-        layout.add_widget(MDLabel(
-            text="Advanced",
-            font_style="Subtitle1",
+        layout.add_widget(api_card)
+
+        # ══ MULTIPART UPLOAD ══════════════════════════════════════════════════
+        layout.add_widget(self._section_label("Multipart Upload"))
+
+        chunk_card = MDCard(
+            orientation="vertical", padding=dp(14), spacing=dp(8),
+            size_hint_y=None, height=dp(180),
+            md_bg_color=C_CARD, elevation=2, radius=[8, 8, 8, 8],
+        )
+
+        note = MDLabel(
+            text="Larger chunks reduce overhead; more parallel chunks can increase throughput on fast connections.",
             theme_text_color="Custom", text_color=C_MUTED,
-            size_hint_y=None, height=dp(36),
-        ))
+            font_style="Caption",
+            size_hint_y=None, height=dp(32),
+        )
+        chunk_card.add_widget(note)
 
-        chunk_row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
-        chunk_row.add_widget(MDLabel(text="Chunk size (MB):", theme_text_color="Custom", text_color=C_TEXT, size_hint_x=None, width=dp(140)))
+        # Chunk size row
+        cs_row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
+        cs_row.add_widget(MDLabel(
+            text="Chunk size (MB):",
+            theme_text_color="Custom", text_color=C_TEXT,
+            size_hint_x=None, width=dp(150),
+        ))
         self._chunk_field = MDTextField(
-            text=str(self.app.store.get("settings", {}).get("value", {}).get("chunk_mb", DEFAULT_CHUNK_SIZE_MB)),
+            text=str(stored.get("chunk_mb", DEFAULT_CHUNK_SIZE_MB)),
             input_filter="int",
             size_hint_y=None, height=dp(48),
         )
-        chunk_row.add_widget(self._chunk_field)
-        layout.add_widget(chunk_row)
+        cs_row.add_widget(self._chunk_field)
+        chunk_card.add_widget(cs_row)
 
-        layout.add_widget(Widget())
-        self.add_widget(layout)
+        # Max parallel chunks row
+        mc_row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
+        mc_row.add_widget(MDLabel(
+            text="Max parallel chunks:",
+            theme_text_color="Custom", text_color=C_TEXT,
+            size_hint_x=None, width=dp(150),
+        ))
+        self._max_chunks_field = MDTextField(
+            text=str(stored.get("max_chunks", DEFAULT_MAX_CHUNKS)),
+            input_filter="int",
+            size_hint_y=None, height=dp(48),
+        )
+        mc_row.add_widget(self._max_chunks_field)
+        chunk_card.add_widget(mc_row)
+
+        layout.add_widget(chunk_card)
+        layout.add_widget(Widget(size_hint_y=None, height=dp(20)))
+
+        scroll.add_widget(layout)
+        self.add_widget(scroll)
+
+    def _paste_key(self, *a):
+        """Paste from Android clipboard into the API key field."""
+        text = _android_paste()
+        if text:
+            self._key_field.text = text.strip()
+            toast("Pasted.")
+        else:
+            toast("Clipboard is empty.")
+
+    def _toggle_show_key(self, *a):
+        self._show_key = not self._show_key
+        self._key_field.password = not self._show_key
+        self._show_btn.text = "Hide" if self._show_key else "Show"
+        # TextInput needs a nudge to re-render after password toggle
+        try:
+            self._key_field._trigger_refresh_text()
+        except Exception:
+            pass
 
     def _save(self, *a):
         key = self._key_field.text.strip()
         self.app.api_key = key
-        chunk_mb = int(self._chunk_field.text.strip() or DEFAULT_CHUNK_SIZE_MB)
-        self.app.store.put("settings", value={"api_key": key, "chunk_mb": chunk_mb})
+        try:
+            chunk_mb = int(self._chunk_field.text.strip() or DEFAULT_CHUNK_SIZE_MB)
+        except Exception:
+            toast("Invalid chunk size - must be an integer.")
+            return
+        try:
+            max_chunks = int(self._max_chunks_field.text.strip() or DEFAULT_MAX_CHUNKS)
+        except Exception:
+            toast("Invalid max chunks - must be an integer.")
+            return
+        chunk_mb = max(1, min(chunk_mb, 100))
+        max_chunks = max(1, min(max_chunks, 20))
+        self.app.store.put("settings", value={
+            "api_key": key, "chunk_mb": chunk_mb, "max_chunks": max_chunks,
+        })
         toast("Settings saved.")
 
 
@@ -1245,13 +1657,21 @@ class MochaToolsApp(MDApp):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.title       = "Mocha Tools"
-        self.api_key     = ""
-        self.store       = None
+        self.title   = "Mocha Tools"
+        self.api_key = ""
+        self.store   = None
 
     def build(self):
-        self.theme_cls.theme_style  = "Dark"
+        # Theme - match desktop palette as closely as KivyMD 1.2.0 allows
+        self.theme_cls.theme_style     = "Dark"
         self.theme_cls.primary_palette = "Amber"
+        self.theme_cls.primary_hue     = "700"
+        self.theme_cls.accent_palette  = "Amber"
+        self.theme_cls.accent_hue      = "200"
+
+        # Kick off a storage permission request on startup so the user doesn't
+        # hit a permission error the first time they try to pick a file.
+        Clock.schedule_once(lambda dt: _request_storage_permission(), 1)
 
         # Persistent storage
         self.store = JsonStore("mochatools_settings.json")
@@ -1262,16 +1682,16 @@ class MochaToolsApp(MDApp):
         # Bottom navigation
         nav = MDBottomNavigation(panel_color=C_CARD[:-1] + (1,))
 
-        upload_screen = MDBottomNavigationItem(name="upload", text="Upload", icon="upload")
+        upload_screen = MDBottomNavigationItem(name="upload",   text="Upload", icon="upload")
         upload_screen.add_widget(UploadScreen(self, name="upload_inner"))
 
-        files_screen = MDBottomNavigationItem(name="files", text="Files", icon="folder")
+        files_screen = MDBottomNavigationItem(name="files",    text="Files",  icon="folder")
         files_screen.add_widget(FilesScreen(self, name="files_inner"))
 
-        remote_screen = MDBottomNavigationItem(name="remote", text="Remote", icon="download-network")
+        remote_screen = MDBottomNavigationItem(name="remote",  text="Remote", icon="download-network")
         remote_screen.add_widget(RemoteScreen(self, name="remote_inner"))
 
-        shares_screen = MDBottomNavigationItem(name="shares", text="Shares", icon="share-variant")
+        shares_screen = MDBottomNavigationItem(name="shares",  text="Shares", icon="share-variant")
         shares_screen.add_widget(SharesScreen(self, name="shares_inner"))
 
         settings_screen = MDBottomNavigationItem(name="settings", text="Settings", icon="cog")
@@ -1279,6 +1699,16 @@ class MochaToolsApp(MDApp):
 
         for s in (upload_screen, files_screen, remote_screen, shares_screen, settings_screen):
             nav.add_widget(s)
+
+        # Auto-load shares on startup once API key is available
+        def _load_shares_on_start(dt):
+            for item in nav.children:
+                if hasattr(item, 'children'):
+                    for child in item.children:
+                        if isinstance(child, SharesScreen):
+                            child._refresh()
+                            return
+        Clock.schedule_once(_load_shares_on_start, 2)
 
         return nav
 
