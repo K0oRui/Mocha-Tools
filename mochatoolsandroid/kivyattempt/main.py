@@ -1,16 +1,16 @@
 """
-Mocha Tools - Android (Kivy)
+Mocha Tools — Android (Kivy)
 Rewrite of the PyQt6 desktop app for Android using Kivy.
 
 All API/upload logic is ported directly from workers.py.
 UI is rebuilt in Kivy with KivyMD for Material Design components.
 
 Tabs:
-  1. Upload       - pick file, multipart upload, progress, share
-  2. Files        - browse remote folders, delete, move, new folder
-  3. Remote       - server-side URL ingest + job list
-  4. Shares       - list and delete share links
-  5. Settings     - API key (persisted), chunk config
+  1. Upload       — pick file, multipart upload, progress, share
+  2. Files        — browse remote folders, delete, move, new folder
+  3. Remote       — server-side URL ingest + job list
+  4. Shares       — list and delete share links
+  5. Settings     — API key (persisted), chunk config
 """
 
 import os
@@ -144,12 +144,12 @@ def _android_paste():
 def _request_storage_permission(callback=None):
     """
     Grant the broadest possible file access on Android:
-      - Android 11+ (API 30+): launches the system "All Files Access" settings
-        page for MANAGE_EXTERNAL_STORAGE, then calls callback when the user
-        returns to the app.
-      - Android 6–10: requests READ/WRITE_EXTERNAL_STORAGE at runtime.
-      - Android 13+: also requests READ_MEDIA_IMAGES/VIDEO/AUDIO.
-      - Non-Android: calls callback immediately.
+      • Android 11+ (API 30+): MANAGE_EXTERNAL_STORAGE via the system settings
+        page.  If already granted, calls callback immediately.
+      • Android 6–10: requests READ/WRITE_EXTERNAL_STORAGE at runtime.
+        If already granted, calls callback immediately without showing a dialog.
+      • Android 13+: also requests READ_MEDIA_* and READ_MEDIA_DOCUMENTS.
+      • Non-Android: calls callback immediately.
     """
     try:
         from jnius import autoclass
@@ -157,53 +157,75 @@ def _request_storage_permission(callback=None):
         sdk_int = Build.VERSION.SDK_INT
 
         if sdk_int >= 30:
-            # Android 11+ - need MANAGE_EXTERNAL_STORAGE via Settings intent
+            # Android 11+ — MANAGE_EXTERNAL_STORAGE is the only permission that
+            # grants unrestricted file system access.
             try:
                 Environment = autoclass('android.os.Environment')
-                if not Environment.isExternalStorageManager():
-                    Intent = autoclass('android.content.Intent')
-                    Settings = autoclass('android.provider.Settings')
-                    Uri = autoclass('android.net.Uri')
-                    PythonActivity = autoclass('org.kivy.android.PythonActivity')
-                    activity = PythonActivity.mActivity
-                    intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-                    intent.setData(Uri.parse(f"package:{activity.getPackageName()}"))
-                    activity.startActivity(intent)
-                    # Watch for the permission to be granted (poll every 500 ms)
-                    def _poll(dt):
-                        if Environment.isExternalStorageManager():
-                            if callback:
-                                callback()
-                            return False  # cancel the interval
-                    Clock.schedule_interval(_poll, 0.5)
+                if Environment.isExternalStorageManager():
+                    # Already granted — invoke callback right now.
+                    if callback:
+                        callback()
                     return
+                # Not granted — open the system settings page.
+                Intent = autoclass('android.content.Intent')
+                Settings = autoclass('android.provider.Settings')
+                Uri = autoclass('android.net.Uri')
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                activity = PythonActivity.mActivity
+                intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                intent.setData(Uri.parse(f"package:{activity.getPackageName()}"))
+                activity.startActivity(intent)
+                # Poll every 500 ms until the user grants access and returns.
+                def _poll(dt):
+                    if Environment.isExternalStorageManager():
+                        if callback:
+                            callback()
+                        return False  # cancels the interval
+                Clock.schedule_interval(_poll, 0.5)
+                return
             except Exception:
-                pass  # fall through to standard permissions
+                pass  # fall through to standard permissions below
 
-        # Android 6–12 (and fallback for 11+)
-        from android.permissions import request_permissions, Permission
-        perms = []
-        for attr in (
+        # Android 6–10 (and fallback for 11+ if jnius MANAGE path failed)
+        from android.permissions import request_permissions, check_permission, Permission
+
+        perms_to_request = []
+        all_attrs = (
             "READ_EXTERNAL_STORAGE",
             "WRITE_EXTERNAL_STORAGE",
             "READ_MEDIA_IMAGES",
             "READ_MEDIA_VIDEO",
             "READ_MEDIA_AUDIO",
-        ):
+            "READ_MEDIA_DOCUMENTS",   # Android 13+ only — AttributeError is swallowed
+        )
+        for attr in all_attrs:
             try:
-                perms.append(getattr(Permission, attr))
+                p = getattr(Permission, attr)
+                # Only request permissions that are not already granted — avoids
+                # devices where request_permissions() skips the callback entirely
+                # when all requested permissions are already held.
+                if not check_permission(p):
+                    perms_to_request.append(p)
             except AttributeError:
-                pass
+                pass  # permission doesn't exist on this API level
+
+        if not perms_to_request:
+            # Everything already granted — fire callback immediately.
+            if callback:
+                callback()
+            return
 
         def _cb(permissions, grants):
+            # Callback fires regardless of outcome — proceed and let the upload
+            # fail with a clear error if access is still denied.
             if callback:
                 Clock.schedule_once(lambda dt: callback())
 
-        request_permissions(perms, _cb)
+        request_permissions(perms_to_request, _cb)
         return
     except Exception:
         pass
-    # Not on Android - invoke callback immediately
+    # Not on Android (desktop / CI) — invoke callback immediately.
     if callback:
         callback()
 
@@ -418,7 +440,7 @@ class UploadTask:
             headers={**self._headers(), "Content-Type": "application/json"},
             json={"path": parent, "name": name},
             timeout=15,
-        )  # ignore errors - folder may already exist
+        )  # ignore errors — folder may already exist
 
     def _multipart_upload(self, file_size, local_path, dest_path):
         file_name = os.path.basename(local_path)
@@ -538,9 +560,10 @@ class UploadTask:
                     time.sleep(min(2 ** (attempt - 1), 10))
         raise last_error
 
-    def _upload_part_s3(self, session, part_num, chunk, tracker):
-        # Presign then PUT directly to S3
-        presign_resp = requests.post(
+    def _presign_part_url(self, session, part_num, http=None):
+        """Ask Mocha for a presigned S3 URL. Handles every response shape the server may return."""
+        client = http or requests
+        presign_resp = client.post(
             f"{self.base_url}/api/files/multipart/presigned",
             headers={**self._headers(), "Content-Type": "application/json"},
             json={**session, "partNumbers": [part_num]},
@@ -548,33 +571,80 @@ class UploadTask:
         )
         presign_resp.raise_for_status()
         data = presign_resp.json()
-        signed_url = (
-            data.get("url") or data.get("presignedUrl")
-            or (data.get("urls") or [None])[0]
-            or ((data.get("parts") or [{}])[0]).get("url")
-        )
-        if not signed_url:
-            raise RuntimeError(f"No presigned URL for part {part_num}")
 
+        signed_url = None
+        if "url" in data:
+            # Flat {"url": "https://..."} response
+            signed_url = data["url"]
+        elif "presignedUrl" in data:
+            signed_url = data["presignedUrl"]
+        elif "urls" in data and isinstance(data["urls"], list):
+            # List of {"partNumber": N, "url": "..."} -- match by part number
+            for entry in data["urls"]:
+                if isinstance(entry, dict) and entry.get("partNumber") == part_num:
+                    signed_url = entry.get("url")
+                    break
+            # Fallback: flat list of URL strings
+            if not signed_url and data["urls"] and isinstance(data["urls"][0], str):
+                signed_url = data["urls"][0]
+        elif "parts" in data and isinstance(data["parts"], list):
+            # {"parts": [{"partNumber": 1, "url": "..."}]}
+            # Must call .get("url") on the dict -- NOT return the dict itself
+            for entry in data["parts"]:
+                if isinstance(entry, dict) and entry.get("partNumber") == part_num:
+                    signed_url = entry.get("url")
+                    break
+
+        if not signed_url:
+            raise RuntimeError(f"No presigned URL in response for part {part_num}: {data}")
+        return signed_url
+
+    def _upload_part_s3(self, session, part_num, chunk, tracker):
+        """Upload one part directly to S3 via a presigned URL. Re-presigns on every retry."""
         last_error = None
-        for attempt in range(1, PART_UPLOAD_RETRIES + 1):
-            if self._cancel:
-                return None
-            try:
-                resp = requests.put(
-                    signed_url,
-                    data=tracker.make_streaming_body(chunk),
-                    timeout=PART_UPLOAD_TIMEOUT,
-                )
-                resp.raise_for_status()
-                etag = resp.headers.get("ETag", "")
-                if not etag:
-                    raise RuntimeError(f"No ETag from S3 for part {part_num}")
-                return etag
-            except Exception as e:
-                last_error = e
+        with requests.Session() as http:
+            for attempt in range(1, PART_UPLOAD_RETRIES + 1):
+                if self._cancel:
+                    return None
+                try:
+                    signed_url = self._presign_part_url(session, part_num, http)
+                    # PUT directly to S3 -- no auth header, URL is pre-signed
+                    s3_resp = http.put(
+                        signed_url,
+                        data=tracker.make_streaming_body(chunk),
+                        timeout=PART_UPLOAD_TIMEOUT,
+                    )
+                    s3_resp.raise_for_status()
+                    etag = s3_resp.headers.get("ETag", "")
+                    if not etag:
+                        raise RuntimeError(f"No ETag returned for S3 part {part_num}")
+                    return etag
+                except requests.HTTPError as e:
+                    content = getattr(e.response, "text", "")
+                    if "NoSuchUpload" in content:
+                        self._abort(session)
+                        raise RuntimeError("S3 upload session expired (NoSuchUpload). Please retry.")
+                    last_error = e
+                except Exception as e:
+                    last_error = e
+                if attempt >= PART_UPLOAD_RETRIES:
+                    raise last_error
                 time.sleep(min(2 ** (attempt - 1), 10))
         raise last_error
+
+    def _abort(self, session, part_numbers=None):
+        try:
+            payload = dict(session)
+            if part_numbers:
+                payload["partNumbers"] = part_numbers
+            requests.post(
+                f"{self.base_url}/api/files/multipart/abort",
+                headers={**self._headers(), "Content-Type": "application/json"},
+                json=payload,
+                timeout=15,
+            )
+        except Exception:
+            pass
 
     def _complete_multipart(self, payload):
         last_error = None
@@ -791,8 +861,39 @@ class UploadScreen(MDScreen):
         self.add_widget(layout)
 
     def _pick_file(self, *a):
-        # Request storage permissions first, then open the picker
+        # Request storage permissions first, then open the picker.
         def _do_pick():
+            # Use Android's ACTION_OPEN_DOCUMENT directly via pyjnius.
+            # This opens the full system file browser (not the restricted media
+            # picker that plyer uses) and lets the user select any file type
+            # from any location: internal storage, SD card, Downloads,
+            # cloud providers, OTG drives, etc.
+            # Falls back to plyer on non-Android platforms.
+            try:
+                from jnius import autoclass
+                PythonActivity  = autoclass('org.kivy.android.PythonActivity')
+                Intent          = autoclass('android.content.Intent')
+                activity        = PythonActivity.mActivity
+
+                intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
+                intent.addCategory(Intent.CATEGORY_OPENABLE)
+                # "*/*" means ALL file types — no restriction
+                intent.setType("*/*")
+                # Grant persistent read permission for the returned URI so we
+                # can open the file stream even after the picker closes.
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+
+                activity.startActivityForResult(intent, 0x4d43)   # 0x4d43 = "MC"
+
+                # The result comes back via onActivityResult.  We hook into it
+                # by polling the app's _last_pick_result which is set by the
+                # on_activity_result handler registered below.
+                self.app._pick_callback = self._on_file_chosen
+                return
+            except Exception:
+                pass
+            # Non-Android fallback (desktop testing)
             try:
                 from plyer import filechooser
                 filechooser.open_file(on_selection=self._on_file_chosen)
@@ -913,7 +1014,7 @@ class UploadScreen(MDScreen):
                     cleanup_tmp = tmp_path
                     self._file_path = tmp_path
                 except Exception:
-                    toast("Failed to copy content:// URI - try selecting via Files app instead.")
+                    toast("Failed to copy content:// URI — try selecting via Files app instead.")
             except Exception:
                 toast("Failed to prepare temporary file for upload.")
 
@@ -958,7 +1059,7 @@ class UploadScreen(MDScreen):
         self._status_label.text   = f"Done! File ID: {result['file_id']}"
         if result.get("share_url"):
             self._share_result.text = result["share_url"]
-            toast("Upload complete - share link ready!")
+            toast("Upload complete — share link ready!")
         else:
             toast("Upload complete!")
 
@@ -1219,7 +1320,7 @@ class RemoteScreen(MDScreen):
                                  size_hint_y=None)
         outer_layout.bind(minimum_height=outer_layout.setter("height"))
 
-        # ── Ingest card - no fixed height, expands to fit content ──
+        # ── Ingest card — no fixed height, expands to fit content ──
         card = MDCard(orientation="vertical", padding=dp(16), spacing=dp(10),
                       size_hint_y=None, md_bg_color=C_CARD, elevation=4,
                       radius=[12, 12, 12, 12])
@@ -1261,7 +1362,7 @@ class RemoteScreen(MDScreen):
         jobs_tb.add_widget(self._jobs_status)
         outer_layout.add_widget(jobs_tb)
 
-        # ── Jobs list - fixed height scroll area ──
+        # ── Jobs list — fixed height scroll area ──
         jobs_scroll = ScrollView(size_hint_y=None, height=dp(300))
         self._jobs_list = MDList()
         jobs_scroll.add_widget(self._jobs_list)
@@ -1369,7 +1470,7 @@ class SharesScreen(MDScreen):
             self.app.api_key, HARDCODED_BASE_URL,
             "/api/shares",
             on_done=self._on_done,
-            on_error=lambda e: (setattr(self._status, "text", f"Error: {e}"), toast(f"Shares error: {e}")),
+            on_error=lambda e: (setattr(self._status, "text", "Error loading shares."), toast(f"Shares error: {e}")),
         )
 
     def _on_done(self, data):
@@ -1382,7 +1483,6 @@ class SharesScreen(MDScreen):
             token   = share.get("token", "")
             expires = share.get("expiresAt") or share.get("expires") or "Never"
             url     = f"{HARDCODED_BASE_URL}/share/{token}"
-            # Use whatever name the list endpoint gives us immediately
             name = (
                 share.get("originalName")
                 or share.get("fileName")
@@ -1397,11 +1497,10 @@ class SharesScreen(MDScreen):
                 on_release=lambda *a, t=token, n=display: self._share_menu(t, n),
             )
             self._list.add_widget(item)
-            # If no name was in the list response, fetch the detail endpoint
             if not name and token:
-                self._fetch_share_detail(item, token, expires, url)
+                self._fetch_share_detail(item, token)
 
-    def _fetch_share_detail(self, item, token, expires, url):
+    def _fetch_share_detail(self, item, token):
         """Background fetch of /api/shares/<token> to get the real filename."""
         def _run():
             try:
@@ -1420,11 +1519,9 @@ class SharesScreen(MDScreen):
                     or share_meta.get("name")
                     or token[:16]
                 )
-                def _update(dt):
-                    item.text = name
-                Clock.schedule_once(_update)
+                Clock.schedule_once(lambda dt: setattr(item, "text", name))
             except Exception:
-                pass  # keep token[:16] as fallback
+                pass
         threading.Thread(target=_run, daemon=True).start()
 
     def _share_menu(self, token, name):
@@ -1461,7 +1558,7 @@ class SettingsScreen(MDScreen):
         self._build_ui()
 
     def _section_label(self, text):
-        """Desktop-style uppercase section header - matches desktop's section_header style."""
+        """Desktop-style uppercase section header — matches desktop's section_header style."""
         lbl = MDLabel(
             text=text.upper(),
             theme_text_color="Custom",
@@ -1502,8 +1599,8 @@ class SettingsScreen(MDScreen):
             size_hint_y=None, height=dp(20),
         ))
 
-        # Key field — native TextInput so Android long-press gives the system
-        # Paste / Select All context menu without any extra code.
+        # Key field: native TextInput so Android long-press gives the system
+        # Paste / Select All context menu without extra code.
         stored = (self.app.store.get("settings").get("value", {})
                   if self.app.store.exists("settings") else {})
         self._key_field = TextInput(
@@ -1518,20 +1615,20 @@ class SettingsScreen(MDScreen):
             font_size=dp(14),
             padding=[dp(10), dp(12), dp(10), dp(12)],
             multiline=False,
-            use_bubble=True,   # enables Android long-press paste context menu
+            use_bubble=True,
             use_handles=True,
         )
         api_card.add_widget(self._key_field)
 
         # Button row: Paste | Show/Hide | Save
-        # Paste is gold so it's clearly visible against the dark card.
+        # Paste is gold so it stands out clearly against the dark card.
         btn_row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
 
         paste_btn = MDRaisedButton(
             text="Paste",
-            md_bg_color=C_ACCENT,                          # gold — clearly visible
+            md_bg_color=C_ACCENT,
             theme_text_color="Custom",
-            text_color=(17/255, 16/255, 16/255, 1),        # dark text on gold
+            text_color=(17/255, 16/255, 16/255, 1),
             size_hint_x=None, width=dp(100),
             on_release=self._paste_key,
         )
@@ -1550,7 +1647,7 @@ class SettingsScreen(MDScreen):
         )
         btn_row.add_widget(paste_btn)
         btn_row.add_widget(self._show_btn)
-        btn_row.add_widget(Widget())   # spacer
+        btn_row.add_widget(Widget())
         btn_row.add_widget(save_btn)
         api_card.add_widget(btn_row)
 
@@ -1622,7 +1719,6 @@ class SettingsScreen(MDScreen):
         self._show_key = not self._show_key
         self._key_field.password = not self._show_key
         self._show_btn.text = "Hide" if self._show_key else "Show"
-        # TextInput needs a nudge to re-render after password toggle
         try:
             self._key_field._trigger_refresh_text()
         except Exception:
@@ -1634,12 +1730,12 @@ class SettingsScreen(MDScreen):
         try:
             chunk_mb = int(self._chunk_field.text.strip() or DEFAULT_CHUNK_SIZE_MB)
         except Exception:
-            toast("Invalid chunk size - must be an integer.")
+            toast("Invalid chunk size — must be an integer.")
             return
         try:
             max_chunks = int(self._max_chunks_field.text.strip() or DEFAULT_MAX_CHUNKS)
         except Exception:
-            toast("Invalid max chunks - must be an integer.")
+            toast("Invalid max chunks — must be an integer.")
             return
         chunk_mb = max(1, min(chunk_mb, 100))
         max_chunks = max(1, min(max_chunks, 20))
@@ -1657,12 +1753,13 @@ class MochaToolsApp(MDApp):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.title   = "Mocha Tools"
-        self.api_key = ""
-        self.store   = None
+        self.title          = "Mocha Tools"
+        self.api_key        = ""
+        self.store          = None
+        self._pick_callback = None   # set by UploadScreen._pick_file before startActivityForResult
 
     def build(self):
-        # Theme - match desktop palette as closely as KivyMD 1.2.0 allows
+        # Theme — match desktop palette as closely as KivyMD 1.2.0 allows
         self.theme_cls.theme_style     = "Dark"
         self.theme_cls.primary_palette = "Amber"
         self.theme_cls.primary_hue     = "700"
@@ -1700,17 +1797,59 @@ class MochaToolsApp(MDApp):
         for s in (upload_screen, files_screen, remote_screen, shares_screen, settings_screen):
             nav.add_widget(s)
 
-        # Auto-load shares on startup once API key is available
-        def _load_shares_on_start(dt):
-            for item in nav.children:
-                if hasattr(item, 'children'):
-                    for child in item.children:
-                        if isinstance(child, SharesScreen):
-                            child._refresh()
-                            return
-        Clock.schedule_once(_load_shares_on_start, 2)
+        # Auto-load shares 2s after startup so the tab is populated before the user visits it
+        def _preload_shares(dt):
+            for screen in nav.children:
+                for child in getattr(screen, 'children', []):
+                    if isinstance(child, SharesScreen):
+                        child._refresh()
+                        return
+        Clock.schedule_once(_preload_shares, 2)
 
         return nav
+
+    def on_activity_result(self, request_code, result_code, intent):
+        """
+        Called by Kivy/p4a when startActivityForResult() returns.
+        We use request code 0x4d43 ("MC") for our file picker.
+        result_code -1 == RESULT_OK on Android.
+        """
+        RESULT_OK    = -1
+        REQUEST_CODE = 0x4d43
+        if request_code != REQUEST_CODE:
+            return
+        if result_code != RESULT_OK or intent is None:
+            # User cancelled — clear the waiting callback
+            self._pick_callback = None
+            return
+        try:
+            uri = intent.getData()
+            if uri is None:
+                toast("No file was returned by the picker.")
+                self._pick_callback = None
+                return
+
+            # Take persistable read permission so we can stream the file later
+            try:
+                from jnius import autoclass
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                Intent = autoclass('android.content.Intent')
+                activity = PythonActivity.mActivity
+                activity.getContentResolver().takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            except Exception:
+                pass
+
+            uri_str = uri.toString()
+            cb = self._pick_callback
+            self._pick_callback = None
+            if cb:
+                # Dispatch back to main thread — _on_file_chosen expects a list
+                Clock.schedule_once(lambda dt: cb([uri_str]))
+        except Exception as e:
+            toast(f"File picker result error: {e}")
+            self._pick_callback = None
 
 
 if __name__ == "__main__":

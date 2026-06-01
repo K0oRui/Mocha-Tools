@@ -28,10 +28,18 @@ android.sdk       = 34
 android.archs     = arm64-v8a, armeabi-v7a
 
 # Permissions needed for file access and network
-android.permissions = INTERNET,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,READ_MEDIA_IMAGES,READ_MEDIA_VIDEO,READ_MEDIA_AUDIO,MANAGE_EXTERNAL_STORAGE
+android.permissions = INTERNET,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,READ_MEDIA_IMAGES,READ_MEDIA_VIDEO,READ_MEDIA_AUDIO,READ_MEDIA_DOCUMENTS,MANAGE_EXTERNAL_STORAGE
 
-# Use the storage permission model for Android 10+
+# Required for Android 10 (API 29) — lets the app see all files without scoped storage
 android.allow_backup = True
+android.requestLegacyExternalStorage = True
+
+# Extra AndroidManifest.xml entries:
+#  1. MANAGE_EXTERNAL_STORAGE must be declared with tools namespace to avoid lint errors
+#  2. The <queries> block tells Android 11+ that we intend to open documents via
+#     ACTION_OPEN_DOCUMENT / ACTION_GET_CONTENT so the system grants URI read access.
+android.add_manifest_application_arguments = android:requestLegacyExternalStorage="true"
+android.manifest.permissions_xml = <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
 # Icons — put your icon at the paths below or swap these out
 icon.filename = %(source.dir)s/presplash.png
