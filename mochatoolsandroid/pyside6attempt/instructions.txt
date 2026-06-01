@@ -1,0 +1,21 @@
+# 1. Install system deps + Python env
+bash setup_and_build.sh
+
+# 2. Test the UI on desktop (resize to ~390×844 to simulate portrait)
+source ~/mochatools-android-env/bin/activate
+cd mocha_tools_android/
+python3 main.py
+
+# 3. Install Qt for Android (required once before APK build)
+# → https://www.qt.io/download-qt-installer
+# → Components: Qt 6.7+, Qt for Android (arm64-v8a), Android SDK API 34, NDK r26b
+
+# 4. Fill in pysidedeploy.spec — set python_path, wheel_pyside, wheel_shiboken
+
+# 5. Build the APK
+bash setup_and_build.sh --build
+# Output: android-build/build/outputs/apk/release/
+
+# 6. Install on a device or emulator
+adb install <path-to-apk>
+adb logcat | grep -E "(python|PySide|mochatools)"
