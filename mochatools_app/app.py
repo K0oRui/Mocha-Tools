@@ -216,6 +216,8 @@ class MassUploadTab(QWidget):
         hdr.resizeSection(2, 160)
         self._tree.setMinimumHeight(160)
         self._tree.itemDoubleClicked.connect(self._edit_dest)
+        self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._tree.customContextMenuRequested.connect(self._queue_context_menu)
         outer.addWidget(self._tree, 1)
 
         # Queue toolbar
@@ -236,6 +238,18 @@ class MassUploadTab(QWidget):
         all_btn.setObjectName("tb_btn_danger")
         all_btn.clicked.connect(self._clear_all)
         qtb.addWidget(all_btn)
+
+        qtb.addSpacing(8)
+
+        up_btn = QPushButton("▲ Move up")
+        up_btn.setObjectName("tb_btn")
+        up_btn.clicked.connect(self._move_selected_up)
+        qtb.addWidget(up_btn)
+
+        dn_btn = QPushButton("▼ Move down")
+        dn_btn.setObjectName("tb_btn")
+        dn_btn.clicked.connect(self._move_selected_down)
+        qtb.addWidget(dn_btn)
 
         qtb.addStretch()
         self._queue_lbl = QLabel("0 items")
@@ -306,6 +320,9 @@ class MassUploadTab(QWidget):
         self._speed_lbl = QLabel("")
         self._speed_lbl.setStyleSheet("color:#9ca3af; font-size:11px; background:transparent;")
         top_row.addWidget(self._speed_lbl)
+        self._transferred_lbl = QLabel("")
+        self._transferred_lbl.setStyleSheet("color:#9ca3af; font-size:11px; background:transparent; margin-left:10px;")
+        top_row.addWidget(self._transferred_lbl)
         prog_lay.addLayout(top_row)
 
         pbar_row = QHBoxLayout()
@@ -389,10 +406,25 @@ class MassUploadTab(QWidget):
     def _update_overall_progress(self):
         if not self._queue:
             return
-        done = sum(1 for e in self._queue if e["status"] in ("done","error","cancelled"))
-        pct  = int(done / len(self._queue) * 100)
+        total_pct = 0
+        for e in self._queue:
+            if e["status"] in ("done",):
+                total_pct += 100
+            elif e["status"] in ("error", "cancelled"):
+                total_pct += 100
+            else:
+                total_pct += e.get("_pct", 0)
+        pct = int(total_pct / len(self._queue))
         self._prog_bar.setValue(pct)
         self._pct_lbl.setText(f"{pct}%")
+
+    def _on_file_progress(self, pct, entry):
+        entry["_pct"] = pct
+        entry["item"].setText(
+            self._COL_STATUS,
+            f"{pct}%  ·  {entry.get('_xfr', '')}",
+        )
+        self._update_overall_progress()
 
     # ── Queue management ──────────────────────────────────────────────────────
     def _on_drop(self, file_list, root):
@@ -433,13 +465,97 @@ class MassUploadTab(QWidget):
         row = next((e for e in self._queue if e["item"] is item), None)
         if row is None or row["status"] in ("uploading", "done"):
             return
-        new_dest, ok = QInputDialog.getText(
-            self, "Edit destination", "Remote destination path:",
-            QLineEdit.EchoMode.Normal, row["dest"],
-        )
-        if ok and new_dest.strip():
-            row["dest"] = new_dest.strip()
-            item.setText(self._COL_DEST, row["dest"])
+        api_key = self.get_api_key()
+        if api_key:
+            dlg = FolderBrowserDialog(
+                api_key, HARDCODED_BASE_URL,
+                row["dest"].rsplit("/", 1)[0] or "/",
+                parent=self,
+            )
+            dlg.setWindowTitle("Choose destination folder")
+            if dlg.exec():
+                # Keep the original filename, swap the folder
+                filename = row["dest"].rsplit("/", 1)[-1]
+                folder   = dlg.selected.rstrip("/")
+                row["dest"] = f"{folder}/{filename}"
+                item.setText(self._COL_DEST, row["dest"])
+        else:
+            new_dest, ok = QInputDialog.getText(
+                self, "Edit destination", "Remote destination path:",
+                QLineEdit.EchoMode.Normal, row["dest"],
+            )
+            if ok and new_dest.strip():
+                row["dest"] = new_dest.strip()
+                item.setText(self._COL_DEST, row["dest"])
+
+    def _queue_context_menu(self, pos):
+        item = self._tree.itemAt(pos)
+        menu = QMenu(self)
+        if item:
+            entry = next((e for e in self._queue if e["item"] is item), None)
+            idx   = self._tree.indexOfTopLevelItem(item)
+            count = self._tree.topLevelItemCount()
+
+            move_up = menu.addAction("▲  Move up")
+            move_up.setEnabled(idx > 0 and entry and entry["status"] == "pending")
+            move_up.triggered.connect(self._move_selected_up)
+
+            move_dn = menu.addAction("▼  Move down")
+            move_dn.setEnabled(idx < count - 1 and entry and entry["status"] == "pending")
+            move_dn.triggered.connect(self._move_selected_down)
+
+            menu.addSeparator()
+
+            edit_dest = menu.addAction("✎  Edit destination")
+            edit_dest.setEnabled(entry and entry["status"] not in ("uploading", "done"))
+            edit_dest.triggered.connect(lambda: self._edit_dest(item, 0))
+
+            menu.addSeparator()
+
+            rm = menu.addAction("✕  Remove")
+            rm.setEnabled(entry and entry["status"] != "uploading")
+            rm.triggered.connect(self._remove_selected)
+        else:
+            clr_done = menu.addAction("Clear done")
+            clr_done.triggered.connect(self._clear_done)
+            clr_all  = menu.addAction("Clear all")
+            clr_all.triggered.connect(self._clear_all)
+
+        menu.exec(self._tree.viewport().mapToGlobal(pos))
+
+    def _move_entry(self, delta):
+        """Move each selected pending entry by delta (-1 up, +1 down) in both the
+        internal queue list and the tree widget, preserving relative order."""
+        selected = [
+            e for e in self._queue
+            if e["item"] in self._tree.selectedItems() and e["status"] == "pending"
+        ]
+        if not selected:
+            return
+        # Process in reverse order when moving down so we don't overwrite each other
+        if delta > 0:
+            selected = list(reversed(selected))
+        for entry in selected:
+            qi = self._queue.index(entry)
+            ti = self._tree.indexOfTopLevelItem(entry["item"])
+            new_qi = qi + delta
+            new_ti = ti + delta
+            if new_qi < 0 or new_qi >= len(self._queue):
+                continue
+            if new_ti < 0 or new_ti >= self._tree.topLevelItemCount():
+                continue
+            # Swap in queue list
+            self._queue[qi], self._queue[new_qi] = self._queue[new_qi], self._queue[qi]
+            # Swap in tree widget (take + re-insert)
+            taken = self._tree.takeTopLevelItem(ti)
+            self._tree.insertTopLevelItem(new_ti, taken)
+            self._tree.setCurrentItem(taken)
+
+    def _move_selected_up(self):
+        self._move_entry(-1)
+
+    def _move_selected_down(self):
+        self._move_entry(1)
 
     def _remove_selected(self):
         for item in list(self._tree.selectedItems()):
@@ -470,6 +586,7 @@ class MassUploadTab(QWidget):
         self._prog_bar.setValue(0)
         self._pct_lbl.setText("0%")
         self._speed_lbl.setText("")
+        self._transferred_lbl.setText("")
         self._update_queue_label()
         self._set_badge("Idle", "#9ca3af")
         self._log("Queue cleared.")
@@ -497,11 +614,19 @@ class MassUploadTab(QWidget):
         if self._cancelled:
             return
         api_key = api_key or self.get_api_key()
-        try:
-            entry = next(self._pending_iter)
-        except StopIteration:
-            return
+        while True:
+            try:
+                entry = next(self._pending_iter)
+            except StopIteration:
+                return
+            # Entry may have been removed from the queue while we were uploading
+            # other files — skip it rather than starting a ghost upload.
+            if entry not in self._queue:
+                continue
+            break
         entry["status"] = "uploading"
+        entry["_bytes_done"]  = 0
+        entry["_bytes_total"] = entry.get("size", 0)
         entry["item"].setText(self._COL_STATUS, "Uploading…")
         entry["item"].setForeground(3, QColor("#c8a96e"))
 
@@ -514,11 +639,13 @@ class MassUploadTab(QWidget):
         )
         entry["worker"] = w
         self._active_workers.append(w)
-        w.progress.connect(lambda pct, e=entry: e["item"].setText(self._COL_STATUS, f"{pct}%"))
+        w.progress.connect(lambda pct, e=entry: self._on_file_progress(pct, e))
         w.speed.connect(self._on_speed)
         w.status.connect(lambda msg, e=entry: self._log(msg) if not msg.startswith("[DEBUG]") else None)
         w.finished.connect(lambda result, e=entry: self._on_file_done(e))
         w.error.connect(lambda msg, e=entry: self._on_file_error(msg, e))
+        if hasattr(w, "bytes_progress"):
+            w.bytes_progress.connect(lambda done, total, e=entry: self._on_file_bytes(done, total, e))
         w.start()
 
     def _on_speed(self, bps):
@@ -526,6 +653,20 @@ class MassUploadTab(QWidget):
         elif bps < 1024**2:    txt = f"{bps/1024:.1f} KB/s"
         else:                  txt = f"{bps/1024**2:.2f} MB/s"
         self._speed_lbl.setText(txt)
+
+    def _on_file_bytes(self, done_bytes, total_bytes, entry):
+        entry["_bytes_done"]  = done_bytes
+        entry["_bytes_total"] = total_bytes
+        entry["_xfr"] = f"{self._fmt(done_bytes)} / {self._fmt(total_bytes)}"
+        # Sum across every entry that has reported byte data so the label
+        # reflects the real queue-wide transferred / total rather than just
+        # whichever worker happened to fire last.
+        all_done  = sum(e.get("_bytes_done",  0) for e in self._queue)
+        all_total = sum(e.get("_bytes_total", 0) for e in self._queue)
+        if all_total > 0:
+            self._transferred_lbl.setText(
+                f"{self._fmt(all_done)} / {self._fmt(all_total)}"
+            )
 
     def _on_file_done(self, entry):
         entry["status"] = "done"
@@ -560,6 +701,7 @@ class MassUploadTab(QWidget):
         self._start_btn.show()
         self._cancel_btn.hide()
         self._speed_lbl.setText("")
+        self._transferred_lbl.setText("")
         if errors:
             self._set_badge(f"Done ({errors} failed)", "#f87171")
             self._log(f"✓ Queue finished — {errors} file(s) failed.")
@@ -577,6 +719,9 @@ class MassUploadTab(QWidget):
                 w.status.disconnect()
                 w.finished.disconnect()
                 w.error.disconnect()
+                if hasattr(w, "bytes_progress"):
+                    try: w.bytes_progress.disconnect()
+                    except RuntimeError: pass
             except RuntimeError:
                 pass
         self._active_workers.clear()
@@ -588,6 +733,7 @@ class MassUploadTab(QWidget):
         self._start_btn.show()
         self._cancel_btn.hide()
         self._speed_lbl.setText("")
+        self._transferred_lbl.setText("")
         self._set_badge("Cancelled", "#9ca3af")
         self._log("Upload cancelled.")
         self._update_queue_label()
@@ -831,16 +977,20 @@ class DropZone(QFrame):
         self._browse()
 
     def _browse(self):
-        """Pop a small menu so the user can choose file or folder."""
+        """Pop a small menu so the user can choose file(s) or folder(s)."""
         from PyQt6.QtWidgets import QMenu
         menu = QMenu(self)
-        act_file   = menu.addAction("📄  Select file…")
+        act_file   = menu.addAction("📄  Select files…")
         act_folder = menu.addAction("📁  Select folder…")
         chosen = menu.exec(self.mapToGlobal(self.rect().center()))
         if chosen == act_file:
-            path, _ = QFileDialog.getOpenFileName(self, "Select file")
-            if path:
-                self._set_paths([path], os.path.dirname(path), is_folder=False)
+            paths, _ = QFileDialog.getOpenFileNames(self, "Select files")
+            if paths:
+                # Use the common parent directory as root
+                root = os.path.commonpath(paths) if len(paths) > 1 else os.path.dirname(paths[0])
+                if os.path.isfile(root):
+                    root = os.path.dirname(root)
+                self._set_paths(paths, root, is_folder=False)
         elif chosen == act_folder:
             path = QFileDialog.getExistingDirectory(self, "Select folder")
             if path:
@@ -893,12 +1043,17 @@ class DropZone(QFrame):
             size  = os.path.getsize(file_list[0])
             label = f"{os.path.basename(file_list[0])}  ({UploadWorker._fmt_size(size)})"
             selected_root = root
-        else:
+        elif is_folder:
             # Folder was selected (may contain 1 or more files)
             total = sum(os.path.getsize(p) for p in file_list)
             label = f"{name}/  —  {len(file_list)} files  ({UploadWorker._fmt_size(total)})"
             # For a folder, set selected_root to the parent so the folder name is preserved
             selected_root = os.path.dirname(root.rstrip("/\\"))
+        else:
+            # Multiple files selected individually
+            total = sum(os.path.getsize(p) for p in file_list)
+            label = f"{len(file_list)} files selected  ({UploadWorker._fmt_size(total)})"
+            selected_root = root
         self.file_label.setText(label)
         self.selection_changed.emit(file_list, selected_root)
 
@@ -2278,6 +2433,9 @@ class MochaTools(QMainWindow):
         speed_row.addWidget(speed_lbl)
         speed_row.addWidget(self.speed_label)
         speed_row.addStretch()
+        self.transferred_label = QLabel("")
+        self.transferred_label.setStyleSheet("color: #9ca3af; font-size: 11px; background:transparent;")
+        speed_row.addWidget(self.transferred_label)
         status_lay.addLayout(speed_row)
 
         # Progress bar + percent
@@ -2478,6 +2636,7 @@ class MochaTools(QMainWindow):
         self.progress_bar.setValue(0)
         self.pct_label.setText("0%")
         self.speed_label.setText("")
+        self.transferred_label.setText("")
         self._badge("Uploading", "#c8a96e")
 
         expiry_hours = self._expiry_map[self.expiry_combo.currentIndex()][1] if self.create_share_cb.isChecked() else None
@@ -2515,6 +2674,8 @@ class MochaTools(QMainWindow):
         self.worker.status.connect(self._log)
         self.worker.finished.connect(self._on_finished)
         self.worker.error.connect(self._on_error)
+        if hasattr(self.worker, "bytes_progress"):
+            self.worker.bytes_progress.connect(self._on_bytes_progress)
         self.worker.start()
 
     def _cancel_upload(self):
@@ -2528,6 +2689,9 @@ class MochaTools(QMainWindow):
                 self.worker.status.disconnect()
                 self.worker.finished.disconnect()
                 self.worker.error.disconnect()
+                if hasattr(self.worker, "bytes_progress"):
+                    try: self.worker.bytes_progress.disconnect()
+                    except RuntimeError: pass
             except RuntimeError:
                 pass  # already disconnected
         self._set_uploading(False)
@@ -2535,6 +2699,7 @@ class MochaTools(QMainWindow):
         self.progress_bar.setValue(0)
         self.pct_label.setText("0%")
         self.speed_label.setText("")
+        self.transferred_label.setText("")
         self.share_result.hide()
         self._log("Upload cancelled by user.")
 
@@ -2546,6 +2711,14 @@ class MochaTools(QMainWindow):
     def _on_progress(self, pct):
         self.progress_bar.setValue(pct)
         self.pct_label.setText(f"{pct}%")
+
+    def _on_bytes_progress(self, done_bytes, total_bytes):
+        def _fmt(n):
+            if n < 1024:       return f"{n} B"
+            elif n < 1024**2:  return f"{n/1024:.1f} KB"
+            elif n < 1024**3:  return f"{n/1024**2:.1f} MB"
+            return f"{n/1024**3:.2f} GB"
+        self.transferred_label.setText(f"{_fmt(done_bytes)} / {_fmt(total_bytes)}")
 
     def _on_speed(self, bps):
         if bps < 1024:
@@ -2559,6 +2732,7 @@ class MochaTools(QMainWindow):
     def _on_finished(self, result):
         self._set_uploading(False)
         self._badge("Complete", "#4ade80")
+        self.transferred_label.setText("")
         self._log(f"✓ Done! File ID: {result['file_id']}")
         if result.get("share_url"):
             url = result["share_url"]
@@ -2568,6 +2742,7 @@ class MochaTools(QMainWindow):
     def _on_error(self, msg):
         self._set_uploading(False)
         self._badge("Error", "#f87171")
+        self.transferred_label.setText("")
         self._log(f"✗ Error: {msg}")
 
     def _log(self, msg):

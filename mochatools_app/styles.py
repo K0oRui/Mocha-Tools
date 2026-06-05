@@ -114,9 +114,33 @@ QSpinBox {
     font-size: 13px;
 }
 QSpinBox:focus { border-color: #c8a96e; }
-QSpinBox::up-button, QSpinBox::down-button { background: #252320; border: none; width: 18px; }
-QSpinBox::up-arrow   { border: 4px solid transparent; border-bottom: 5px solid #5a5650; width:0; height:0; }
-QSpinBox::down-arrow { border: 4px solid transparent; border-top:    5px solid #5a5650; width:0; height:0; }
+QSpinBox::up-button {
+    background: #252320;
+    border: none;
+    border-left: 1px solid #2e2b27;
+    border-bottom: 1px solid #2e2b27;
+    width: 18px;
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+}
+QSpinBox::down-button {
+    background: #252320;
+    border: none;
+    border-left: 1px solid #2e2b27;
+    width: 18px;
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+}
+QSpinBox::up-button:hover   { background: #2e2b27; }
+QSpinBox::down-button:hover { background: #2e2b27; }
+QSpinBox::up-arrow   { width: 7px; height: 7px; image: none;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 5px solid #9c9484; }
+QSpinBox::down-arrow { width: 7px; height: 7px; image: none;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid #9c9484; }
 QComboBox {
     background-color: #1e1c19;
     border: 1px solid #2e2b27;

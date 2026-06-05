@@ -31,7 +31,7 @@ class ProgressTracker:
     """
     EMIT_INTERVAL = 0.25   # seconds between UI updates
 
-    def __init__(self, total_bytes, on_progress, on_speed):
+    def __init__(self, total_bytes, on_progress, on_speed, on_bytes_progress=None):
         self._total     = total_bytes
         self._sent      = 0             # bytes confirmed sent
         self._lock      = threading.Lock()
@@ -39,11 +39,12 @@ class ProgressTracker:
         self._last_emit = 0.0
         self._on_prog   = on_progress   # callable(int pct)
         self._on_speed  = on_speed      # callable(float bps)
+        self._on_bytes  = on_bytes_progress  # callable(int done, int total) or None
 
     def feed(self, n_bytes):
         """Called by upload threads as bytes leave the socket."""
         with self._lock:
-            self._sent += n_bytes
+            self._sent = min(self._sent + n_bytes, self._total)
             now     = time.monotonic()
             elapsed = max(now - self._start, 0.001)
             if now - self._last_emit >= self.EMIT_INTERVAL:
@@ -52,14 +53,25 @@ class ProgressTracker:
                 bps = self._sent / elapsed
                 self._on_prog(pct)
                 self._on_speed(bps)
+                if self._on_bytes:
+                    self._on_bytes(self._sent, self._total)
+
+    def unfeed(self, n_bytes):
+        """Subtract bytes that were fed for a part that is being retried,
+        so the counter doesn't accumulate duplicate data."""
+        with self._lock:
+            self._sent = max(self._sent - n_bytes, 0)
 
     def finish(self):
         """Call once when all parts are done to snap to 100%."""
         with self._lock:
             elapsed = max(time.monotonic() - self._start, 0.001)
             bps     = self._sent / elapsed
+            total   = self._total
         self._on_prog(100)
         self._on_speed(bps)
+        if self._on_bytes:
+            self._on_bytes(total, total)
 
     def make_streaming_body(self, chunk: bytes, read_size: int = 65536):
         class ChunkStream:
@@ -70,6 +82,7 @@ class ProgressTracker:
                 self.offset = 0
                 self.length = len(chunk_bytes)
                 self.len = self.length
+                self.fed = 0   # bytes fed to the tracker during this attempt
 
             def read(self, size=-1):
                 if self.offset >= self.length:
@@ -80,6 +93,7 @@ class ProgressTracker:
                 piece = self.chunk[self.offset:end]
                 if piece:
                     self.tracker.feed(len(piece))
+                    self.fed += len(piece)
                     self.offset = end
                 return piece
 
@@ -91,11 +105,12 @@ class ProgressTracker:
 
 # ── Upload Worker ────────────────────────────────────────────────────────────
 class UploadWorker(QThread):
-    progress    = pyqtSignal(int)          # 0-100
-    speed       = pyqtSignal(float)        # bytes/sec
-    status      = pyqtSignal(str)          # log message
-    finished    = pyqtSignal(dict)         # result dict
-    error       = pyqtSignal(str)
+    progress        = pyqtSignal(int)          # 0-100
+    speed           = pyqtSignal(float)        # bytes/sec
+    bytes_progress  = pyqtSignal(int, int)     # (bytes_done, bytes_total)
+    status          = pyqtSignal(str)          # log message
+    finished        = pyqtSignal(dict)         # result dict
+    error           = pyqtSignal(str)
 
     def __init__(self, api_key, base_url, file_pairs,
                  create_share, share_expiry, share_max_downloads,
@@ -278,6 +293,7 @@ class UploadWorker(QThread):
             file_size,
             on_progress=lambda pct: self.progress.emit(pct),
             on_speed=lambda bps: self.speed.emit(bps),
+            on_bytes_progress=lambda done, total: self.bytes_progress.emit(done, total),
         )
 
         parts = []
@@ -439,11 +455,12 @@ class UploadWorker(QThread):
                 if self._cancel:
                     return None
                 try:
+                    body = tracker.make_streaming_body(chunk)
                     resp = http.put(
                         part_url,
                         headers=self._headers(),
                         params=part_params,
-                        data=tracker.make_streaming_body(chunk),
+                        data=body,
                         timeout=PART_UPLOAD_TIMEOUT,
                     )
                     resp.raise_for_status()
@@ -461,6 +478,8 @@ class UploadWorker(QThread):
                     self.status.emit(f"[DEBUG] Exception: {e}")
                     last_error = e
 
+                # Subtract bytes this attempt fed so the retry doesn't double-count
+                tracker.unfeed(body.fed)
                 self._wait_before_part_retry("relay", part_num, attempt, last_error)
 
         raise last_error
@@ -529,9 +548,10 @@ class UploadWorker(QThread):
                 try:
                     signed_url = self._presign_part_url(session, part_num, http)
                     # Step 2: PUT the chunk directly to S3 (no auth header — the URL is pre-signed)
+                    body = tracker.make_streaming_body(chunk)
                     s3_resp = http.put(
                         signed_url,
-                        data=tracker.make_streaming_body(chunk),
+                        data=body,
                         timeout=PART_UPLOAD_TIMEOUT,
                     )
                     s3_resp.raise_for_status()
@@ -553,6 +573,8 @@ class UploadWorker(QThread):
                     self.status.emit(f"[DEBUG] Exception (S3 PUT): {e}")
                     last_error = e
 
+                # Subtract bytes this attempt fed so the retry doesn't double-count
+                tracker.unfeed(body.fed)
                 self._wait_before_part_retry("S3", part_num, attempt, last_error)
 
         raise last_error
