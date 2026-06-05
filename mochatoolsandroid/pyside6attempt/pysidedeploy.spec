@@ -3,30 +3,30 @@ title = MochaTools
 project_dir = .
 input_file = main.py
 project_file =
+exec_directory =
 
 [python]
-# Set this to your venv python path, e.g.:
-#   python_path = /home/youruser/mochatools-android-env/bin/python3
-python_path =
-packages = requests,certifi,urllib3,charset-normalizer,idna,packaging
-protected_packages =
+# setup_and_build.sh rewrites this to the active Ubuntu venv path.
+python_path = ~/mochatools-android-env/bin/python3
+android_packages = buildozer,cpython
+packages = requests, certifi, urllib3, charset-normalizer, idna, packaging
+protected_packages = requests, certifi, urllib3, charset-normalizer, idna, packaging
 
 [qt]
-modules = Core,Gui,Widgets
-plugins = platforms/android,imageformats/qjpeg
-android_deploy_abi = arm64-v8a
+modules = Core, Gui, Widgets
+plugins =
 
 [android]
-# Download android-specific wheels from:
-#   https://download.qt.io/snapshots/ci/pyside/dev/latest/
-# Look for: PySide6-*-android_arm64.whl and shiboken6-*-android_arm64.whl
-wheel_pyside =
-wheel_shiboken =
-# Adjust ndk_path to your NDK version:
+# setup_and_build.sh downloads/fills these with qtpip for aarch64/arm64-v8a.
+wheel_pyside = ~/mochatools-android-wheels/PySide6-android-aarch64.whl
+wheel_shiboken = ~/mochatools-android-wheels/shiboken6-android-aarch64.whl
+plugins = platforms, imageformats
+
+[buildozer]
+mode = debug
+recipe_dir =
+jars_dir =
 ndk_path = ~/Android/Sdk/ndk/26.1.10909125
 sdk_path = ~/Android/Sdk
-build_tools_version = 34.0.0
-android_min_api = 24
-android_target_api = 34
-application_binary = org.mochatools.app
-activity_name = .MochaToolsActivity
+local_libs =
+arch = aarch64

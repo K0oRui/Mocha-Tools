@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QFrame, QSpinBox, QComboBox, QScrollArea,
     QSizePolicy, QMessageBox, QTabWidget, QTreeWidget, QTreeWidgetItem,
     QHeaderView, QMenu, QAbstractItemView, QInputDialog, QToolBar,
-    QSplitter
+    QSplitter, QStackedWidget
 )
 from PyQt6.QtCore import (
     Qt, QThread, pyqtSignal, QTimer, QMimeData, QUrl,
@@ -69,6 +69,305 @@ from .workers import FilesWorker, RemoteWorker, UploadWorker
 from .dialogs import FolderBrowserDialog, ShareLinkDialog
 from .updater import UpdateCheckWorker, UpdateDownloadWorker
 from .constants import APP_VERSION
+
+
+
+
+# ── Lucide Icon Helper ────────────────────────────────────────────────────────
+# Minimal subset of Lucide icon paths used in MochaTools.
+# Each value is the SVG <path d="..."> content for a 24x24 viewBox icon.
+_LUCIDE_PATHS = {
+    "upload":        'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12',
+    "download-cloud":'M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242M12 12v9M8 17l4 4 4-4',
+    "folder":        'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z',
+    "share-2":       'M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14 21 3',
+    "settings":      'M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
+    "x":             'M18 6 6 18M6 6l12 12',
+    "minus":         'M5 12h14',
+    "square":        'M3 3h18v18H3z',
+    "copy":          'M20 9h-9a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2z M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1',
+    "refresh-cw":    'M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8 M21 3v5h-5 M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16 M8 16H3v5',
+    "trash-2":       'M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6',
+    "move":          'M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20',
+    "link":          'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71 M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71',
+    "coffee":        'M17 8h1a4 4 0 1 1 0 8h-1M3 8h14v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V8zM6 1v3M10 1v3M14 1v3',
+}
+
+def lucide_icon(name: str, color: str = "#c8a96e", size: int = 16) -> "QIcon":
+    """Return a QIcon rendered from a Lucide SVG path string."""
+    from PyQt6.QtSvg import QSvgRenderer
+    from PyQt6.QtGui import QIcon, QPixmap, QPainter
+    from PyQt6.QtCore import QByteArray, QSize
+
+    path_d = _LUCIDE_PATHS.get(name, "")
+    # Build each space-separated sub-path as its own <path> element
+    sub_paths = "".join(
+        f'<path d="{p.strip()}" stroke="{color}" stroke-width="1.75" '
+        f'stroke-linecap="round" stroke-linejoin="round" fill="none"/>'
+        for p in path_d.split("M") if p.strip()
+        # Reconstruct "M..." prefix that was split off
+    )
+    # Rebuild properly without losing the M prefix
+    svg_paths = ""
+    segments = path_d.split(" M ")
+    for i, seg in enumerate(segments):
+        seg = seg.strip()
+        if not seg:
+            continue
+        d = seg if i == 0 else "M " + seg
+        svg_paths += (
+            f'<path d="{d}" stroke="{color}" stroke-width="1.75" '
+            f'stroke-linecap="round" stroke-linejoin="round" fill="none"/>'
+        )
+
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" '
+        f'width="{size}" height="{size}">{svg_paths}</svg>'
+    ).encode()
+
+    renderer = QSvgRenderer(QByteArray(svg))
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pm)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pm)
+
+
+# ── Full-Width Tab Widget ─────────────────────────────────────────────────────
+class FullWidthTabWidget(QWidget):
+    """
+    Drop-in QTabWidget replacement whose tab bar always fills the full widget
+    width — no bare gap to the right of the last tab.
+
+    Supported API (subset used by MochaTools):
+      addTab(widget, label)
+      setTabIcon(index, icon)
+      setIconSize(size)          — no-op, icons are sized at add time
+      currentChanged signal
+      currentIndex()
+      setCurrentIndex(index)
+      tabBar()                   — returns self (duck-typed for setExpanding etc.)
+      setExpanding / setDrawBase — no-ops (kept for compat)
+      setCornerWidget            — no-op (not needed)
+    """
+    currentChanged = pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._tabs: list[tuple[QPushButton, QWidget]] = []
+        self._current = -1
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # Tab bar row — background fills full width automatically
+        self._bar = QWidget()
+        self._bar.setObjectName("tabbar_row")
+        self._bar.setStyleSheet(
+            "QWidget#tabbar_row {"
+            "  background: #181614;"
+            "  border-bottom: 1px solid #2e2b27;"
+            "}"
+        )
+        self._bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._bar_lay = QHBoxLayout(self._bar)
+        self._bar_lay.setContentsMargins(0, 0, 0, 0)
+        self._bar_lay.setSpacing(0)
+        outer.addWidget(self._bar)
+
+        # Stacked content area
+        self._stack = QStackedWidget()
+        self._stack.setStyleSheet("QStackedWidget { background: #181614; }")
+        outer.addWidget(self._stack, 1)
+
+    # ── Public API ────────────────────────────────────────────────────────────
+    def addTab(self, widget: QWidget, label: str) -> int:
+        idx = len(self._tabs)
+        btn = QPushButton(label)
+        btn.setCheckable(True)
+        btn.setObjectName("tab_btn")
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        btn.setStyleSheet(self._btn_style(False))
+        btn.clicked.connect(lambda checked, i=idx: self.setCurrentIndex(i))
+        self._bar_lay.addWidget(btn)
+        self._stack.addWidget(widget)
+        self._tabs.append((btn, widget))
+        if idx == 0:
+            self.setCurrentIndex(0)
+        return idx
+
+    def setTabIcon(self, index: int, icon: "QIcon"):
+        if 0 <= index < len(self._tabs):
+            btn, _ = self._tabs[index]
+            btn.setIcon(icon)
+            btn.setIconSize(QSize(14, 14))
+
+    def setIconSize(self, size):
+        pass  # compat no-op
+
+    def currentIndex(self) -> int:
+        return self._current
+
+    def setCurrentIndex(self, index: int):
+        if index == self._current:
+            return
+        old = self._current
+        self._current = index
+        for i, (btn, _) in enumerate(self._tabs):
+            active = (i == index)
+            btn.setChecked(active)
+            btn.setStyleSheet(self._btn_style(active))
+        self._stack.setCurrentIndex(index)
+        if old != index:
+            self.currentChanged.emit(index)
+
+    # Duck-type the few QTabBar methods called externally
+    def tabBar(self):
+        return self
+
+    def setExpanding(self, _):
+        pass
+
+    def setDrawBase(self, _):
+        pass
+
+    def setCornerWidget(self, *_):
+        pass
+
+    # ── Internal ─────────────────────────────────────────────────────────────
+    @staticmethod
+    def _btn_style(active: bool) -> str:
+        if active:
+            return (
+                "QPushButton {"
+                "  background: transparent;"
+                "  color: #c8a96e;"
+                "  border: none;"
+                "  border-bottom: 2px solid #c8a96e;"
+                "  padding: 11px 22px 9px 22px;"
+                "  font-size: 12px;"
+                "  font-weight: 600;"
+                "  letter-spacing: 0.2px;"
+                "  border-radius: 0px;"
+                "}"
+            )
+        return (
+            "QPushButton {"
+            "  background: transparent;"
+            "  color: #5a5650;"
+            "  border: none;"
+            "  border-bottom: 2px solid transparent;"
+            "  padding: 11px 22px 9px 22px;"
+            "  font-size: 12px;"
+            "  font-weight: 600;"
+            "  letter-spacing: 0.2px;"
+            "  border-radius: 0px;"
+            "}"
+            "QPushButton:hover {"
+            "  color: #9c9484;"
+            "  border-bottom: 2px solid #3d3a35;"
+            "}"
+        )
+
+
+# ── Custom Title Bar ──────────────────────────────────────────────────────────
+class CustomTitleBar(QFrame):
+    """Frameless window titlebar with drag-to-move, minimise and close."""
+
+    def __init__(self, window: QMainWindow, app_name: str, version: str, parent=None):
+        super().__init__(parent)
+        self._window    = window
+        self._drag_pos  = None
+        self.setObjectName("titlebar")
+        self.setFixedHeight(42)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 0, 8, 0)
+        lay.setSpacing(0)
+
+        # Coffee icon + app name
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(lucide_icon("coffee", "#c8a96e", 15).pixmap(QSize(15, 15)))
+        icon_lbl.setStyleSheet("background:transparent; padding-right:6px;")
+        lay.addWidget(icon_lbl)
+
+        name_lbl = QLabel(app_name)
+        name_lbl.setObjectName("title_app_name")
+        lay.addWidget(name_lbl)
+
+        sep = QLabel(" ")
+        sep.setStyleSheet("background:transparent;")
+        lay.addWidget(sep)
+
+        ver_lbl = QLabel(version)
+        ver_lbl.setObjectName("title_version")
+        lay.addWidget(ver_lbl)
+
+        lay.addStretch()
+
+        # Minimise button
+        self._min_btn = QPushButton()
+        self._min_btn.setObjectName("tb_minmax")
+        self._min_btn.setIcon(lucide_icon("minus", "#5a5650", 13))
+        self._min_btn.setIconSize(QSize(13, 13))
+        self._min_btn.setToolTip("Minimise")
+        self._min_btn.clicked.connect(window.showMinimized)
+        lay.addWidget(self._min_btn)
+
+        # Maximise/restore button
+        self._max_btn = QPushButton()
+        self._max_btn.setObjectName("tb_minmax")
+        self._max_btn.setIcon(lucide_icon("square", "#5a5650", 11))
+        self._max_btn.setIconSize(QSize(11, 11))
+        self._max_btn.setToolTip("Maximise")
+        self._max_btn.clicked.connect(self._toggle_maximise)
+        lay.addWidget(self._max_btn)
+
+        # Close button
+        self._close_btn = QPushButton()
+        self._close_btn.setObjectName("tb_close")
+        self._close_btn.setIcon(lucide_icon("x", "#5a5650", 13))
+        self._close_btn.setIconSize(QSize(13, 13))
+        self._close_btn.setToolTip("Close")
+        self._close_btn.clicked.connect(window.close)
+        lay.addWidget(self._close_btn)
+
+    def _toggle_maximise(self):
+        if self._window.isMaximized():
+            self._window.showNormal()
+        else:
+            self._window.showMaximized()
+        self._sync_max_icon()
+
+    def _sync_max_icon(self):
+        """Swap the maximise icon between square (restore) and square (max) states."""
+        if self._window.isMaximized():
+            self._max_btn.setToolTip("Restore")
+            self._max_btn.setIcon(lucide_icon("square", "#9c9484", 11))
+        else:
+            self._max_btn.setToolTip("Maximise")
+            self._max_btn.setIcon(lucide_icon("square", "#5a5650", 11))
+
+    # ── Drag-to-move ──────────────────────────────────────────────────────────
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint() - self._window.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_pos and event.buttons() & Qt.MouseButton.LeftButton:
+            self._window.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pos = None
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._toggle_maximise()
 
 
 # ── Drop Zone Widget ─────────────────────────────────────────────────────────
@@ -247,11 +546,11 @@ class FilesBrowserTab(QWidget):
         tb = QHBoxLayout()
         tb.setSpacing(4)
 
-        self.refresh_btn  = self._tb("↺  Refresh",     self._refresh)
-        self.mkdir_btn    = self._tb("+ New Folder",    self._create_folder)
-        self.move_btn     = self._tb("↦  Move",         self._move_selected)
-        self.share_btn    = self._tb("⤴  Share",        self._share_selected)
-        self.delete_btn   = self._tb("✕  Delete",       self._delete_selected, danger=True)
+        self.refresh_btn  = self._tb("Refresh",      "refresh-cw", self._refresh)
+        self.mkdir_btn    = self._tb("New Folder",   "folder",     self._create_folder)
+        self.move_btn     = self._tb("Move",         "move",       self._move_selected)
+        self.share_btn    = self._tb("Share",        "share-2",    self._share_selected)
+        self.delete_btn   = self._tb("Delete",       "trash-2",    self._delete_selected, danger=True)
 
         for btn in (self.refresh_btn, self.mkdir_btn, self.move_btn,
                     self.share_btn, self.delete_btn):
@@ -305,9 +604,12 @@ class FilesBrowserTab(QWidget):
 
         self._set_action_btns_enabled(False)
 
-    def _tb(self, label, slot, danger=False):
-        btn = QPushButton(label)
+    def _tb(self, label, icon_name, slot, danger=False):
+        btn = QPushButton(f"  {label}")
         btn.setObjectName("tb_btn_danger" if danger else "tb_btn")
+        color = "#f87171" if danger else "#9c9484"
+        btn.setIcon(lucide_icon(icon_name, color, 13))
+        btn.setIconSize(QSize(13, 13))
         btn.clicked.connect(slot)
         return btn
 
@@ -687,7 +989,7 @@ class FilesBrowserTab(QWidget):
             QMenu { background:#1f1f1f; border:1px solid #3a3a3a; border-radius:8px;
                     color:#f0f0f0; font-size:12px; }
             QMenu::item { padding:6px 24px; }
-            QMenu::item:selected { background:#c8a96e33; }
+            QMenu::item:selected { background:#332b1a; }
         """)
 
         if meta.get("_type") == "file":
@@ -763,8 +1065,10 @@ class RemoteTab(QWidget):
         dest_row.addWidget(browse_btn)
         ingest_lay.addLayout(dest_row)
 
-        self.ingest_btn = QPushButton("⇣  Remote ingest")
+        self.ingest_btn = QPushButton("  Remote ingest")
         self.ingest_btn.setObjectName("upload_btn")
+        self.ingest_btn.setIcon(lucide_icon("download-cloud", "#111010", 15))
+        self.ingest_btn.setIconSize(QSize(15, 15))
         self.ingest_btn.setMinimumHeight(40)
         self.ingest_btn.clicked.connect(self._start_ingest)
         ingest_lay.addWidget(self.ingest_btn)
@@ -778,13 +1082,17 @@ class RemoteTab(QWidget):
 
         tb = QHBoxLayout()
         tb.setSpacing(4)
-        self.refresh_btn = QPushButton("↺  Refresh Jobs")
+        self.refresh_btn = QPushButton("  Refresh Jobs")
         self.refresh_btn.setObjectName("tb_btn")
+        self.refresh_btn.setIcon(lucide_icon("refresh-cw", "#9c9484", 13))
+        self.refresh_btn.setIconSize(QSize(13, 13))
         self.refresh_btn.clicked.connect(self.refresh_jobs)
         tb.addWidget(self.refresh_btn)
 
-        self.cancel_btn = QPushButton("✕  Cancel Job")
+        self.cancel_btn = QPushButton("  Cancel Job")
         self.cancel_btn.setObjectName("tb_btn_danger")
+        self.cancel_btn.setIcon(lucide_icon("x", "#f87171", 13))
+        self.cancel_btn.setIconSize(QSize(13, 13))
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.clicked.connect(self._cancel_selected)
         tb.addWidget(self.cancel_btn)
@@ -1043,25 +1351,33 @@ class SharesTab(QWidget):
         tb = QHBoxLayout()
         tb.setSpacing(4)
 
-        self.refresh_btn = QPushButton("↺  Refresh")
+        self.refresh_btn = QPushButton("  Refresh")
         self.refresh_btn.setObjectName("tb_btn")
+        self.refresh_btn.setIcon(lucide_icon("refresh-cw", "#9c9484", 13))
+        self.refresh_btn.setIconSize(QSize(13, 13))
         self.refresh_btn.clicked.connect(self.refresh)
         tb.addWidget(self.refresh_btn)
 
-        self.copy_btn = QPushButton("⧉  Copy Link")
+        self.copy_btn = QPushButton("  Copy Link")
         self.copy_btn.setObjectName("tb_btn")
+        self.copy_btn.setIcon(lucide_icon("copy", "#9c9484", 13))
+        self.copy_btn.setIconSize(QSize(13, 13))
         self.copy_btn.setEnabled(False)
         self.copy_btn.clicked.connect(self._copy_selected)
         tb.addWidget(self.copy_btn)
 
-        self.toggle_btn = QPushButton("◎  Toggle Active")
+        self.toggle_btn = QPushButton("  Toggle Active")
         self.toggle_btn.setObjectName("tb_btn")
+        self.toggle_btn.setIcon(lucide_icon("link", "#9c9484", 13))
+        self.toggle_btn.setIconSize(QSize(13, 13))
         self.toggle_btn.setEnabled(False)
         self.toggle_btn.clicked.connect(self._toggle_selected)
         tb.addWidget(self.toggle_btn)
 
-        self.delete_btn = QPushButton("✕  Delete")
+        self.delete_btn = QPushButton("  Delete")
         self.delete_btn.setObjectName("tb_btn_danger")
+        self.delete_btn.setIcon(lucide_icon("trash-2", "#f87171", 13))
+        self.delete_btn.setIconSize(QSize(13, 13))
         self.delete_btn.setEnabled(False)
         self.delete_btn.clicked.connect(self._delete_selected)
         tb.addWidget(self.delete_btn)
@@ -1247,7 +1563,7 @@ class SharesTab(QWidget):
             QMenu { background:#1f1f1f; border:1px solid #3a3a3a; border-radius:8px;
                     color:#f0f0f0; font-size:12px; }
             QMenu::item { padding:6px 24px; }
-            QMenu::item:selected { background:#c8a96e33; }
+            QMenu::item:selected { background:#332b1a; }
         """)
         menu.addAction("⧉  Copy Link",     self._copy_selected)
         menu.addAction("◎  Toggle Active", self._toggle_selected)
@@ -1264,6 +1580,8 @@ class MochaTools(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Mocha Tools")
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.setMinimumWidth(520)
         self.setMaximumWidth(640)
         self.selected_files = []   # list of local absolute paths
@@ -1283,8 +1601,12 @@ class MochaTools(QMainWindow):
         root_lay.setContentsMargins(0, 0, 0, 0)
         root_lay.setSpacing(0)
 
+        # ── Custom titlebar ──────────────────────────────────────────────────
+        self.titlebar = CustomTitleBar(self, APP_NAME, APP_VERSION)
+        root_lay.addWidget(self.titlebar)
+
         # ── Tab widget ───────────────────────────────────────────────────────
-        self.tabs = QTabWidget()
+        self.tabs = FullWidthTabWidget()
         root_lay.addWidget(self.tabs)
 
         # ── Upload tab ───────────────────────────────────────────────────────
@@ -1461,11 +1783,28 @@ class MochaTools(QMainWindow):
         settings_lay.addWidget(update_card)
         settings_lay.addStretch()
 
-        self.tabs.addTab(upload_tab, "↑  Upload")
-        self.tabs.addTab(self.remote_tab, "⇣  Remote")
-        self.tabs.addTab(self.files_tab, "📁  Files")
-        self.tabs.addTab(self.shares_tab, "⤴  Shares")
-        self.tabs.addTab(settings_tab, "⚙  Settings")
+        self.tabs.addTab(upload_tab, "Upload")
+        self.tabs.addTab(self.remote_tab, "Remote")
+        self.tabs.addTab(self.files_tab, "Files")
+        self.tabs.addTab(self.shares_tab, "Shares")
+        self.tabs.addTab(settings_tab, "Settings")
+
+        # Set Lucide icons on each tab
+        _tab_icons = [
+            ("upload",        "#9c9484"),
+            ("download-cloud","#9c9484"),
+            ("folder",        "#9c9484"),
+            ("share-2",       "#9c9484"),
+            ("settings",      "#9c9484"),
+        ]
+        for i, (icon_name, color) in enumerate(_tab_icons):
+            self.tabs.setTabIcon(i, lucide_icon(icon_name, color, 14))
+        self.tabs.setIconSize(QSize(14, 14))
+
+        # Make the tab bar expand to fill full width so there's no bare gap
+        # to the right of the last tab when the window is wide.
+        self.tabs.tabBar().setExpanding(True)
+        self.tabs.tabBar().setDrawBase(False)
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
         # ── FILE ─────────────────────────────────────────────────────────────
@@ -1614,14 +1953,18 @@ class MochaTools(QMainWindow):
         main.addWidget(share_card)
 
         # ── UPLOAD BUTTON ─────────────────────────────────────────────────────
-        self.upload_btn = QPushButton("↑  Upload file")
+        self.upload_btn = QPushButton("  Upload file")
         self.upload_btn.setObjectName("upload_btn")
+        self.upload_btn.setIcon(lucide_icon("upload", "#111010", 15))
+        self.upload_btn.setIconSize(QSize(15, 15))
         self.upload_btn.setMinimumHeight(42)
         self.upload_btn.clicked.connect(self._start_upload)
         main.addWidget(self.upload_btn)
 
-        self.cancel_btn = QPushButton("✕  Cancel")
+        self.cancel_btn = QPushButton("  Cancel")
         self.cancel_btn.setObjectName("browse_btn")
+        self.cancel_btn.setIcon(lucide_icon("x", "#c8a96e", 13))
+        self.cancel_btn.setIconSize(QSize(13, 13))
         self.cancel_btn.setMinimumHeight(36)
         self.cancel_btn.clicked.connect(self._cancel_upload)
         self.cancel_btn.hide()
@@ -1822,9 +2165,24 @@ class MochaTools(QMainWindow):
 
     def _badge(self, text, color):
         self.status_badge.setText(f"● {text}")
+        # Use solid border/bg derived from the status color — no 8-digit RGBA
+        bg_map = {
+            "#c8a96e": "#2a2215",
+            "#4ade80": "#0f2318",
+            "#f87171": "#2a0f0f",
+            "#9ca3af": "#1e1c19",
+        }
+        bd_map = {
+            "#c8a96e": "#4a3b1e",
+            "#4ade80": "#1e4a30",
+            "#f87171": "#4a1e1e",
+            "#9ca3af": "#2e2b27",
+        }
+        bg = bg_map.get(color, "#1e1c19")
+        bd = bd_map.get(color, "#2e2b27")
         self.status_badge.setStyleSheet(
-            f"background-color: {color}22; border: 1px solid {color}55; "
-            f"border-radius: 0px; color: {color}; font-size: 11px; "
+            f"background-color: {bg}; border: 1px solid {bd}; "
+            f"border-radius: 10px; color: {color}; font-size: 11px; "
             f"font-weight: 600; padding: 2px 10px;"
         )
 
