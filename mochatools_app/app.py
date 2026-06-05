@@ -134,22 +134,470 @@ def lucide_icon(name: str, color: str = "#c8a96e", size: int = 16) -> "QIcon":
     return QIcon(pm)
 
 
+# ── Mass Upload Tab ───────────────────────────────────────────────────────────
+class MassUploadTab(QWidget):
+    """
+    Queue-based multi-file uploader.
+
+    • Drop files/folders onto the zone; each entry gets its own remote destination.
+    • Concurrent files: how many upload simultaneously.
+    • Chunk size + parallel chunks: independent of the global Settings values.
+    • Double-click a queue row to edit its destination folder.
+    """
+
+    _COL_NAME   = 0
+    _COL_SIZE   = 1
+    _COL_DEST   = 2
+    _COL_STATUS = 3
+
+    def __init__(self, get_api_key, parent=None):
+        super().__init__(parent)
+        self.get_api_key = get_api_key
+        self._queue: list[dict] = []
+        self._active_workers: list = []
+        self._pending_iter = iter([])
+        self._cancelled = False
+        self._build_ui()
+
+    # ── UI ────────────────────────────────────────────────────────────────────
+    def _build_ui(self):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        inner = QWidget()
+        outer = QVBoxLayout(inner)
+        outer.setContentsMargins(16, 16, 16, 16)
+        outer.setSpacing(12)
+
+        scroll.setWidget(inner)
+        root_lay = QVBoxLayout(self)
+        root_lay.setContentsMargins(0, 0, 0, 0)
+        root_lay.addWidget(scroll)
+
+        # ── Drop / add zone ──────────────────────────────────────────────────
+        outer.addWidget(self._sh("Queue"))
+
+        add_card = self._card()
+        add_lay  = QVBoxLayout(add_card)
+        add_lay.setSpacing(8)
+
+        self._drop = DropZone()
+        self._drop.selection_changed.connect(self._on_drop)
+        add_lay.addWidget(self._drop)
+
+        dest_row = QHBoxLayout()
+        dest_lbl = QLabel("Default destination")
+        dest_lbl.setObjectName("field_label")
+        self._default_dest = QLineEdit("/")
+        self._default_dest.setPlaceholderText("/remote/folder")
+        browse_btn = QPushButton("Browse…")
+        browse_btn.setObjectName("browse_btn")
+        browse_btn.setFixedSize(80, 34)
+        browse_btn.clicked.connect(self._browse_default_dest)
+        dest_row.addWidget(dest_lbl)
+        dest_row.addWidget(self._default_dest, 1)
+        dest_row.addWidget(browse_btn)
+        add_lay.addLayout(dest_row)
+        outer.addWidget(add_card)
+
+        # ── Queue table ──────────────────────────────────────────────────────
+        self._tree = QTreeWidget()
+        self._tree.setColumnCount(4)
+        self._tree.setHeaderLabels(["File / Folder", "Size", "Destination", "Status"])
+        self._tree.setRootIsDecorated(False)
+        self._tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        hdr = self._tree.header()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.resizeSection(2, 160)
+        self._tree.setMinimumHeight(160)
+        self._tree.itemDoubleClicked.connect(self._edit_dest)
+        outer.addWidget(self._tree, 1)
+
+        # Queue toolbar
+        qtb = QHBoxLayout()
+        qtb.setSpacing(6)
+
+        rm_btn = QPushButton("Remove selected")
+        rm_btn.setObjectName("tb_btn_danger")
+        rm_btn.clicked.connect(self._remove_selected)
+        qtb.addWidget(rm_btn)
+
+        done_btn = QPushButton("Clear done")
+        done_btn.setObjectName("tb_btn")
+        done_btn.clicked.connect(self._clear_done)
+        qtb.addWidget(done_btn)
+
+        all_btn = QPushButton("Clear all")
+        all_btn.setObjectName("tb_btn_danger")
+        all_btn.clicked.connect(self._clear_all)
+        qtb.addWidget(all_btn)
+
+        qtb.addStretch()
+        self._queue_lbl = QLabel("0 items")
+        self._queue_lbl.setStyleSheet("color:#9c9484; font-size:11px; background:transparent;")
+        qtb.addWidget(self._queue_lbl)
+        outer.addLayout(qtb)
+
+        # ── Upload options ────────────────────────────────────────────────────
+        outer.addWidget(self._sh("Upload Options"))
+        opts_card = self._card()
+        opts_lay  = QVBoxLayout(opts_card)
+        opts_lay.setSpacing(10)
+
+        note = QLabel(
+            "These settings apply only to Mass Upload and are independent of "
+            "the global Settings values."
+        )
+        note.setObjectName("field_label")
+        note.setWordWrap(True)
+        opts_lay.addWidget(note)
+
+        grid = QHBoxLayout()
+        grid.setSpacing(16)
+
+        def _spin_col(label, lo, hi, default, suffix, tip):
+            col = QVBoxLayout()
+            col.setSpacing(4)
+            lbl = QLabel(label)
+            lbl.setObjectName("field_label")
+            sp = QSpinBox()
+            sp.setRange(lo, hi)
+            sp.setValue(default)
+            sp.setSuffix(f" {suffix}")
+            sp.setToolTip(tip)
+            col.addWidget(lbl)
+            col.addWidget(sp)
+            grid.addLayout(col)
+            return sp
+
+        self._conc_spin = _spin_col(
+            "Concurrent files", 1, 10, 2, "files",
+            "How many files upload at the same time.\n"
+            "Higher values can saturate slower connections."
+        )
+        self._chunk_spin = _spin_col(
+            "Chunk size", 1, 100, DEFAULT_CHUNK_SIZE_MB, "MB",
+            "Size of each multipart part (1–100 MB).\n"
+            "Files smaller than this upload in one request."
+        )
+        self._maxchunk_spin = _spin_col(
+            "Parallel chunks", 1, 20, DEFAULT_MAX_CHUNKS, "chunks",
+            "Max parts sent in parallel per file (1–20)."
+        )
+        grid.addStretch()
+        opts_lay.addLayout(grid)
+        outer.addWidget(opts_card)
+
+        # ── Progress card ─────────────────────────────────────────────────────
+        prog_card = self._card()
+        prog_lay  = QVBoxLayout(prog_card)
+        prog_lay.setSpacing(6)
+
+        top_row = QHBoxLayout()
+        self._badge_lbl = QLabel("● Idle")
+        self._badge_lbl.setObjectName("status_badge")
+        top_row.addWidget(self._badge_lbl)
+        top_row.addStretch()
+        self._speed_lbl = QLabel("")
+        self._speed_lbl.setStyleSheet("color:#9ca3af; font-size:11px; background:transparent;")
+        top_row.addWidget(self._speed_lbl)
+        prog_lay.addLayout(top_row)
+
+        pbar_row = QHBoxLayout()
+        self._prog_bar = QProgressBar()
+        self._prog_bar.setValue(0)
+        self._pct_lbl = QLabel("0%")
+        self._pct_lbl.setObjectName("status_label")
+        self._pct_lbl.setFixedWidth(36)
+        pbar_row.addWidget(self._prog_bar, 1)
+        pbar_row.addWidget(self._pct_lbl)
+        prog_lay.addLayout(pbar_row)
+
+        self._log_lbl = QLabel("Add files or folders above, then click Start.")
+        self._log_lbl.setObjectName("log_console")
+        self._log_lbl.setWordWrap(True)
+        self._log_lbl.setMinimumHeight(46)
+        prog_lay.addWidget(self._log_lbl)
+        outer.addWidget(prog_card)
+
+        # ── Buttons ───────────────────────────────────────────────────────────
+        self._start_btn = QPushButton("  Start upload")
+        self._start_btn.setObjectName("upload_btn")
+        self._start_btn.setIcon(lucide_icon("upload", "#111010", 15))
+        self._start_btn.setIconSize(QSize(15, 15))
+        self._start_btn.setMinimumHeight(42)
+        self._start_btn.clicked.connect(self._start)
+        outer.addWidget(self._start_btn)
+
+        self._cancel_btn = QPushButton("  Cancel")
+        self._cancel_btn.setObjectName("browse_btn")
+        self._cancel_btn.setIcon(lucide_icon("x", "#c8a96e", 13))
+        self._cancel_btn.setIconSize(QSize(13, 13))
+        self._cancel_btn.setMinimumHeight(36)
+        self._cancel_btn.clicked.connect(self._cancel)
+        self._cancel_btn.hide()
+        outer.addWidget(self._cancel_btn)
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    @staticmethod
+    def _sh(text):
+        lbl = QLabel(text.upper())
+        lbl.setObjectName("section_header")
+        return lbl
+
+    @staticmethod
+    def _card():
+        f = QFrame()
+        f.setObjectName("card")
+        return f
+
+    @staticmethod
+    def _fmt(n):
+        if n < 1024:       return f"{n} B"
+        elif n < 1024**2:  return f"{n/1024:.1f} KB"
+        elif n < 1024**3:  return f"{n/1024**2:.1f} MB"
+        return f"{n/1024**3:.2f} GB"
+
+    def _set_badge(self, text, color):
+        self._badge_lbl.setText(f"● {text}")
+        bg = {"#c8a96e":"#2a2215","#4ade80":"#0f2318","#f87171":"#2a0f0f","#9ca3af":"#1e1c19"}
+        bd = {"#c8a96e":"#4a3b1e","#4ade80":"#1e4a30","#f87171":"#4a1e1e","#9ca3af":"#2e2b27"}
+        self._badge_lbl.setStyleSheet(
+            f"background-color:{bg.get(color,'#1e1c19')};"
+            f"border:1px solid {bd.get(color,'#2e2b27')};"
+            f"border-radius:10px; color:{color}; font-size:11px;"
+            f"font-weight:600; padding:2px 10px;"
+        )
+
+    def _log(self, msg):
+        self._log_lbl.setText(msg)
+
+    def _update_queue_label(self):
+        total  = len(self._queue)
+        done   = sum(1 for e in self._queue if e["status"] == "done")
+        errors = sum(1 for e in self._queue if e["status"] == "error")
+        parts  = [f"{total} item{'s' if total != 1 else ''}"]
+        if done:   parts.append(f"{done} done")
+        if errors: parts.append(f"{errors} failed")
+        self._queue_lbl.setText(" · ".join(parts))
+
+    def _update_overall_progress(self):
+        if not self._queue:
+            return
+        done = sum(1 for e in self._queue if e["status"] in ("done","error","cancelled"))
+        pct  = int(done / len(self._queue) * 100)
+        self._prog_bar.setValue(pct)
+        self._pct_lbl.setText(f"{pct}%")
+
+    # ── Queue management ──────────────────────────────────────────────────────
+    def _on_drop(self, file_list, root):
+        dest_base = "/" + (self._default_dest.text().strip("/") or "")
+        for local in file_list:
+            rel = os.path.relpath(local, root).replace(os.sep, "/")
+            if rel.startswith("/") or (len(rel) > 1 and rel[1] == ":"):
+                rel = os.path.basename(local)
+            rdest = f"{dest_base}/{rel}" if dest_base != "/" else f"/{rel}"
+            entry = {
+                "local": local, "root": root, "dest": rdest,
+                "size": os.path.getsize(local),
+                "status": "pending", "worker": None, "item": None,
+            }
+            self._queue.append(entry)
+            display_name = os.path.relpath(local, root).replace(os.sep, "/")
+            item = QTreeWidgetItem([
+                display_name, self._fmt(entry["size"]), rdest, "Pending",
+            ])
+            item.setForeground(3, QColor("#5a5650"))
+            entry["item"] = item
+            self._tree.addTopLevelItem(item)
+        self._update_queue_label()
+
+    def _browse_default_dest(self):
+        api_key = self.get_api_key()
+        if not api_key:
+            self._log("⚠ Enter API key in Settings first.")
+            return
+        dlg = FolderBrowserDialog(api_key, HARDCODED_BASE_URL,
+                                  self._default_dest.text().strip() or "/",
+                                  parent=self)
+        dlg.setWindowTitle("Choose default destination")
+        if dlg.exec():
+            self._default_dest.setText(dlg.selected)
+
+    def _edit_dest(self, item, _col):
+        row = next((e for e in self._queue if e["item"] is item), None)
+        if row is None or row["status"] in ("uploading", "done"):
+            return
+        new_dest, ok = QInputDialog.getText(
+            self, "Edit destination", "Remote destination path:",
+            QLineEdit.EchoMode.Normal, row["dest"],
+        )
+        if ok and new_dest.strip():
+            row["dest"] = new_dest.strip()
+            item.setText(self._COL_DEST, row["dest"])
+
+    def _remove_selected(self):
+        for item in list(self._tree.selectedItems()):
+            row = next((e for e in self._queue if e["item"] is item), None)
+            if row and row["status"] == "uploading":
+                continue
+            if row:
+                self._queue.remove(row)
+            idx = self._tree.indexOfTopLevelItem(item)
+            if idx >= 0:
+                self._tree.takeTopLevelItem(idx)
+        self._update_queue_label()
+
+    def _clear_done(self):
+        for entry in list(self._queue):
+            if entry["status"] in ("done","error","cancelled"):
+                idx = self._tree.indexOfTopLevelItem(entry["item"])
+                if idx >= 0:
+                    self._tree.takeTopLevelItem(idx)
+                self._queue.remove(entry)
+        self._update_queue_label()
+
+    def _clear_all(self):
+        if self._active_workers:
+            self._cancel()
+        self._tree.clear()
+        self._queue.clear()
+        self._prog_bar.setValue(0)
+        self._pct_lbl.setText("0%")
+        self._speed_lbl.setText("")
+        self._update_queue_label()
+        self._set_badge("Idle", "#9ca3af")
+        self._log("Queue cleared.")
+
+    # ── Upload engine ─────────────────────────────────────────────────────────
+    def _start(self):
+        api_key = self.get_api_key()
+        if not api_key:
+            self._log("⚠ Enter your API key in Settings first.")
+            return
+        pending = [e for e in self._queue if e["status"] == "pending"]
+        if not pending:
+            self._log("⚠ No pending items in the queue.")
+            return
+        self._cancelled = False
+        self._start_btn.hide()
+        self._cancel_btn.show()
+        self._set_badge("Uploading", "#c8a96e")
+        self._log(f"Starting {len(pending)} upload{'s' if len(pending)!=1 else ''}…")
+        self._pending_iter = iter(pending)
+        for _ in range(min(self._conc_spin.value(), len(pending))):
+            self._launch_next(api_key)
+
+    def _launch_next(self, api_key=None):
+        if self._cancelled:
+            return
+        api_key = api_key or self.get_api_key()
+        try:
+            entry = next(self._pending_iter)
+        except StopIteration:
+            return
+        entry["status"] = "uploading"
+        entry["item"].setText(self._COL_STATUS, "Uploading…")
+        entry["item"].setForeground(3, QColor("#c8a96e"))
+
+        w = UploadWorker(
+            api_key, HARDCODED_BASE_URL,
+            [(entry["local"], entry["dest"])],
+            False, None, 0,
+            chunk_size_mb=self._chunk_spin.value(),
+            max_chunks=self._maxchunk_spin.value(),
+        )
+        entry["worker"] = w
+        self._active_workers.append(w)
+        w.progress.connect(lambda pct, e=entry: e["item"].setText(self._COL_STATUS, f"{pct}%"))
+        w.speed.connect(self._on_speed)
+        w.status.connect(lambda msg, e=entry: self._log(msg) if not msg.startswith("[DEBUG]") else None)
+        w.finished.connect(lambda result, e=entry: self._on_file_done(e))
+        w.error.connect(lambda msg, e=entry: self._on_file_error(msg, e))
+        w.start()
+
+    def _on_speed(self, bps):
+        if bps < 1024:         txt = f"{bps:.0f} B/s"
+        elif bps < 1024**2:    txt = f"{bps/1024:.1f} KB/s"
+        else:                  txt = f"{bps/1024**2:.2f} MB/s"
+        self._speed_lbl.setText(txt)
+
+    def _on_file_done(self, entry):
+        entry["status"] = "done"
+        entry["item"].setText(self._COL_STATUS, "✓ Done")
+        entry["item"].setForeground(3, QColor("#4ade80"))
+        if entry["worker"] in self._active_workers:
+            self._active_workers.remove(entry["worker"])
+        self._update_queue_label()
+        self._update_overall_progress()
+        self._launch_next()
+        self._check_all_done()
+
+    def _on_file_error(self, msg, entry):
+        entry["status"] = "error"
+        entry["item"].setText(self._COL_STATUS, "✗ Failed")
+        entry["item"].setForeground(3, QColor("#f87171"))
+        entry["item"].setToolTip(self._COL_STATUS, msg)
+        if entry["worker"] in self._active_workers:
+            self._active_workers.remove(entry["worker"])
+        self._log(f"✗ {os.path.basename(entry['local'])}: {msg}")
+        self._update_queue_label()
+        self._update_overall_progress()
+        self._launch_next()
+        self._check_all_done()
+
+    def _check_all_done(self):
+        if self._active_workers:
+            return
+        if any(e["status"] == "pending" for e in self._queue):
+            return
+        errors = sum(1 for e in self._queue if e["status"] == "error")
+        self._start_btn.show()
+        self._cancel_btn.hide()
+        self._speed_lbl.setText("")
+        if errors:
+            self._set_badge(f"Done ({errors} failed)", "#f87171")
+            self._log(f"✓ Queue finished — {errors} file(s) failed.")
+        else:
+            self._set_badge("Complete", "#4ade80")
+            self._log("✓ All uploads complete.")
+
+    def _cancel(self):
+        self._cancelled = True
+        for w in list(self._active_workers):
+            try:
+                w.cancel()
+                w.progress.disconnect()
+                w.speed.disconnect()
+                w.status.disconnect()
+                w.finished.disconnect()
+                w.error.disconnect()
+            except RuntimeError:
+                pass
+        self._active_workers.clear()
+        for entry in self._queue:
+            if entry["status"] == "uploading":
+                entry["status"] = "cancelled"
+                entry["item"].setText(self._COL_STATUS, "Cancelled")
+                entry["item"].setForeground(3, QColor("#9ca3af"))
+        self._start_btn.show()
+        self._cancel_btn.hide()
+        self._speed_lbl.setText("")
+        self._set_badge("Cancelled", "#9ca3af")
+        self._log("Upload cancelled.")
+        self._update_queue_label()
+
+
 # ── Full-Width Tab Widget ─────────────────────────────────────────────────────
 class FullWidthTabWidget(QWidget):
     """
     Drop-in QTabWidget replacement whose tab bar always fills the full widget
     width — no bare gap to the right of the last tab.
-
-    Supported API (subset used by MochaTools):
-      addTab(widget, label)
-      setTabIcon(index, icon)
-      setIconSize(size)          — no-op, icons are sized at add time
-      currentChanged signal
-      currentIndex()
-      setCurrentIndex(index)
-      tabBar()                   — returns self (duck-typed for setExpanding etc.)
-      setExpanding / setDrawBase — no-ops (kept for compat)
-      setCornerWidget            — no-op (not needed)
     """
     currentChanged = pyqtSignal(int)
 
@@ -162,7 +610,6 @@ class FullWidthTabWidget(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        # Tab bar row — background fills full width automatically
         self._bar = QWidget()
         self._bar.setObjectName("tabbar_row")
         self._bar.setStyleSheet(
@@ -177,12 +624,10 @@ class FullWidthTabWidget(QWidget):
         self._bar_lay.setSpacing(0)
         outer.addWidget(self._bar)
 
-        # Stacked content area
         self._stack = QStackedWidget()
         self._stack.setStyleSheet("QStackedWidget { background: #181614; }")
         outer.addWidget(self._stack, 1)
 
-    # ── Public API ────────────────────────────────────────────────────────────
     def addTab(self, widget: QWidget, label: str) -> int:
         idx = len(self._tabs)
         btn = QPushButton(label)
@@ -190,7 +635,7 @@ class FullWidthTabWidget(QWidget):
         btn.setObjectName("tab_btn")
         btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.setStyleSheet(self._btn_style(False))
-        btn.clicked.connect(lambda checked, i=idx: self.setCurrentIndex(i))
+        btn.clicked.connect(lambda _checked, i=idx: self.setCurrentIndex(i))
         self._bar_lay.addWidget(btn)
         self._stack.addWidget(widget)
         self._tabs.append((btn, widget))
@@ -198,14 +643,16 @@ class FullWidthTabWidget(QWidget):
             self.setCurrentIndex(0)
         return idx
 
-    def setTabIcon(self, index: int, icon: "QIcon"):
+    def setTabIcon(self, index: int, icon):
         if 0 <= index < len(self._tabs):
-            btn, _ = self._tabs[index]
-            btn.setIcon(icon)
-            btn.setIconSize(QSize(14, 14))
+            self._tabs[index][0].setIcon(icon)
+            self._tabs[index][0].setIconSize(QSize(14, 14))
 
-    def setIconSize(self, size):
-        pass  # compat no-op
+    def setIconSize(self, size): pass
+    def tabBar(self): return self
+    def setExpanding(self, _): pass
+    def setDrawBase(self, _): pass
+    def setCornerWidget(self, *_): pass
 
     def currentIndex(self) -> int:
         return self._current
@@ -223,52 +670,19 @@ class FullWidthTabWidget(QWidget):
         if old != index:
             self.currentChanged.emit(index)
 
-    # Duck-type the few QTabBar methods called externally
-    def tabBar(self):
-        return self
-
-    def setExpanding(self, _):
-        pass
-
-    def setDrawBase(self, _):
-        pass
-
-    def setCornerWidget(self, *_):
-        pass
-
-    # ── Internal ─────────────────────────────────────────────────────────────
     @staticmethod
     def _btn_style(active: bool) -> str:
         if active:
             return (
-                "QPushButton {"
-                "  background: transparent;"
-                "  color: #c8a96e;"
-                "  border: none;"
-                "  border-bottom: 2px solid #c8a96e;"
-                "  padding: 11px 22px 9px 22px;"
-                "  font-size: 12px;"
-                "  font-weight: 600;"
-                "  letter-spacing: 0.2px;"
-                "  border-radius: 0px;"
-                "}"
+                "QPushButton { background:transparent; color:#c8a96e; border:none;"
+                " border-bottom:2px solid #c8a96e; padding:11px 22px 9px 22px;"
+                " font-size:12px; font-weight:600; letter-spacing:0.2px; border-radius:0px; }"
             )
         return (
-            "QPushButton {"
-            "  background: transparent;"
-            "  color: #5a5650;"
-            "  border: none;"
-            "  border-bottom: 2px solid transparent;"
-            "  padding: 11px 22px 9px 22px;"
-            "  font-size: 12px;"
-            "  font-weight: 600;"
-            "  letter-spacing: 0.2px;"
-            "  border-radius: 0px;"
-            "}"
-            "QPushButton:hover {"
-            "  color: #9c9484;"
-            "  border-bottom: 2px solid #3d3a35;"
-            "}"
+            "QPushButton { background:transparent; color:#5a5650; border:none;"
+            " border-bottom:2px solid transparent; padding:11px 22px 9px 22px;"
+            " font-size:12px; font-weight:600; letter-spacing:0.2px; border-radius:0px; }"
+            "QPushButton:hover { color:#9c9484; border-bottom:2px solid #3d3a35; }"
         )
 
 
@@ -1639,6 +2053,11 @@ class MochaTools(QMainWindow):
             get_api_key=lambda: self.api_key_edit.text().strip(),
         )
 
+        # ── Mass Upload tab ──────────────────────────────────────────────────
+        self.mass_upload_tab = MassUploadTab(
+            get_api_key=lambda: self.api_key_edit.text().strip(),
+        )
+
         # ── Shares tab ───────────────────────────────────────────────────────
         self.shares_tab = SharesTab(
             get_api_key=lambda: self.api_key_edit.text().strip(),
@@ -1783,15 +2202,17 @@ class MochaTools(QMainWindow):
         settings_lay.addWidget(update_card)
         settings_lay.addStretch()
 
-        self.tabs.addTab(upload_tab, "Upload")
-        self.tabs.addTab(self.remote_tab, "Remote")
-        self.tabs.addTab(self.files_tab, "Files")
-        self.tabs.addTab(self.shares_tab, "Shares")
-        self.tabs.addTab(settings_tab, "Settings")
+        self.tabs.addTab(upload_tab,           "Upload")
+        self.tabs.addTab(self.mass_upload_tab, "Mass Upload")
+        self.tabs.addTab(self.remote_tab,      "Remote")
+        self.tabs.addTab(self.files_tab,       "Files")
+        self.tabs.addTab(self.shares_tab,      "Shares")
+        self.tabs.addTab(settings_tab,         "Settings")
 
         # Set Lucide icons on each tab
         _tab_icons = [
             ("upload",        "#9c9484"),
+            ("upload",        "#9c9484"),   # Mass Upload — reuse upload icon
             ("download-cloud","#9c9484"),
             ("folder",        "#9c9484"),
             ("share-2",       "#9c9484"),
@@ -1800,11 +2221,6 @@ class MochaTools(QMainWindow):
         for i, (icon_name, color) in enumerate(_tab_icons):
             self.tabs.setTabIcon(i, lucide_icon(icon_name, color, 14))
         self.tabs.setIconSize(QSize(14, 14))
-
-        # Make the tab bar expand to fill full width so there's no bare gap
-        # to the right of the last tab when the window is wide.
-        self.tabs.tabBar().setExpanding(True)
-        self.tabs.tabBar().setDrawBase(False)
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
         # ── FILE ─────────────────────────────────────────────────────────────
@@ -2187,20 +2603,17 @@ class MochaTools(QMainWindow):
         )
 
     def _on_tab_changed(self, index):
-        self.remote_tab.set_active(index == 1)
-        # Auto-refresh the Remote tab when switched to (if API key is present)
-        if index == 1:
-            return
-        # Auto-refresh the Files tab when switched to (if API key is present)
+        # Tab order: 0=Upload, 1=Mass Upload, 2=Remote, 3=Files, 4=Shares, 5=Settings
+        self.remote_tab.set_active(index == 2)
         if index == 2:
+            return
+        if index == 3:
             if self.api_key_edit.text().strip():
                 self.files_tab._refresh()
-        # Auto-refresh the Shares tab when switched to
-        elif index == 3:
+        elif index == 4:
             if self.api_key_edit.text().strip():
                 self.shares_tab.refresh()
-        # Auto-save settings when leaving Settings tab (now index 4)
-        elif index != 4:
+        elif index != 5:
             self._save_settings()
 
 
