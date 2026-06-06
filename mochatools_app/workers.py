@@ -171,6 +171,20 @@ class UploadWorker(QThread):
                 self.error.emit(f"Failed to create folder {d!r}: {e}")
                 return
 
+        # ── Compute grand total bytes (all non-empty files) ───────────────────
+        # Used to emit cumulative bytes_progress across the whole batch so the
+        # UI always shows "<done_so_far> / <grand_total>" rather than resetting
+        # to the current file's size on every new file.
+        file_sizes: list[int] = []
+        for local_path, _ in self.file_pairs:
+            try:
+                sz = os.path.getsize(local_path)
+            except OSError:
+                sz = 0
+            file_sizes.append(sz)
+        grand_total: int = sum(file_sizes)
+        bytes_done_offset: int = 0   # bytes confirmed finished from prior files
+
         # ── Upload each file directly into its destination folder ──────────────
         for idx, (local_path, dest_path) in enumerate(self.file_pairs, 1):
             if self._cancel:
@@ -178,10 +192,9 @@ class UploadWorker(QThread):
 
             file_name = os.path.basename(local_path)
             prefix    = f"[{idx}/{total_files}] " if total_files > 1 else ""
+            file_size = file_sizes[idx - 1]
 
             try:
-                file_size = os.path.getsize(local_path)
-
                 # Skip empty files — API requires positive Content-Length
                 if file_size == 0:
                     self.status.emit(f"{prefix}{file_name}  ⊘ Skipped (empty file)")
@@ -193,11 +206,29 @@ class UploadWorker(QThread):
                 self.status.emit(f"[DEBUG] Remote dest: {dest_path}")
                 self.status.emit(f"[DEBUG] File size (bytes): {file_size}")
 
+                # Emit cumulative progress: (offset + this_file_done, grand_total)
+                # so the UI shows a monotonically increasing transferred counter.
+                _offset = bytes_done_offset
+                _grand  = grand_total
+
+                def _on_bytes(done_this_file, _total_this_file,
+                              offset=_offset, grand=_grand):
+                    self.bytes_progress.emit(
+                        min(offset + done_this_file, grand), grand
+                    )
+
                 self.status.emit("[DEBUG] Strategy: multipart upload")
-                file_id = self._multipart_upload(file_size, local_path, dest_path)
+                file_id = self._multipart_upload(
+                    file_size, local_path, dest_path,
+                    bytes_progress_cb=_on_bytes,
+                )
 
                 if self._cancel or file_id is None:
                     return
+
+                # Advance the offset by the actual file size so subsequent files
+                # start counting from the right base.
+                bytes_done_offset += file_size
 
                 self.status.emit(f"[DEBUG] File ID returned to run(): {file_id}")
                 last_file_id = file_id
@@ -216,7 +247,8 @@ class UploadWorker(QThread):
 
 
     # ── multipart upload (> 50 MB) ───────────────────────────────────────────
-    def _multipart_upload(self, file_size, local_path, dest_path):
+    def _multipart_upload(self, file_size, local_path, dest_path,
+                          bytes_progress_cb=None):
         import mimetypes
 
         file_name = os.path.basename(local_path)
@@ -289,11 +321,16 @@ class UploadWorker(QThread):
 
         # Shared progress tracker — fires UI updates as bytes leave the socket
         # across all parallel part workers rather than only on part completion.
+        # Use the caller-supplied callback when available (run() injects a
+        # cumulative wrapper so multi-file batches show the right grand total).
+        _bytes_cb = bytes_progress_cb or (
+            lambda done, total: self.bytes_progress.emit(done, total)
+        )
         tracker = ProgressTracker(
             file_size,
             on_progress=lambda pct: self.progress.emit(pct),
             on_speed=lambda bps: self.speed.emit(bps),
-            on_bytes_progress=lambda done, total: self.bytes_progress.emit(done, total),
+            on_bytes_progress=_bytes_cb,
         )
 
         parts = []

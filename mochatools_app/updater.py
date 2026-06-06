@@ -20,6 +20,7 @@ Asset naming convention (must match build.yml):
 
 from __future__ import annotations
 
+import ctypes
 import os
 import platform
 import shutil
@@ -43,13 +44,11 @@ def _current_exe() -> str:
     if getattr(sys, "frozen", False):
         exe = sys.executable
         if platform.system() == "Darwin":
-            # Walk up from Contents/MacOS/<binary> to the .app bundle
             contents = os.path.dirname(os.path.dirname(exe))
             bundle   = os.path.dirname(contents)
             if bundle.endswith(".app"):
                 return bundle
         return exe
-    # Running from source — nothing to replace
     return ""
 
 
@@ -62,18 +61,21 @@ def _asset_prefix() -> str:
     if system == "Windows":
         return "windows"
     if system == "Darwin":
-        machine = platform.machine().lower()   # 'x86_64' or 'arm64'
+        machine = platform.machine().lower()
         if machine == "arm64":
             return "macos-arm64"
         if machine == "x86_64":
             return "macos-x86_64"
-        return "macos-universal"               # fallback for fat/unknown
-    # Linux — treat all distros as debian_ubuntu for now
+        return "macos-universal"
     return "debian_ubuntu"
 
 
 def _asset_name(tag: str) -> str:
     """Build the full expected asset filename for this platform and release tag."""
+    # Guard: if tag is not a string (e.g. accidentally passed a QObject), coerce it
+    tag = str(tag).strip() if tag else ""
+    if not tag:
+        raise ValueError("_asset_name() called with an empty tag")
     return f"{_asset_prefix()}-{tag}.zip"
 
 
@@ -82,6 +84,32 @@ def _is_newer(latest: str, current: str) -> bool:
         return Version(latest.lstrip("v")) > Version(current.lstrip("v"))
     except Exception:
         return latest != current
+
+
+def _ensure_admin_windows() -> bool:
+    """
+    On Windows, re-launch the current process with UAC elevation if we are not
+    already running as administrator.  Returns True if already elevated (caller
+    should proceed), False if we requested elevation and the caller should exit
+    (the elevated copy will take over).
+    """
+    try:
+        is_admin = ctypes.windll.shell32.IsUserAnAdmin()
+    except Exception:
+        is_admin = False
+
+    if is_admin:
+        return True  # already elevated — proceed normally
+
+    # Re-launch with 'runas' verb (triggers UAC prompt)
+    params = " ".join(f'"{a}"' for a in sys.argv)
+    try:
+        ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, params, None, 1
+        )
+    except Exception:
+        pass
+    return False  # caller should sys.exit() or abort
 
 
 # ── Update check ─────────────────────────────────────────────────────────────
@@ -114,9 +142,18 @@ class UpdateCheckWorker(QThread):
             self.up_to_date.emit()
             return
 
-        # Find the right asset for this platform + version tag
-        want = _asset_name(latest_tag)
-        url  = next(
+        # Validate tag before building asset name
+        if not latest_tag or not isinstance(latest_tag, str):
+            self.error.emit("Update check returned an invalid release tag.")
+            return
+
+        try:
+            want = _asset_name(latest_tag)
+        except ValueError as e:
+            self.error.emit(str(e))
+            return
+
+        url = next(
             (a["browser_download_url"] for a in assets if a["name"] == want),
             "",
         )
@@ -135,8 +172,13 @@ class UpdateDownloadWorker(QThread):
 
     def __init__(self, download_url: str, tag: str = "", parent=None):
         super().__init__(parent)
-        self.download_url = download_url
-        self.tag          = tag          # version tag e.g. "v3.0.1"
+        self.download_url = str(download_url).strip()
+        # Sanitise tag — must be a plain version string, never an object repr
+        raw_tag = str(tag).strip() if tag else ""
+        # If it looks like an object repr, discard it
+        if "<" in raw_tag or "object at" in raw_tag:
+            raw_tag = ""
+        self.tag = raw_tag
 
     def run(self):
         try:
@@ -145,8 +187,8 @@ class UpdateDownloadWorker(QThread):
             self.error.emit(str(e))
 
     def _download_and_install(self):
-        system  = platform.system()
-        target  = _current_exe()
+        system = platform.system()
+        target = _current_exe()
         if not target:
             self.error.emit(
                 "Cannot auto-update when running from source. "
@@ -154,25 +196,64 @@ class UpdateDownloadWorker(QThread):
             )
             return
 
+        # On Windows, ensure we have write permission (UAC elevation if needed)
+        if system == "Windows":
+            try:
+                # Try a quick write-permission probe on the target's directory
+                test_file = target + ".write_test"
+                with open(test_file, "w") as fh:
+                    fh.write("ok")
+                os.remove(test_file)
+            except PermissionError:
+                # We don't have write access — request elevation and bail
+                elevated = _ensure_admin_windows()
+                if not elevated:
+                    self.error.emit(
+                        "Administrator privileges are required to install the update.\n"
+                        "The app will re-launch with elevated permissions."
+                    )
+                    return
+                # If we somehow are elevated but still can't write, report it
+                self.error.emit(
+                    "Cannot write to the installation directory even as administrator.\n"
+                    "Try running the updater manually."
+                )
+                return
+
+        # Build asset filename
+        try:
+            asset_name = _asset_name(self.tag) if self.tag else (
+                f"{_asset_prefix()}-update.zip"
+            )
+        except ValueError as exc:
+            self.error.emit(str(exc))
+            return
+
         # ── Download ──────────────────────────────────────────────────────────
         self.status.emit("Downloading update…")
-        resp = requests.get(self.download_url, stream=True, timeout=60)
-        resp.raise_for_status()
+        try:
+            resp = requests.get(self.download_url, stream=True, timeout=120)
+            resp.raise_for_status()
+        except Exception as e:
+            self.error.emit(f"Download failed: {e}")
+            return
 
         total   = int(resp.headers.get("content-length", 0))
         fetched = 0
         tmp_dir = tempfile.mkdtemp(prefix="mochatools_update_")
+        tmp_asset = os.path.join(tmp_dir, asset_name)
 
-        asset_name = _asset_name(self.tag) if self.tag else _asset_prefix() + ".zip"
-        tmp_asset  = os.path.join(tmp_dir, asset_name)
-
-        with open(tmp_asset, "wb") as fh:
-            for chunk in resp.iter_content(chunk_size=65536):
-                if chunk:
-                    fh.write(chunk)
-                    fetched += len(chunk)
-                    if total:
-                        self.progress.emit(int(fetched / total * 90))
+        try:
+            with open(tmp_asset, "wb") as fh:
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        fh.write(chunk)
+                        fetched += len(chunk)
+                        if total:
+                            self.progress.emit(int(fetched / total * 90))
+        except Exception as e:
+            self.error.emit(f"Failed writing download: {e}")
+            return
 
         # ── Install ───────────────────────────────────────────────────────────
         self.status.emit("Installing…")
@@ -199,24 +280,26 @@ class UpdateDownloadWorker(QThread):
         extract_dir = os.path.join(tmp_dir, "extracted")
         os.makedirs(extract_dir, exist_ok=True)
 
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(extract_dir)
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(extract_dir)
+        except zipfile.BadZipFile as e:
+            raise RuntimeError(f"Downloaded file is not a valid zip archive: {e}") from e
 
-        # Find the .exe inside the extracted folder
         new_exe = next(
             (os.path.join(extract_dir, f)
              for f in os.listdir(extract_dir) if f.lower().endswith(".exe")),
             None,
         )
         if not new_exe:
-            # Fall back: maybe the zip itself is the executable (flat layout)
             raise RuntimeError("No .exe found inside the downloaded zip.")
 
         bat = os.path.join(tmp_dir, "update.bat")
+        pid = os.getpid()
         script = (
             "@echo off\n"
             ":wait\n"
-            f'tasklist /FI "PID eq {os.getpid()}" 2>NUL | find /I "{os.getpid()}" >NUL\n'
+            f'tasklist /FI "PID eq {pid}" 2>NUL | find /I "{pid}" >NUL\n'
             "if not errorlevel 1 (\n"
             "    timeout /t 1 /nobreak >NUL\n"
             "    goto wait\n"
@@ -234,18 +317,12 @@ class UpdateDownloadWorker(QThread):
         )
 
     def _install_macos(self, zip_path: str, target: str, tmp_dir: str):
-        """
-        Unzip the .app bundle, then swap it with the running one.
-        We can replace the bundle directory while the app is running because
-        macOS uses the already-mapped pages — the new .app is picked up on restart.
-        """
         extract_dir = os.path.join(tmp_dir, "extracted")
         os.makedirs(extract_dir, exist_ok=True)
 
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(extract_dir)
 
-        # Find the .app in the extracted dir
         new_app = next(
             (os.path.join(extract_dir, e)
              for e in os.listdir(extract_dir) if e.endswith(".app")),
@@ -254,29 +331,24 @@ class UpdateDownloadWorker(QThread):
         if not new_app:
             raise RuntimeError("No .app bundle found inside the downloaded zip.")
 
-        # Back up the current bundle, swap in the new one
         backup = target + ".bak"
         if os.path.exists(backup):
             shutil.rmtree(backup)
         shutil.move(target, backup)
         shutil.move(new_app, target)
 
-        # Quarantine flag trips Gatekeeper on unsigned updates — clear it
         subprocess.run(
             ["xattr", "-dr", "com.apple.quarantine", target],
             check=False,
         )
 
     def _install_linux(self, zip_path: str, target: str, tmp_dir: str):
-        """Unzip, find the binary, replace the running one (safe — old inode stays mapped)."""
         extract_dir = os.path.join(tmp_dir, "extracted")
         os.makedirs(extract_dir, exist_ok=True)
 
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(extract_dir)
 
-        # Find the executable: prefer a non-.zip, non-.sh file that is executable,
-        # or just the first file if nothing obvious stands out.
         candidates = [
             os.path.join(extract_dir, f)
             for f in os.listdir(extract_dir)
@@ -288,8 +360,7 @@ class UpdateDownloadWorker(QThread):
             raise RuntimeError("No binary found inside the downloaded zip.")
 
         new_bin = candidates[0]
-
-        backup = target + ".bak"
+        backup  = target + ".bak"
         if os.path.exists(backup):
             os.remove(backup)
         shutil.copy2(target, backup)

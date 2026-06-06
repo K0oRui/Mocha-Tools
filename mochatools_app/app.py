@@ -438,6 +438,8 @@ class MassUploadTab(QWidget):
                 "local": local, "root": root, "dest": rdest,
                 "size": os.path.getsize(local),
                 "status": "pending", "worker": None, "item": None,
+                "_bytes_done": 0,
+                "_bytes_total": os.path.getsize(local),
             }
             self._queue.append(entry)
             display_name = os.path.relpath(local, root).replace(os.sep, "/")
@@ -626,7 +628,10 @@ class MassUploadTab(QWidget):
             break
         entry["status"] = "uploading"
         entry["_bytes_done"]  = 0
-        entry["_bytes_total"] = entry.get("size", 0)
+        # _bytes_total was already seeded from the real file size at queue-add
+        # time; only update it if it wasn't set for some reason.
+        if not entry.get("_bytes_total"):
+            entry["_bytes_total"] = entry.get("size", 0)
         entry["item"].setText(self._COL_STATUS, "Uploading…")
         entry["item"].setForeground(3, QColor("#c8a96e"))
 
@@ -655,12 +660,20 @@ class MassUploadTab(QWidget):
         self._speed_lbl.setText(txt)
 
     def _on_file_bytes(self, done_bytes, total_bytes, entry):
-        entry["_bytes_done"]  = done_bytes
-        entry["_bytes_total"] = total_bytes
-        entry["_xfr"] = f"{self._fmt(done_bytes)} / {self._fmt(total_bytes)}"
-        # Sum across every entry that has reported byte data so the label
-        # reflects the real queue-wide transferred / total rather than just
-        # whichever worker happened to fire last.
+        # Ignore stale signals that arrive after the entry has already finished
+        # (parallel chunk threads can still be in-flight when done() fires).
+        if entry["status"] in ("done", "error", "cancelled"):
+            return
+        # Clamp: total_bytes from the tracker is authoritative; never let
+        # done exceed it even if a retry briefly re-feeds bytes.
+        if total_bytes > 0:
+            entry["_bytes_total"] = total_bytes
+        done_bytes = min(done_bytes, entry["_bytes_total"])
+        entry["_bytes_done"] = done_bytes
+        entry["_xfr"] = f"{self._fmt(done_bytes)} / {self._fmt(entry['_bytes_total'])}"
+        # Sum across every entry — pending entries already have _bytes_total
+        # initialised from their file size at queue-add time, so this always
+        # reflects the true queue-wide transferred / total.
         all_done  = sum(e.get("_bytes_done",  0) for e in self._queue)
         all_total = sum(e.get("_bytes_total", 0) for e in self._queue)
         if all_total > 0:
@@ -670,6 +683,9 @@ class MassUploadTab(QWidget):
 
     def _on_file_done(self, entry):
         entry["status"] = "done"
+        # Snap byte counter to 100% so the transferred label never
+        # shows less than full for a completed file.
+        entry["_bytes_done"] = entry.get("_bytes_total", entry.get("size", 0))
         entry["item"].setText(self._COL_STATUS, "✓ Done")
         entry["item"].setForeground(3, QColor("#4ade80"))
         if entry["worker"] in self._active_workers:
@@ -2663,6 +2679,13 @@ class MochaTools(QMainWindow):
         for local, dest in file_pairs[:3]:  # log first 3 so it's not overwhelming
             self._log(f"[DEBUG] Dest: {dest}")
 
+        # Pre-compute the grand total bytes for all files so _on_bytes_progress
+        # can always show "<done> / <grand_total>" rather than per-file sizes.
+        self._upload_grand_total = sum(
+            os.path.getsize(lp) for lp, _ in file_pairs
+            if os.path.isfile(lp)
+        )
+
         self.worker = UploadWorker(
             api_key, base_url, file_pairs,
             self.create_share_cb.isChecked(), expiry_hours, max_dl,
@@ -2713,12 +2736,17 @@ class MochaTools(QMainWindow):
         self.pct_label.setText(f"{pct}%")
 
     def _on_bytes_progress(self, done_bytes, total_bytes):
+        # done_bytes and total_bytes are already cumulative values emitted by
+        # the worker's run() method (it injects an offset-aware callback per file).
+        # Use _upload_grand_total as the authoritative denominator so the label
+        # is always consistent even before the first signal fires.
+        grand = getattr(self, "_upload_grand_total", 0) or total_bytes
         def _fmt(n):
             if n < 1024:       return f"{n} B"
             elif n < 1024**2:  return f"{n/1024:.1f} KB"
             elif n < 1024**3:  return f"{n/1024**2:.1f} MB"
             return f"{n/1024**3:.2f} GB"
-        self.transferred_label.setText(f"{_fmt(done_bytes)} / {_fmt(total_bytes)}")
+        self.transferred_label.setText(f"{_fmt(done_bytes)} / {_fmt(grand)}")
 
     def _on_speed(self, bps):
         if bps < 1024:
