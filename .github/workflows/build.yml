@@ -48,6 +48,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
+      - name: Stamp version into constants.py
+        shell: bash
+        run: python builditems/stamp_version.py "${{ env.VERSION }}"
+
       - name: Build executable
         shell: bash
         run: |
@@ -160,6 +164,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller pyinstaller-hooks-contrib
 
+      - name: Stamp version into constants.py
+        run: python builditems/stamp_version.py "${{ env.VERSION }}"
+
       - name: Build arm64 .app
         run: |
           pyinstaller --noconsole --windowed \
@@ -231,6 +238,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller pyinstaller-hooks-contrib
+
+      - name: Stamp version into constants.py
+        run: python builditems/stamp_version.py "${{ env.VERSION }}"
 
       - name: Build x86_64 .app
         run: |
