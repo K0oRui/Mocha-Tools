@@ -1536,11 +1536,10 @@ class FilesBrowserTab(QWidget):
             return
         meta = items[0].data(0, Qt.ItemDataRole.UserRole) or {}
         fid  = meta.get("id") or meta.get("fileId") or ""
+        name = meta.get("name") or meta.get("file_name") or meta.get("original_name") or "download"
         if not fid:
             QMessageBox.warning(self, "Download", "Cannot determine file ID.")
             return
-        # Fetch a presigned URL server-side (auth header sent here),
-        # then open it in the browser — no API key needed in the browser.
         api_key = self.get_api_key()
         try:
             resp = requests.get(
@@ -1558,8 +1557,48 @@ class FilesBrowserTab(QWidget):
         except Exception as e:
             QMessageBox.warning(self, "Download", f"Failed to get download URL: {e}")
             return
-        import webbrowser
-        webbrowser.open(url)
+
+        # Check the main window setting
+        main_win = self.window()
+        use_browser = getattr(main_win, "browser_download_cb", None)
+        if use_browser is not None and use_browser.isChecked():
+            import webbrowser
+            webbrowser.open(url)
+            return
+
+        # Direct download — ask where to save
+        dest_dir = QFileDialog.getExistingDirectory(self, "Save download to…")
+        if not dest_dir:
+            return
+        dest_path = os.path.join(dest_dir, name)
+        self._status(f"Downloading {name}…")
+
+        from .workers import DownloadWorker
+        w = DownloadWorker(url, dest_path)
+        if not hasattr(self, "_dl_workers"):
+            self._dl_workers = []
+
+        def _on_done(path, _w=w):
+            self._status(f"✓ Saved to {path}")
+            QMessageBox.information(self, "Download complete", f"Saved to:\n{path}")
+            if _w in self._dl_workers:
+                self._dl_workers.remove(_w)
+
+        def _on_err(msg, _w=w):
+            self._status(f"✗ Download failed: {msg}")
+            QMessageBox.warning(self, "Download failed", msg)
+            if _w in self._dl_workers:
+                self._dl_workers.remove(_w)
+
+        w.done.connect(_on_done)
+        w.error.connect(_on_err)
+        w.speed.connect(lambda bps: self._status(
+            f"Downloading {name}… {bps/1024/1024:.1f} MB/s" if bps >= 1024 * 1024
+            else f"Downloading {name}… {bps/1024:.0f} KB/s"
+        ))
+        self._dl_workers.append(w)
+        w.start()
+
 
     def _context_menu(self, pos):
         item = self.tree.itemAt(pos)
@@ -2270,6 +2309,13 @@ class MochaTools(QMainWindow):
         self.remember_cb = QCheckBox("Remember settings across sessions")
         api_lay.addWidget(self.remember_cb)
 
+        self.browser_download_cb = QCheckBox("Use browser for file downloads")
+        self.browser_download_cb.setToolTip(
+            "When checked, downloads open in your default browser.\n"
+            "When unchecked, files download directly through Mocha Tools."
+        )
+        api_lay.addWidget(self.browser_download_cb)
+
         settings_lay.addWidget(api_card)
         settings_lay.addWidget(self._make_section_header("Logging"))
         debug_card = self._make_card()
@@ -2616,12 +2662,16 @@ class MochaTools(QMainWindow):
         self.max_chunks_spin.setValue(
             self.settings.value("max_chunks", DEFAULT_MAX_CHUNKS, type=int)
         )
+        self.browser_download_cb.setChecked(
+            self.settings.value("browser_download", False, type=bool)
+        )
 
     def _save_settings(self):
-        # Always persist debug toggle and chunk config regardless of remember_cb
+        # Always persist debug toggle, chunk config, and download preference
         self.settings.setValue("debug", self.debug_cb.isChecked())
         self.settings.setValue("chunk_size_mb", self.chunk_size_spin.value())
         self.settings.setValue("max_chunks",    self.max_chunks_spin.value())
+        self.settings.setValue("browser_download", self.browser_download_cb.isChecked())
         if self.remember_cb.isChecked():
             self.settings.setValue("api_key",     self.api_key_edit.text())
             self.settings.setValue("upload_path", self.upload_path_edit.text())

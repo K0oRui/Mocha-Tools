@@ -1032,3 +1032,43 @@ class RemoteWorker(QThread):
         )
         resp.raise_for_status()
         self.done.emit({"op": "cancel", "job_id": job_id, "data": resp.json()})
+
+# ── Direct Download Worker ────────────────────────────────────────────────────
+class DownloadWorker(QThread):
+    """Downloads a file from a presigned URL directly to a local path."""
+    progress = pyqtSignal(int)      # 0-100
+    speed    = pyqtSignal(float)    # bytes/sec
+    done     = pyqtSignal(str)      # local file path on success
+    error    = pyqtSignal(str)
+
+    def __init__(self, url: str, dest_path: str, parent=None):
+        super().__init__(parent)
+        self.url       = url
+        self.dest_path = dest_path
+        self._cancel   = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def run(self):
+        try:
+            resp = requests.get(self.url, stream=True, timeout=60)
+            resp.raise_for_status()
+            total   = int(resp.headers.get("content-length", 0))
+            fetched = 0
+            start   = time.monotonic()
+            with open(self.dest_path, "wb") as fh:
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if self._cancel:
+                        return
+                    if chunk:
+                        fh.write(chunk)
+                        fetched += len(chunk)
+                        elapsed  = max(time.monotonic() - start, 0.001)
+                        self.speed.emit(fetched / elapsed)
+                        if total:
+                            self.progress.emit(min(int(fetched / total * 100), 99))
+            self.progress.emit(100)
+            self.done.emit(self.dest_path)
+        except Exception as e:
+            self.error.emit(str(e))
