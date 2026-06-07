@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QFrame, QSpinBox, QComboBox, QScrollArea,
     QSizePolicy, QMessageBox, QTabWidget, QTreeWidget, QTreeWidgetItem,
     QHeaderView, QMenu, QAbstractItemView, QInputDialog, QToolBar,
-    QSplitter, QStackedWidget
+    QSplitter, QStackedWidget, QPlainTextEdit
 )
 from PyQt6.QtCore import (
     Qt, QThread, pyqtSignal, QTimer, QMimeData, QUrl,
@@ -150,9 +150,11 @@ class MassUploadTab(QWidget):
     _COL_DEST   = 2
     _COL_STATUS = 3
 
-    def __init__(self, get_api_key, parent=None):
+    def __init__(self, get_api_key, get_mass_settings=None, get_debug=None, parent=None):
         super().__init__(parent)
         self.get_api_key = get_api_key
+        self.get_mass_settings = get_mass_settings or (lambda: (1, DEFAULT_CHUNK_SIZE_MB, DEFAULT_MAX_CHUNKS))
+        self.get_debug = get_debug or (lambda: False)
         self._queue: list[dict] = []
         self._active_workers: list = []
         self._pending_iter = iter([])
@@ -188,7 +190,7 @@ class MassUploadTab(QWidget):
         add_lay.addWidget(self._drop)
 
         dest_row = QHBoxLayout()
-        dest_lbl = QLabel("Default destination")
+        dest_lbl = QLabel("Destination")
         dest_lbl.setObjectName("field_label")
         self._default_dest = QLineEdit("/")
         self._default_dest.setPlaceholderText("/remote/folder")
@@ -257,56 +259,6 @@ class MassUploadTab(QWidget):
         qtb.addWidget(self._queue_lbl)
         outer.addLayout(qtb)
 
-        # ── Upload options ────────────────────────────────────────────────────
-        outer.addWidget(self._sh("Upload Options"))
-        opts_card = self._card()
-        opts_lay  = QVBoxLayout(opts_card)
-        opts_lay.setSpacing(10)
-
-        note = QLabel(
-            "These settings apply only to Mass Upload and are independent of "
-            "the global Settings values."
-        )
-        note.setObjectName("field_label")
-        note.setWordWrap(True)
-        opts_lay.addWidget(note)
-
-        grid = QHBoxLayout()
-        grid.setSpacing(16)
-
-        def _spin_col(label, lo, hi, default, suffix, tip):
-            col = QVBoxLayout()
-            col.setSpacing(4)
-            lbl = QLabel(label)
-            lbl.setObjectName("field_label")
-            sp = QSpinBox()
-            sp.setRange(lo, hi)
-            sp.setValue(default)
-            sp.setSuffix(f" {suffix}")
-            sp.setToolTip(tip)
-            col.addWidget(lbl)
-            col.addWidget(sp)
-            grid.addLayout(col)
-            return sp
-
-        self._conc_spin = _spin_col(
-            "Concurrent files", 1, 10, 2, "files",
-            "How many files upload at the same time.\n"
-            "Higher values can saturate slower connections."
-        )
-        self._chunk_spin = _spin_col(
-            "Chunk size", 1, 100, DEFAULT_CHUNK_SIZE_MB, "MB",
-            "Size of each multipart part (1–100 MB).\n"
-            "Files smaller than this upload in one request."
-        )
-        self._maxchunk_spin = _spin_col(
-            "Parallel chunks", 1, 20, DEFAULT_MAX_CHUNKS, "chunks",
-            "Max parts sent in parallel per file (1–20)."
-        )
-        grid.addStretch()
-        opts_lay.addLayout(grid)
-        outer.addWidget(opts_card)
-
         # ── Progress card ─────────────────────────────────────────────────────
         prog_card = self._card()
         prog_lay  = QVBoxLayout(prog_card)
@@ -335,10 +287,13 @@ class MassUploadTab(QWidget):
         pbar_row.addWidget(self._pct_lbl)
         prog_lay.addLayout(pbar_row)
 
-        self._log_lbl = QLabel("Add files or folders above, then click Start.")
+        self._log_lbl = QPlainTextEdit("Add files or folders above, then click Start.")
         self._log_lbl.setObjectName("log_console")
-        self._log_lbl.setWordWrap(True)
-        self._log_lbl.setMinimumHeight(46)
+        self._log_lbl.setReadOnly(True)
+        self._log_lbl.setFixedHeight(62)
+        self._log_lbl.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self._log_lbl.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._log_lbl.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         prog_lay.addWidget(self._log_lbl)
         outer.addWidget(prog_card)
 
@@ -392,7 +347,12 @@ class MassUploadTab(QWidget):
         )
 
     def _log(self, msg):
-        self._log_lbl.setText(msg)
+        is_debug = msg.startswith("[DEBUG]")
+        if is_debug:
+            write_debug_log(msg)
+            if not self.get_debug():
+                return
+        self._log_lbl.setPlainText(msg)
 
     def _update_queue_label(self):
         total  = len(self._queue)
@@ -419,6 +379,8 @@ class MassUploadTab(QWidget):
         self._pct_lbl.setText(f"{pct}%")
 
     def _on_file_progress(self, pct, entry):
+        if entry not in self._queue or entry.get("item") is None:
+            return
         entry["_pct"] = pct
         entry["item"].setText(
             self._COL_STATUS,
@@ -428,11 +390,12 @@ class MassUploadTab(QWidget):
 
     # ── Queue management ──────────────────────────────────────────────────────
     def _on_drop(self, file_list, root):
-        dest_base = "/" + (self._default_dest.text().strip("/") or "")
+        new_entries = []
         for local in file_list:
             rel = os.path.relpath(local, root).replace(os.sep, "/")
             if rel.startswith("/") or (len(rel) > 1 and rel[1] == ":"):
                 rel = os.path.basename(local)
+            dest_base = "/" + (self._default_dest.text().strip("/") or "")
             rdest = f"{dest_base}/{rel}" if dest_base != "/" else f"/{rel}"
             entry = {
                 "local": local, "root": root, "dest": rdest,
@@ -449,7 +412,39 @@ class MassUploadTab(QWidget):
             item.setForeground(3, QColor("#5a5650"))
             entry["item"] = item
             self._tree.addTopLevelItem(item)
+            new_entries.append(entry)
+
         self._update_queue_label()
+
+        # If uploads already running, feed new entries into the live iterator
+        if self._active_workers:
+            import itertools
+            pending_new = [e for e in new_entries if e["status"] == "pending"]
+            self._pending_iter = itertools.chain(self._pending_iter, iter(pending_new))
+            conc, _cm, _mc = self.get_mass_settings()
+            slots_free = conc - len(self._active_workers)
+            for _ in range(max(0, slots_free)):
+                self._launch_next()
+
+        # Open destination picker for this batch
+        api_key = self.get_api_key()
+        if api_key:
+            dlg = FolderBrowserDialog(
+                api_key, HARDCODED_BASE_URL,
+                self._default_dest.text().strip() or "/",
+                parent=self,
+            )
+            dlg.setWindowTitle("Choose upload destination")
+            if dlg.exec():
+                chosen = dlg.selected.rstrip("/") or "/"
+                self._default_dest.setText(chosen)
+                for entry in new_entries:
+                    if entry["status"] == "pending":
+                        rel_filename = entry["dest"].rsplit("/", 1)[-1]
+                        entry["dest"] = (
+                            f"{chosen}/{rel_filename}" if chosen != "/" else f"/{rel_filename}"
+                        )
+                        entry["item"].setText(self._COL_DEST, entry["dest"])
 
     def _browse_default_dest(self):
         api_key = self.get_api_key()
@@ -546,6 +541,10 @@ class MassUploadTab(QWidget):
                 continue
             if new_ti < 0 or new_ti >= self._tree.topLevelItemCount():
                 continue
+            # Do not move entries that are currently uploading
+            if (entry["status"] == "uploading" or
+                    self._queue[new_qi]["status"] == "uploading"):
+                continue
             # Swap in queue list
             self._queue[qi], self._queue[new_qi] = self._queue[new_qi], self._queue[qi]
             # Swap in tree widget (take + re-insert)
@@ -559,12 +558,32 @@ class MassUploadTab(QWidget):
     def _move_selected_down(self):
         self._move_entry(1)
 
+    def _detach_entry(self, entry):
+        """Disconnect all worker signals and null item ref before removal."""
+        w = entry.get("worker")
+        if w is not None:
+            for sig_name in ("progress", "speed", "status", "finished", "error", "bytes_progress"):
+                sig = getattr(w, sig_name, None)
+                if sig is not None:
+                    try: sig.disconnect()
+                    except RuntimeError: pass
+        entry["item"] = None
+
     def _remove_selected(self):
         for item in list(self._tree.selectedItems()):
             row = next((e for e in self._queue if e["item"] is item), None)
-            if row and row["status"] == "uploading":
+            # Block removal of any entry that has a live worker attached;
+            # covers both "uploading" and staggered workers not yet started.
+            if row and row.get("worker") is not None and row["status"] == "uploading":
                 continue
             if row:
+                # Cancel any worker that was assigned but not yet uploading
+                w = row.get("worker")
+                if w is not None:
+                    w.cancel()
+                    if w in self._active_workers:
+                        self._active_workers.remove(w)
+                self._detach_entry(row)
                 self._queue.remove(row)
             idx = self._tree.indexOfTopLevelItem(item)
             if idx >= 0:
@@ -573,7 +592,8 @@ class MassUploadTab(QWidget):
 
     def _clear_done(self):
         for entry in list(self._queue):
-            if entry["status"] in ("done","error","cancelled"):
+            if entry["status"] in ("done", "error", "cancelled"):
+                self._detach_entry(entry)
                 idx = self._tree.indexOfTopLevelItem(entry["item"])
                 if idx >= 0:
                     self._tree.takeTopLevelItem(idx)
@@ -583,6 +603,8 @@ class MassUploadTab(QWidget):
     def _clear_all(self):
         if self._active_workers:
             self._cancel()
+        for entry in list(self._queue):
+            self._detach_entry(entry)
         self._tree.clear()
         self._queue.clear()
         self._prog_bar.setValue(0)
@@ -609,8 +631,15 @@ class MassUploadTab(QWidget):
         self._set_badge("Uploading", "#c8a96e")
         self._log(f"Starting {len(pending)} upload{'s' if len(pending)!=1 else ''}…")
         self._pending_iter = iter(pending)
-        for _ in range(min(self._conc_spin.value(), len(pending))):
-            self._launch_next(api_key)
+        conc, _cm, _mc = self.get_mass_settings()
+        total_slots = min(conc, len(pending))
+        for slot in range(total_slots):
+            if slot == 0:
+                self._launch_next(api_key)
+            else:
+                # Stagger concurrent workers by 1.5 s so their /multipart/init
+                # requests don't all land on the server at the same instant.
+                QTimer.singleShot(slot * 1500, lambda k=api_key: self._launch_next(k))
 
     def _launch_next(self, api_key=None):
         if self._cancelled:
@@ -624,6 +653,9 @@ class MassUploadTab(QWidget):
             # Entry may have been removed from the queue while we were uploading
             # other files — skip it rather than starting a ghost upload.
             if entry not in self._queue:
+                continue
+            # Also skip entries whose item ref was nulled (detached)
+            if entry.get("item") is None:
                 continue
             break
         entry["status"] = "uploading"
@@ -639,14 +671,14 @@ class MassUploadTab(QWidget):
             api_key, HARDCODED_BASE_URL,
             [(entry["local"], entry["dest"])],
             False, None, 0,
-            chunk_size_mb=self._chunk_spin.value(),
-            max_chunks=self._maxchunk_spin.value(),
+            chunk_size_mb=self.get_mass_settings()[1],
+            max_chunks=self.get_mass_settings()[2],
         )
         entry["worker"] = w
         self._active_workers.append(w)
         w.progress.connect(lambda pct, e=entry: self._on_file_progress(pct, e))
         w.speed.connect(self._on_speed)
-        w.status.connect(lambda msg, e=entry: self._log(msg) if not msg.startswith("[DEBUG]") else None)
+        w.status.connect(lambda msg, e=entry: self._log(msg))
         w.finished.connect(lambda result, e=entry: self._on_file_done(e))
         w.error.connect(lambda msg, e=entry: self._on_file_error(msg, e))
         if hasattr(w, "bytes_progress"):
@@ -660,8 +692,8 @@ class MassUploadTab(QWidget):
         self._speed_lbl.setText(txt)
 
     def _on_file_bytes(self, done_bytes, total_bytes, entry):
-        # Ignore stale signals that arrive after the entry has already finished
-        # (parallel chunk threads can still be in-flight when done() fires).
+        if entry not in self._queue:
+            return
         if entry["status"] in ("done", "error", "cancelled"):
             return
         # Clamp: total_bytes from the tracker is authoritative; never let
@@ -683,11 +715,10 @@ class MassUploadTab(QWidget):
 
     def _on_file_done(self, entry):
         entry["status"] = "done"
-        # Snap byte counter to 100% so the transferred label never
-        # shows less than full for a completed file.
         entry["_bytes_done"] = entry.get("_bytes_total", entry.get("size", 0))
-        entry["item"].setText(self._COL_STATUS, "✓ Done")
-        entry["item"].setForeground(3, QColor("#4ade80"))
+        if entry in self._queue and entry.get("item") is not None:
+            entry["item"].setText(self._COL_STATUS, "✓ Done")
+            entry["item"].setForeground(3, QColor("#4ade80"))
         if entry["worker"] in self._active_workers:
             self._active_workers.remove(entry["worker"])
         self._update_queue_label()
@@ -697,9 +728,10 @@ class MassUploadTab(QWidget):
 
     def _on_file_error(self, msg, entry):
         entry["status"] = "error"
-        entry["item"].setText(self._COL_STATUS, "✗ Failed")
-        entry["item"].setForeground(3, QColor("#f87171"))
-        entry["item"].setToolTip(self._COL_STATUS, msg)
+        if entry in self._queue and entry.get("item") is not None:
+            entry["item"].setText(self._COL_STATUS, "✗ Failed")
+            entry["item"].setForeground(3, QColor("#f87171"))
+            entry["item"].setToolTip(self._COL_STATUS, msg)
         if entry["worker"] in self._active_workers:
             self._active_workers.remove(entry["worker"])
         self._log(f"✗ {os.path.basename(entry['local'])}: {msg}")
@@ -913,8 +945,10 @@ class CustomTitleBar(QFrame):
 
     def _toggle_maximise(self):
         if self._window.isMaximized():
+            self._window.setMaximumWidth(640)
             self._window.showNormal()
         else:
+            self._window.setMaximumWidth(16777215)  # QWIDGETSIZE_MAX — let it fill
             self._window.showMaximized()
         self._sync_max_icon()
 
@@ -1093,6 +1127,8 @@ class FilesBrowserTab(QWidget):
         self.current_path     = "/"
         self._workers         = []
         self._shares_map      = {}
+        self._list_cache      = {}   # path -> last known list data
+        self._shares_cache    = None # last known shares data
 
         self._build_ui()
 
@@ -1215,13 +1251,22 @@ class FilesBrowserTab(QWidget):
             return
         self.current_path = path
         self.path_edit.setText(path)
-        self._status("Loading…")
-        self.tree.clear()
         self.share_bar.hide()
 
         write_debug_log(f"[DEBUG] _navigate: navigating to path={path!r}")
 
-        # Fetch file list and shares in parallel
+        # Serve cached data instantly so the tree is never blank
+        if path in self._list_cache:
+            self._populate(path, self._list_cache[path])
+            if self._shares_cache is not None:
+                self._index_shares(self._shares_cache)
+                self._refresh_share_indicators()
+            self._status("Refreshing…")
+        else:
+            self.tree.clear()
+            self._status("Loading…")
+
+        # Always fetch fresh data in background
         self._run_worker("list", path=path)
         self._run_worker("shares")
 
@@ -1241,12 +1286,21 @@ class FilesBrowserTab(QWidget):
     def _on_worker_done(self, result):
         op = result.get("op")
         if op == "list":
-            self._populate(result["path"], result["data"])
+            path = result["path"]
+            self._list_cache[path] = result["data"]
+            self._populate(path, result["data"])
         elif op == "shares":
+            self._shares_cache = result["data"]
             self._index_shares(result["data"])
             self._refresh_share_indicators()
-        elif op in ("delete", "delete_folder", "move", "mkdir"):
+        elif op in ("delete", "delete_folder"):
+            # Rows already removed optimistically; just do a silent background
+            # fetch to confirm server state without clearing the tree first.
             self._status("✓ Done")
+            self._run_worker("list", path=self.current_path)
+        elif op in ("move", "mkdir"):
+            self._status("✓ Done")
+            self._list_cache.pop(self.current_path, None)
             self._refresh()
         elif op == "share":
             url = result.get("url", "")
@@ -1254,6 +1308,7 @@ class FilesBrowserTab(QWidget):
             if url:
                 dlg = ShareLinkDialog(url, parent=self)
                 dlg.exec()
+            self._list_cache.pop(self.current_path, None)
             self._refresh()
 
     def _on_worker_error(self, msg):
@@ -1463,8 +1518,57 @@ class FilesBrowserTab(QWidget):
                                 QMessageBox.StandardButton.No
                                 ) != QMessageBox.StandardButton.Yes:
             return
-        for item in items:
-            meta = item.data(0, Qt.ItemDataRole.UserRole) or {}
+
+        # Remove rows from the tree immediately — no blank flash while the
+        # network request is in flight.
+        tree_items_to_remove = list(items)
+        for tree_item in tree_items_to_remove:
+            idx = self.tree.indexOfTopLevelItem(tree_item)
+            if idx >= 0:
+                self.tree.takeTopLevelItem(idx)
+
+        # Prune the list cache for the current path so the background refresh
+        # won't momentarily re-show deleted rows.
+        if self.current_path in self._list_cache:
+            cached_data = self._list_cache[self.current_path]
+            deleted_names = set()
+            deleted_paths = set()
+            for tree_item in tree_items_to_remove:
+                meta = tree_item.data(0, Qt.ItemDataRole.UserRole) or {}
+                fn = meta.get("file_name") or meta.get("name") or ""
+                if fn:
+                    deleted_names.add(fn)
+                fp = meta.get("path") or ""
+                if fp:
+                    deleted_paths.add(fp)
+
+            def _keep_file(f):
+                if not isinstance(f, dict):
+                    return str(f) not in deleted_names and str(f) not in deleted_paths
+                fn = f.get("file_name") or f.get("originalName") or f.get("name") or ""
+                fp = f.get("path") or ""
+                return fn not in deleted_names and fp not in deleted_paths
+
+            def _keep_folder(f):
+                if not isinstance(f, dict):
+                    return str(f) not in deleted_names and str(f) not in deleted_paths
+                fp = f.get("path") or ""
+                fn = f.get("name") or ""
+                return fp not in deleted_paths and fn not in deleted_names
+
+            if isinstance(cached_data, dict):
+                self._list_cache[self.current_path] = {
+                    **cached_data,
+                    "files":   [f for f in cached_data.get("files", [])   if _keep_file(f)],
+                    "folders": [f for f in cached_data.get("folders", []) if _keep_folder(f)],
+                }
+            elif isinstance(cached_data, list):
+                self._list_cache[self.current_path] = [
+                    f for f in cached_data if _keep_file(f)
+                ]
+
+        for tree_item in tree_items_to_remove:
+            meta = tree_item.data(0, Qt.ItemDataRole.UserRole) or {}
             if meta.get("_type") == "folder":
                 self._run_worker("delete_folder", path=meta.get("path", ""))
             else:
@@ -1964,6 +2068,7 @@ class SharesTab(QWidget):
         self.get_api_key = get_api_key
         self.base_url    = HARDCODED_BASE_URL
         self._workers    = []
+        self._cache      = None
         self._build_ui()
 
     def _build_ui(self):
@@ -2049,9 +2154,13 @@ class SharesTab(QWidget):
         if not api_key:
             self._status("⚠ Enter your API key in Settings first.")
             return
-        self._status("Loading…")
-        self.tree.clear()
         self.copy_bar.hide()
+        if self._cache is not None:
+            self._render(self._cache)
+            self._status("Refreshing…")
+        else:
+            self.tree.clear()
+            self._status("Loading…")
         w = FilesWorker("shares", api_key, self.base_url)
         w.done.connect(self._on_done)
         w.error.connect(self._on_error)
@@ -2059,10 +2168,7 @@ class SharesTab(QWidget):
         self._workers.append(w)
         w.start()
 
-    def _on_done(self, result):
-        if result.get("op") != "shares":
-            return
-        data   = result["data"]
+    def _render(self, data):
         shares = data.get("shares", data) if isinstance(data, dict) else data
         self.tree.setSortingEnabled(False)
         self.tree.clear()
@@ -2098,6 +2204,12 @@ class SharesTab(QWidget):
         self.tree.setSortingEnabled(True)
         count = self.tree.topLevelItemCount()
         self._status(f"{count} share{'s' if count != 1 else ''}")
+
+    def _on_done(self, result):
+        if result.get("op") != "shares":
+            return
+        self._cache = result["data"]
+        self._render(self._cache)
 
     def _on_error(self, msg):
         self._status(f"✗ {msg}")
@@ -2164,6 +2276,7 @@ class SharesTab(QWidget):
             return
         api_key = self.get_api_key()
         import requests as _req
+        deleted_tokens = set()
         for meta in items:
             try:
                 resp = _req.delete(
@@ -2172,10 +2285,34 @@ class SharesTab(QWidget):
                     timeout=15,
                 )
                 resp.raise_for_status()
+                deleted_tokens.add(meta["token"])
             except Exception as e:
                 QMessageBox.warning(self, "Error", str(e))
                 return
         self.copy_bar.hide()
+
+        # Remove deleted rows from the tree immediately — no blank flash.
+        for tree_item in self.tree.selectedItems():
+            meta = tree_item.data(0, Qt.ItemDataRole.UserRole) or {}
+            if meta.get("token") in deleted_tokens:
+                idx = self.tree.indexOfTopLevelItem(tree_item)
+                if idx >= 0:
+                    self.tree.takeTopLevelItem(idx)
+
+        # Prune the cache so the next render stays consistent.
+        if self._cache is not None:
+            shares = self._cache.get("shares", self._cache) if isinstance(self._cache, dict) else self._cache
+            pruned = [s for s in shares if s.get("token") not in deleted_tokens]
+            if isinstance(self._cache, dict):
+                self._cache = {**self._cache, "shares": pruned}
+            else:
+                self._cache = pruned
+
+        count = self.tree.topLevelItemCount()
+        self._status(f"{count} share{'s' if count != 1 else ''}")
+
+        # Background refresh to sync server state — won't blank the list
+        # because _cache is still populated so refresh() uses the stale-render path.
         self.refresh()
 
     def _context_menu(self, pos):
@@ -2266,6 +2403,12 @@ class MochaTools(QMainWindow):
         # ── Mass Upload tab ──────────────────────────────────────────────────
         self.mass_upload_tab = MassUploadTab(
             get_api_key=lambda: self.api_key_edit.text().strip(),
+            get_mass_settings=lambda: (
+                self.mass_conc_spin.value(),
+                self.mass_chunk_spin.value(),
+                self.mass_maxchunk_spin.value(),
+            ),
+            get_debug=lambda: self.debug_cb.isChecked(),
         )
 
         # ── Shares tab ───────────────────────────────────────────────────────
@@ -2280,9 +2423,24 @@ class MochaTools(QMainWindow):
 
         # ── Settings tab ─────────────────────────────────────────────────────
         settings_tab = QWidget()
-        settings_lay = QVBoxLayout(settings_tab)
+        settings_scroll = QScrollArea()
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        settings_scroll.setMaximumWidth(680)
+        settings_scroll_inner = QWidget()
+        settings_lay = QVBoxLayout(settings_scroll_inner)
         settings_lay.setContentsMargins(16, 16, 16, 16)
         settings_lay.setSpacing(14)
+        settings_scroll.setWidget(settings_scroll_inner)
+        settings_tab_lay = QVBoxLayout(settings_tab)
+        settings_tab_lay.setContentsMargins(0, 0, 0, 0)
+        settings_center_row = QHBoxLayout()
+        settings_center_row.setContentsMargins(0, 0, 0, 0)
+        settings_center_row.addStretch()
+        settings_center_row.addWidget(settings_scroll, 1)
+        settings_center_row.addStretch()
+        settings_tab_lay.addLayout(settings_center_row)
 
         settings_lay.addWidget(self._make_section_header("API"))
         api_card = self._make_card()
@@ -2336,6 +2494,61 @@ class MochaTools(QMainWindow):
 
         settings_lay.addWidget(debug_card)
 
+        # ── Mass Upload ──────────────────────────────────────────────────────────
+        settings_lay.addWidget(self._make_section_header("Mass Upload"))
+        mass_card = self._make_card()
+        mass_lay  = QVBoxLayout(mass_card)
+        mass_lay.setSpacing(10)
+
+        mconc_row = QHBoxLayout()
+        mconc_lbl = QLabel("Concurrent files")
+        mconc_lbl.setObjectName("field_label")
+        self.mass_conc_spin = QSpinBox()
+        self.mass_conc_spin.setRange(1, 10)
+        self.mass_conc_spin.setValue(2)
+        self.mass_conc_spin.setSuffix(" files")
+        self.mass_conc_spin.setToolTip(
+            "How many files upload at the same time.\n"
+            "Higher values can saturate slower connections."
+        )
+        mconc_row.addWidget(mconc_lbl)
+        self.mass_conc_spin.setMaximumWidth(200)
+        mconc_row.addWidget(self.mass_conc_spin, 1)
+        mass_lay.addLayout(mconc_row)
+
+        mcs_row = QHBoxLayout()
+        mcs_lbl = QLabel("Chunk size")
+        mcs_lbl.setObjectName("field_label")
+        self.mass_chunk_spin = QSpinBox()
+        self.mass_chunk_spin.setRange(1, 100)
+        self.mass_chunk_spin.setValue(DEFAULT_CHUNK_SIZE_MB)
+        self.mass_chunk_spin.setSuffix(" MB")
+        self.mass_chunk_spin.setToolTip(
+            "Size of each multipart part (1–100 MB).\n"
+            "Files smaller than this upload in one request."
+        )
+        mcs_row.addWidget(mcs_lbl)
+        self.mass_chunk_spin.setMaximumWidth(200)
+        mcs_row.addWidget(self.mass_chunk_spin, 1)
+        mass_lay.addLayout(mcs_row)
+
+        mmc_row = QHBoxLayout()
+        mmc_lbl = QLabel("Parallel chunks")
+        mmc_lbl.setObjectName("field_label")
+        self.mass_maxchunk_spin = QSpinBox()
+        self.mass_maxchunk_spin.setRange(1, 20)
+        self.mass_maxchunk_spin.setValue(DEFAULT_MAX_CHUNKS)
+        self.mass_maxchunk_spin.setSuffix(" chunks")
+        self.mass_maxchunk_spin.setToolTip(
+            "Max parts sent in parallel per file (1–20)."
+        )
+        mmc_row.addWidget(mmc_lbl)
+        self.mass_maxchunk_spin.setMaximumWidth(200)
+        mmc_row.addWidget(self.mass_maxchunk_spin, 1)
+        mass_lay.addLayout(mmc_row)
+
+        settings_lay.addWidget(mass_card)
+
         # ── Multipart Upload ──────────────────────────────────────────────────
         settings_lay.addWidget(self._make_section_header("Multipart Upload"))
         chunk_card = self._make_card()
@@ -2365,6 +2578,7 @@ class MochaTools(QMainWindow):
             "Files larger than this are split into multiple parts."
         )
         cs_row.addWidget(cs_lbl)
+        self.chunk_size_spin.setMaximumWidth(200)
         cs_row.addWidget(self.chunk_size_spin, 1)
         chunk_lay.addLayout(cs_row)
 
@@ -2381,6 +2595,7 @@ class MochaTools(QMainWindow):
             "Higher values improve throughput on fast connections but use more memory."
         )
         mc_row.addWidget(mc_lbl)
+        self.max_chunks_spin.setMaximumWidth(200)
         mc_row.addWidget(self.max_chunks_spin, 1)
         chunk_lay.addLayout(mc_row)
 
@@ -2605,6 +2820,7 @@ class MochaTools(QMainWindow):
         self.cancel_btn.clicked.connect(self._cancel_upload)
         self.cancel_btn.hide()
         main.addWidget(self.cancel_btn)
+        main.addStretch()
 
     # ── Helpers ──────────────────────────────────────────────────────────────
     def _make_section_header(self, text):
@@ -2662,16 +2878,46 @@ class MochaTools(QMainWindow):
         self.max_chunks_spin.setValue(
             self.settings.value("max_chunks", DEFAULT_MAX_CHUNKS, type=int)
         )
+        self.mass_conc_spin.setValue(
+            self.settings.value("mass_conc", 2, type=int)
+        )
+        self.mass_chunk_spin.setValue(
+            self.settings.value("mass_chunk_mb", DEFAULT_CHUNK_SIZE_MB, type=int)
+        )
+        self.mass_maxchunk_spin.setValue(
+            self.settings.value("mass_max_chunks", DEFAULT_MAX_CHUNKS, type=int)
+        )
         self.browser_download_cb.setChecked(
             self.settings.value("browser_download", False, type=bool)
         )
+        # Restore cached shares so both tabs are pre-populated before the first fetch
+        raw = self.settings.value("shares_cache", None)
+        if raw:
+            try:
+                cached = json.loads(raw)
+                self.shares_tab._cache = cached
+                self.shares_tab._render(cached)
+                self.files_tab._shares_cache = cached
+                self.files_tab._index_shares(cached)
+            except Exception:
+                pass
 
     def _save_settings(self):
         # Always persist debug toggle, chunk config, and download preference
         self.settings.setValue("debug", self.debug_cb.isChecked())
         self.settings.setValue("chunk_size_mb", self.chunk_size_spin.value())
         self.settings.setValue("max_chunks",    self.max_chunks_spin.value())
+        self.settings.setValue("mass_conc",       self.mass_conc_spin.value())
+        self.settings.setValue("mass_chunk_mb",   self.mass_chunk_spin.value())
+        self.settings.setValue("mass_max_chunks", self.mass_maxchunk_spin.value())
         self.settings.setValue("browser_download", self.browser_download_cb.isChecked())
+        # Persist the latest shares cache so both tabs pre-populate on next launch
+        cache = self.shares_tab._cache
+        if cache is not None:
+            try:
+                self.settings.setValue("shares_cache", json.dumps(cache))
+            except Exception:
+                pass
         if self.remember_cb.isChecked():
             self.settings.setValue("api_key",     self.api_key_edit.text())
             self.settings.setValue("upload_path", self.upload_path_edit.text())
@@ -2862,7 +3108,7 @@ class MochaTools(QMainWindow):
             return
         if index == 3:
             if self.api_key_edit.text().strip():
-                self.files_tab._refresh()
+                self.files_tab._navigate(self.files_tab.current_path)
         elif index == 4:
             if self.api_key_edit.text().strip():
                 self.shares_tab.refresh()
@@ -2914,7 +3160,7 @@ class MochaTools(QMainWindow):
         self.update_progress.setValue(0)
         self.update_progress.show()
 
-        w = UpdateDownloadWorker(self._update_url, self)
+        w = UpdateDownloadWorker(self._update_url, self._update_tag)
         w.progress.connect(self.update_progress.setValue)
         w.status.connect(self.update_status_lbl.setText)
         w.done.connect(self._on_update_done)
@@ -2975,6 +3221,12 @@ def main():
 
     win = MochaTools()
     win.show()
+    # Pre-warm files and shares if an API key is saved
+    def _preload():
+        if win.api_key_edit.text().strip():
+            win.files_tab._navigate(win.files_tab.current_path)
+            win.shares_tab.refresh()
+    QTimer.singleShot(300, _preload)
     # Silent background update check on every launch
     QTimer.singleShot(2000, lambda: win._check_for_updates(silent=True))
     sys.exit(app.exec())

@@ -140,9 +140,11 @@ class UploadWorker(QThread):
         self._cancel = True
 
     def _headers(self, file_name=None):
+        from urllib.parse import quote
         headers = {"Authorization": f"Bearer {self.api_key}"}
         if file_name:
-            headers["x-file-name"] = file_name
+            # RFC 5987 encode so apostrophes/accents/etc don't corrupt the header
+            headers["x-file-name"] = quote(file_name, safe="")
         return headers
 
     # ── helpers ──────────────────────────────────────────────────────────────
@@ -269,22 +271,40 @@ class UploadWorker(QThread):
         self.status.emit(f"[DEBUG] Multipart init URL: {url}")
         self.status.emit(f"[DEBUG] Payload: {payload}")
         self.status.emit(f"[DEBUG] Headers: {debug_headers}")
-        try:
-            init_resp = requests.post(
-                url,
-                headers={**self._headers(), "Content-Type": "application/json"},
-                json=payload,
-                timeout=30,
-            )
-            init_resp.raise_for_status()
-        except requests.HTTPError as e:
-            self.status.emit(f"[DEBUG] HTTPError: {e}")
-            self.status.emit(f"[DEBUG] Response status: {getattr(e.response, 'status_code', None)}")
-            self.status.emit(f"[DEBUG] Response content: {getattr(e.response, 'text', None)}")
-            raise
-        except Exception as e:
-            self.status.emit(f"[DEBUG] Exception: {e}")
-            raise
+        # Retry init on transient 5xx — concurrent mass uploads can cause
+        # the server to return 500 when folder creation races or S3 is busy.
+        init_resp = None
+        last_init_error = None
+        for _init_attempt in range(1, 6):
+            if self._cancel:
+                return None
+            try:
+                init_resp = requests.post(
+                    url,
+                    headers={**self._headers(), "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=30,
+                )
+                init_resp.raise_for_status()
+                last_init_error = None
+                break
+            except requests.HTTPError as e:
+                status_code = getattr(e.response, 'status_code', None)
+                self.status.emit(f"[DEBUG] HTTPError (init attempt {_init_attempt}/5): {e}")
+                self.status.emit(f"[DEBUG] Response status: {status_code}")
+                self.status.emit(f"[DEBUG] Response content: {getattr(e.response, 'text', None)}")
+                last_init_error = e
+                if status_code not in (429, 500, 502, 503, 504):
+                    raise  # 4xx client errors are not retryable
+                wait = min(2 ** (_init_attempt - 1), 10)
+                self.status.emit(f"[DEBUG] Retrying multipart init in {wait}s…")
+                time.sleep(wait)
+            except Exception as e:
+                self.status.emit(f"[DEBUG] Exception (init attempt {_init_attempt}/5): {e}")
+                last_init_error = e
+                time.sleep(min(2 ** (_init_attempt - 1), 10))
+        if last_init_error is not None:
+            raise last_init_error
         init_data  = init_resp.json()
         self.status.emit(f"[DEBUG] Init response: {init_data}")
         # Store the init response fields in one session payload so every
@@ -491,6 +511,7 @@ class UploadWorker(QThread):
             for attempt in range(1, PART_UPLOAD_RETRIES + 1):
                 if self._cancel:
                     return None
+                body = None
                 try:
                     body = tracker.make_streaming_body(chunk)
                     resp = http.put(
@@ -515,8 +536,11 @@ class UploadWorker(QThread):
                     self.status.emit(f"[DEBUG] Exception: {e}")
                     last_error = e
 
-                # Subtract bytes this attempt fed so the retry doesn't double-count
-                tracker.unfeed(body.fed)
+                # Subtract bytes this attempt fed so the retry doesn't double-count.
+                # Guard against body never being assigned (e.g. exception before
+                # make_streaming_body was called).
+                if body is not None:
+                    tracker.unfeed(body.fed)
                 self._wait_before_part_retry("relay", part_num, attempt, last_error)
 
         raise last_error
@@ -582,6 +606,7 @@ class UploadWorker(QThread):
             for attempt in range(1, PART_UPLOAD_RETRIES + 1):
                 if self._cancel:
                     return None
+                body = None
                 try:
                     signed_url = self._presign_part_url(session, part_num, http)
                     # Step 2: PUT the chunk directly to S3 (no auth header — the URL is pre-signed)
@@ -610,8 +635,11 @@ class UploadWorker(QThread):
                     self.status.emit(f"[DEBUG] Exception (S3 PUT): {e}")
                     last_error = e
 
-                # Subtract bytes this attempt fed so the retry doesn't double-count
-                tracker.unfeed(body.fed)
+                # Subtract bytes this attempt fed so the retry doesn't double-count.
+                # Guard against body never being assigned (e.g. presign threw before
+                # make_streaming_body was called).
+                if body is not None:
+                    tracker.unfeed(body.fed)
                 self._wait_before_part_retry("S3", part_num, attempt, last_error)
 
         raise last_error
