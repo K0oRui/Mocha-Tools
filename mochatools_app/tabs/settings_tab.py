@@ -82,9 +82,8 @@ def _build_api_section(win, lay: QVBoxLayout):
     key_row.addWidget(win.show_key_cb)
     card_lay.addLayout(key_row)
 
-    # upload_path_edit is needed by _start_upload but displayed in the Upload tab
-    win.upload_path_edit = QLineEdit()
-    win.upload_path_edit.setText("/")
+    # upload_path_edit is created in _build_upload_tab and lives in the Upload tab UI.
+    # Do NOT reassign it here — that would replace the visible widget with an orphan.
 
     win.remember_cb = QCheckBox("Remember settings across sessions")
     card_lay.addWidget(win.remember_cb)
@@ -185,11 +184,21 @@ def _build_updates_section(win, lay: QVBoxLayout):
     btn_row = QHBoxLayout()
     win.check_update_btn = QPushButton("Check for updates")
     win.check_update_btn.setObjectName("browse_btn")
+    win.check_update_btn.setFixedHeight(36)
+    win.check_update_btn.setStyleSheet(
+        "min-height:0px; padding:0px 16px; font-size:13px; font-weight:600;"
+        "background:#1e1c19; color:#f0ece6; border:1px solid #3d3a35; border-radius:7px;"
+    )
     win.check_update_btn.clicked.connect(win._check_for_updates)
     btn_row.addWidget(win.check_update_btn)
 
     win.install_update_btn = QPushButton("↓  Install update")
     win.install_update_btn.setObjectName("upload_btn")
+    win.install_update_btn.setFixedHeight(36)
+    win.install_update_btn.setStyleSheet(
+        "min-height:0px; padding:0px 16px; font-size:13px; font-weight:700;"
+        "background:#c8a96e; color:#111010; border:none; border-radius:7px;"
+    )
     win.install_update_btn.clicked.connect(win._install_update)
     win.install_update_btn.hide()
     btn_row.addWidget(win.install_update_btn)

@@ -127,6 +127,10 @@ class CachePollWorker(QThread):
         self.base_url = base_url.rstrip("/")
         self.kwargs   = kwargs
 
+    # (connect_timeout, read_timeout) — fail fast on unreachable hosts without
+    # cutting off slow-but-alive transfers.
+    _TIMEOUT = (5, 60)
+
     def run(self):
         import requests as _req
         headers = {"Authorization": f"Bearer {self.api_key}"}
@@ -137,7 +141,7 @@ class CachePollWorker(QThread):
                     f"{self.base_url}/api/files",
                     headers=headers,
                     params={"path": path, "includeSubfolders": "0"},
-                    timeout=15,
+                    timeout=self._TIMEOUT,
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -146,7 +150,7 @@ class CachePollWorker(QThread):
                 resp = _req.get(
                     f"{self.base_url}/api/shares",
                     headers=headers,
-                    timeout=15,
+                    timeout=self._TIMEOUT,
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -158,7 +162,7 @@ class CachePollWorker(QThread):
                     f"{self.base_url}/api/admin/transfer-jobs",
                     headers=headers,
                     params=params,
-                    timeout=15,
+                    timeout=self._TIMEOUT,
                 )
                 resp.raise_for_status()
                 data = resp.json()

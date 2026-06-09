@@ -144,13 +144,19 @@ class SharesTab(QWidget):
             self.tree.clear()
             self._status("Loading…")
 
-        # Trigger a fresh network fetch
-        w = FilesWorker("shares", api_key, self.base_url)
-        w.done.connect(self._on_done)
-        w.error.connect(self._on_error)
-        w.finished.connect(lambda: self._workers.remove(w) if w in self._workers else None)
-        self._workers.append(w)
-        w.start()
+        # Delegate to the poller so all shares fetches go through one code path
+        # with consistent error handling (silent, status-bar only).
+        # Falls back to a direct worker only if the poller isn't wired up yet.
+        if hasattr(self, "_poller"):
+            cache.invalidate_op("shares")
+            self._poller.force_refresh("shares")
+        else:
+            w = FilesWorker("shares", api_key, self.base_url)
+            w.done.connect(self._on_done)
+            w.error.connect(lambda msg: self._status(f"✗ {msg}"))
+            w.finished.connect(lambda: self._workers.remove(w) if w in self._workers else None)
+            self._workers.append(w)
+            w.start()
 
     def _render(self, data):
         shares = data.get("shares", data) if isinstance(data, dict) else data
@@ -242,11 +248,12 @@ class SharesTab(QWidget):
             except Exception as e:
                 QMessageBox.warning(self, "Error", str(e))
                 return
-        # Invalidate shares cache and refresh
+        # Invalidate shares cache; the poller will re-fetch and notify
         cache.invalidate_op("shares")
         if hasattr(self, "_poller"):
             self._poller.force_refresh("shares")
-        self.refresh()
+        else:
+            self.refresh()
 
     def _delete_selected(self):
         items = self._selected_meta()
@@ -295,7 +302,11 @@ class SharesTab(QWidget):
         self._status(f"{count} share{'s' if count != 1 else ''}")
 
         # Background re-fetch to confirm server state
-        self.refresh()
+        cache.invalidate_op("shares")
+        if hasattr(self, "_poller"):
+            self._poller.force_refresh("shares")
+        else:
+            self.refresh()
 
     def _prune_cache(self, deleted_tokens: set):
         """Remove deleted shares from remote_cache so instant re-renders are correct."""

@@ -105,9 +105,9 @@ class ProgressTracker:
 
 # ── Upload Worker ────────────────────────────────────────────────────────────
 class UploadWorker(QThread):
-    progress        = pyqtSignal(int)          # 0-100
-    speed           = pyqtSignal(float)        # bytes/sec
-    bytes_progress  = pyqtSignal(int, int)     # (bytes_done, bytes_total)
+    progress        = pyqtSignal(int)                    # 0-100
+    speed           = pyqtSignal(float)                  # bytes/sec
+    bytes_progress  = pyqtSignal('qint64', 'qint64')     # (bytes_done, bytes_total) — 64-bit to handle files > 2 GB
     status          = pyqtSignal(str)          # log message
     finished        = pyqtSignal(dict)         # result dict
     error           = pyqtSignal(str)
@@ -149,16 +149,15 @@ class UploadWorker(QThread):
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
+    # Files at or below this size skip multipart entirely and POST directly.
+    _TIMEOUT = (5, 60)              # (connect_timeout, read_timeout)
+
     def run(self):
         total_files  = len(self.file_pairs)
         last_file_id = None
         last_share_url = None
 
         # ── Pre-create every unique destination directory ──────────────────────
-        # Folders must exist before uploading into them. We create the full tree
-        # first (sorted so parents are always created before children), then
-        # upload each file with x-file-path pointing at its destination folder.
-        # The API does honour x-file-path once the folder exists.
         dest_dirs = sorted({
             "/".join(dest.rstrip("/").split("/")[:-1]) or "/"
             for _, dest in self.file_pairs
@@ -173,10 +172,7 @@ class UploadWorker(QThread):
                 self.error.emit(f"Failed to create folder {d!r}: {e}")
                 return
 
-        # ── Compute grand total bytes (all non-empty files) ───────────────────
-        # Used to emit cumulative bytes_progress across the whole batch so the
-        # UI always shows "<done_so_far> / <grand_total>" rather than resetting
-        # to the current file's size on every new file.
+        # ── Compute grand total bytes ─────────────────────────────────────────
         file_sizes: list[int] = []
         for local_path, _ in self.file_pairs:
             try:
@@ -185,9 +181,9 @@ class UploadWorker(QThread):
                 sz = 0
             file_sizes.append(sz)
         grand_total: int = sum(file_sizes)
-        bytes_done_offset: int = 0   # bytes confirmed finished from prior files
+        bytes_done_offset: int = 0
 
-        # ── Upload each file directly into its destination folder ──────────────
+        # ── Upload each file ──────────────────────────────────────────────────
         for idx, (local_path, dest_path) in enumerate(self.file_pairs, 1):
             if self._cancel:
                 return
@@ -197,19 +193,13 @@ class UploadWorker(QThread):
             file_size = file_sizes[idx - 1]
 
             try:
-                # Skip empty files — API requires positive Content-Length
                 if file_size == 0:
                     self.status.emit(f"{prefix}{file_name}  ⊘ Skipped (empty file)")
-                    self.status.emit(f"[DEBUG] Skipped empty file: {local_path}")
                     continue
 
                 self.status.emit(f"{prefix}{file_name}  ({self._fmt_size(file_size)})")
-                self.status.emit(f"[DEBUG] Local path: {local_path}")
                 self.status.emit(f"[DEBUG] Remote dest: {dest_path}")
-                self.status.emit(f"[DEBUG] File size (bytes): {file_size}")
 
-                # Emit cumulative progress: (offset + this_file_done, grand_total)
-                # so the UI shows a monotonically increasing transferred counter.
                 _offset = bytes_done_offset
                 _grand  = grand_total
 
@@ -228,11 +218,7 @@ class UploadWorker(QThread):
                 if self._cancel or file_id is None:
                     return
 
-                # Advance the offset by the actual file size so subsequent files
-                # start counting from the right base.
                 bytes_done_offset += file_size
-
-                self.status.emit(f"[DEBUG] File ID returned to run(): {file_id}")
                 last_file_id = file_id
 
                 if self.create_share and idx == total_files:
@@ -245,6 +231,7 @@ class UploadWorker(QThread):
                 return
 
         self.finished.emit({"file_id": last_file_id, "share_url": last_share_url})
+
 
 
 
@@ -452,7 +439,7 @@ class UploadWorker(QThread):
                 last_error = e
                 self.status.emit(f"[DEBUG] Multipart complete connection issue: {e}")
 
-            wait_seconds = min(10 * attempt, 60)
+            wait_seconds = min(2 * attempt, 20)
             self.status.emit(f"[DEBUG] Waiting {wait_seconds}s before checking complete again…")
             time.sleep(wait_seconds)
 
@@ -653,7 +640,7 @@ class UploadWorker(QThread):
                 f"{self.base_url}/api/files/multipart/abort",
                 headers={**self._headers(), "Content-Type": "application/json"},
                 json=payload,
-                timeout=15,
+                timeout=self._TIMEOUT,
             )
         except Exception:
             pass
@@ -662,7 +649,11 @@ class UploadWorker(QThread):
     def _ensure_folder(self, path):
         """Create a folder and all missing parents via POST /api/files/folders.
         The API takes {"path": <parent>, "name": <folder_name>}.
-        409 Conflict (already exists) is silently ignored."""
+        409 (already exists) and connection/timeout errors are both treated as
+        non-fatal — the folder either exists already or the server will create
+        it implicitly when the file is uploaded.  Only hard 4xx client errors
+        (excluding 409) are re-raised.
+        """
         parts = path.strip("/").split("/")
         for depth in range(1, len(parts) + 1):
             name   = parts[depth - 1]
@@ -672,7 +663,7 @@ class UploadWorker(QThread):
                     f"{self.base_url}/api/files/folders",
                     headers={**self._headers(), "Content-Type": "application/json"},
                     json={"path": parent, "name": name},
-                    timeout=15,
+                    timeout=self._TIMEOUT,
                 )
                 if resp.status_code == 409:
                     self.status.emit(f"[DEBUG] Folder already exists: {parent}/{name}")
@@ -680,8 +671,17 @@ class UploadWorker(QThread):
                     resp.raise_for_status()
                     self.status.emit(f"[DEBUG] Created folder: {parent}/{name}")
             except requests.HTTPError as e:
-                self.status.emit(f"[DEBUG] Folder create error {parent}/{name}: {e}")
-                raise
+                status = getattr(e.response, "status_code", None)
+                if status and status != 409 and status < 500:
+                    # Hard client error (e.g. 403, 422) — re-raise
+                    self.status.emit(f"[DEBUG] Folder create hard error {parent}/{name}: {e}")
+                    raise
+                # 5xx or ambiguous — folder likely exists, press on
+                self.status.emit(f"[DEBUG] Folder create non-fatal error {parent}/{name}: {e}")
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout) as e:
+                # Network hiccup — folder almost certainly already exists
+                self.status.emit(f"[DEBUG] Folder create connection error (ignored) {parent}/{name}: {e}")
 
     def _move_file(self, file_id, dest_path):
         """Move an uploaded file to dest_path via POST /api/files/move."""
@@ -752,6 +752,8 @@ class FilesWorker(QThread):
     """Generic background worker for Files-tab API operations."""
     done    = pyqtSignal(object)   # result payload (varies by op)
     error   = pyqtSignal(str)
+    # (connect_timeout, read_timeout) — fail fast on unreachable hosts
+    _TIMEOUT = (5, 60)
 
     def __init__(self, op, api_key, base_url, **kwargs):
         super().__init__()
@@ -791,7 +793,7 @@ class FilesWorker(QThread):
             f"{self.base_url}/api/files",
             headers={"Authorization": f"Bearer {self.api_key}"},
             params={"path": path, "includeSubfolders": "0"},
-            timeout=15,
+            timeout=self._TIMEOUT,
         )
         resp.raise_for_status()
         self.done.emit({"op": "list", "path": path, "data": resp.json()})
@@ -803,7 +805,7 @@ class FilesWorker(QThread):
         resp = requests.delete(
             f"{self.base_url}/api/files/{encoded}",
             headers={"Authorization": f"Bearer {self.api_key}"},
-            timeout=15,
+            timeout=self._TIMEOUT,
         )
         resp.raise_for_status()
         self.done.emit({"op": "delete", "file_name": file_name})
@@ -845,7 +847,7 @@ class FilesWorker(QThread):
                 url,
                 headers=headers,
                 json=payload,
-                timeout=15,
+                timeout=self._TIMEOUT,
             )
             write_debug_log(f"[DEBUG] Response status: {resp.status_code}")
             write_debug_log(f"[DEBUG] Response body: {resp.text}")
@@ -882,7 +884,7 @@ class FilesWorker(QThread):
             f"{self.base_url}/api/files/move",
             headers=self._h(),
             json=payload,
-            timeout=15,
+            timeout=self._TIMEOUT,
         )
         resp.raise_for_status()
         self.done.emit({"op": "move", "new_path": new_path})
@@ -907,7 +909,7 @@ class FilesWorker(QThread):
             f"{self.base_url}/api/shares",
             headers=self._h(),
             json=payload,
-            timeout=15,
+            timeout=self._TIMEOUT,
         )
         resp.raise_for_status()
         data  = resp.json()
@@ -924,7 +926,7 @@ class FilesWorker(QThread):
             f"{self.base_url}/api/files/folders",
             headers=self._h(),
             json={"path": parent, "name": name},
-            timeout=15,
+            timeout=self._TIMEOUT,
         )
         resp.raise_for_status()
         self.done.emit({"op": "mkdir", "path": full_path})
@@ -939,7 +941,7 @@ class FilesWorker(QThread):
                 resp = requests.delete(
                     f"{self.base_url}/api/shares/{token}",
                     headers={"Authorization": f"Bearer {self.api_key}"},
-                    timeout=15,
+                    timeout=self._TIMEOUT,
                 )
                 resp.raise_for_status()
                 deleted += 1
@@ -955,7 +957,7 @@ class FilesWorker(QThread):
         resp = requests.get(
             f"{self.base_url}/api/shares",
             headers={"Authorization": f"Bearer {self.api_key}"},
-            timeout=15,
+            timeout=self._TIMEOUT,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -971,7 +973,7 @@ class FilesWorker(QThread):
                 try:
                     meta_resp = requests.get(
                         f"{self.base_url}/api/shares/{token}",
-                        timeout=15,
+                        timeout=self._TIMEOUT,
                     )
                     meta_resp.raise_for_status()
                     meta = meta_resp.json().get("share", {})
@@ -998,6 +1000,7 @@ class FilesWorker(QThread):
 class RemoteWorker(QThread):
     done  = pyqtSignal(object)
     error = pyqtSignal(str)
+    _TIMEOUT = (5, 60)  # (connect, read)
 
     def __init__(self, op, api_key, base_url, **kwargs):
         super().__init__()
@@ -1045,7 +1048,7 @@ class RemoteWorker(QThread):
             f"{self.base_url}/api/admin/transfer-jobs",
             headers={"Authorization": f"Bearer {self.api_key}"},
             params=params,
-            timeout=15,
+            timeout=self._TIMEOUT,
         )
         resp.raise_for_status()
         self.done.emit({"op": "jobs", "data": resp.json()})
@@ -1056,7 +1059,7 @@ class RemoteWorker(QThread):
             f"{self.base_url}/api/admin/transfer-jobs",
             headers={"Authorization": f"Bearer {self.api_key}"},
             params={"id": job_id},
-            timeout=15,
+            timeout=self._TIMEOUT,
         )
         resp.raise_for_status()
         self.done.emit({"op": "cancel", "job_id": job_id, "data": resp.json()})

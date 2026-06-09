@@ -17,7 +17,7 @@ from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QProgressBar, QPushButton, QCheckBox, QComboBox, QScrollArea,
-    QSpinBox, QVBoxLayout, QWidget, QMessageBox,
+    QSizePolicy, QSpinBox, QVBoxLayout, QWidget, QMessageBox,
 )
 
 from .constants import (
@@ -235,6 +235,8 @@ class MochaTools(QMainWindow):
         self.log_label.setObjectName("log_console")
         self.log_label.setWordWrap(True)
         self.log_label.setMinimumHeight(46)
+        self.log_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        self.log_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         status_lay.addWidget(self.log_label)
 
         self.share_result = QLabel("")
@@ -351,7 +353,10 @@ class MochaTools(QMainWindow):
         )
         dlg.setWindowTitle("Choose upload destination folder")
         if dlg.exec():
+            from .logging_utils import write_debug_log
+            write_debug_log(f"[BrowseDest] dlg.selected={dlg.selected!r}")
             self.upload_path_edit.setText(dlg.selected)
+            write_debug_log(f"[BrowseDest] upload_path_edit now={self.upload_path_edit.text()!r}")
 
     def _toggle_key_visibility(self, checked: bool):
         mode = QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
@@ -403,6 +408,8 @@ class MochaTools(QMainWindow):
                 rel = os.path.basename(local)
             dest = f"{base_remote}/{rel}" if base_remote != "/" else f"/{rel}"
             file_pairs.append((local, dest))
+        # Ensure the upload path textbox always shows with a trailing slash
+        self.upload_path_edit.setText(base_remote + "/")
 
         self._log(f"[DEBUG] Upload path: {upload_path!r} → base_remote: {base_remote!r}")
         for local, dest in file_pairs[:3]:
@@ -578,7 +585,13 @@ class MochaTools(QMainWindow):
         if index == 3:
             self.files_tab._navigate(self.files_tab.current_path)
         elif index == 4:
-            self.shares_tab.refresh()
+            # Poller is already running after start() above; serve stale cache
+            # instantly if available, fresh data arrives via subscription.
+            stale = cache.get("shares")
+            if stale is not None:
+                self.shares_tab._cache = stale
+                self.shares_tab._render(stale)
+                self.shares_tab._status("Refreshing…")
         elif index != 2 and index != 5:
             save_settings(self)
 
@@ -692,9 +705,9 @@ def main():
 
     def _preload():
         if win.api_key_edit.text().strip():
+            # poller.start() immediately polls all registered slots (list /, shares)
+            # and delivers results via cache subscriptions — no extra workers needed.
             win._poller.start()
-            win.files_tab._navigate(win.files_tab.current_path)
-            win.shares_tab.refresh()
 
     QTimer.singleShot(300,  _preload)
     QTimer.singleShot(2000, lambda: win._check_for_updates(silent=True))

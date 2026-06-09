@@ -235,10 +235,11 @@ class FilesBrowserTab(QWidget):
             self.tree.clear()
             self._status("Loading…")
 
-        # Always trigger a fresh network fetch
-        self._run_worker("list", path=path)
-        if self._shares_cache is None:
-            self._run_worker("shares")
+        # Delegate all fetching to the poller — it manages concurrency and
+        # error handling centrally. force_refresh triggers an immediate poll
+        # and the result arrives via _on_list_cache_update subscription.
+        if hasattr(self, "_poller"):
+            self._poller.force_refresh("list", path=path)
 
     def _refresh(self):
         # Force-invalidate this path so next poll fetches fresh
@@ -295,24 +296,64 @@ class FilesBrowserTab(QWidget):
             registry.notify("shares", data)
         elif op in ("delete", "delete_folder"):
             self._status("✓ Done")
-            # Invalidate + re-fetch; view already shows optimistic state
+            # Invalidate + re-fetch via poller; view already shows optimistic state
             cache.invalidate("list", path=self.current_path)
-            self._run_worker("list", path=self.current_path)
+            if hasattr(self, "_poller"):
+                self._poller.force_refresh("list", path=self.current_path)
         elif op in ("move", "mkdir"):
             self._status("✓ Done")
             cache.invalidate("list", path=self.current_path)
             self._refresh()
         elif op == "share":
-            url = result.get("url", "")
+            url   = result.get("url", "")
+            token = result.get("token", "")
             self._status("✓ Share created")
-            # Invalidate shares cache so shares tab and indicators refresh
+            if url:
+                ShareLinkDialog(url, parent=self).exec()
+            # Optimistically add the new share into the shares cache so the
+            # indicator updates instantly without blanking the file list.
+            if token:
+                new_share = {
+                    "token":    token,
+                    "is_active": True,
+                    "isActive":  True,
+                }
+                # Find the selected file's metadata so we can tag fileId/fileName
+                sel = self._selected_items()
+                if sel:
+                    meta = sel[0].data(0, Qt.ItemDataRole.UserRole) or {}
+                    fid  = meta.get("id") or meta.get("fileId") or ""
+                    name = meta.get("name") or meta.get("file_name") or ""
+                    if fid:
+                        new_share["fileId"] = fid
+                    if name:
+                        new_share["originalName"] = name
+                        new_share["fileName"]     = name
+                # Splice the new share into both the remote_cache store and the
+                # local shares map so _refresh_share_indicators works immediately.
+                existing = cache.get("shares")
+                if existing is not None:
+                    shares_list = (
+                        existing.get("shares", existing)
+                        if isinstance(existing, dict) else existing
+                    )
+                    if isinstance(shares_list, list):
+                        shares_list = [s for s in shares_list
+                                       if s.get("token") != token] + [new_share]
+                    updated = (
+                        {**existing, "shares": shares_list}
+                        if isinstance(existing, dict) else shares_list
+                    )
+                    cache.set("shares", updated)
+                    registry.notify("shares", updated)
+                # Re-index and repaint share indicators in-place — no tree wipe
+                if self._shares_cache is not None:
+                    self._index_shares(self._shares_cache)
+                    self._refresh_share_indicators()
+            # Background-refresh shares to get full server state
             cache.invalidate_op("shares")
             if hasattr(self, "_poller"):
                 self._poller.force_refresh("shares")
-            if url:
-                ShareLinkDialog(url, parent=self).exec()
-            cache.invalidate("list", path=self.current_path)
-            self._refresh()
 
     def _on_worker_error(self, msg: str):
         self._status(f"✗ {msg}")

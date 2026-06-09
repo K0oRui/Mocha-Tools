@@ -236,7 +236,8 @@ QProgressBar::chunk {{
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #a88950, stop:1 #d4b87a);
     border-radius: 5px;
 }}
-QLabel#log_console {{
+QLabel#log_console,
+QPlainTextEdit#log_console {{
     background-color: #141210;
     border: 1px solid #2e2b27;
     border-radius: 8px;
@@ -245,6 +246,9 @@ QLabel#log_console {{
     font-size: 11px;
     padding: 8px 10px;
     min-height: 46px;
+}}
+QPlainTextEdit#log_console {{
+    selection-background-color: #5a4a28;
 }}
 QLabel#status_badge {{
     background-color: #1e1c19;

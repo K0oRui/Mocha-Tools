@@ -14,7 +14,7 @@ from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView, QFrame, QHBoxLayout, QHeaderView, QInputDialog,
-    QLabel, QLineEdit, QMenu, QPlainTextEdit, QProgressBar, QPushButton,
+    QLabel, QLineEdit, QMenu, QProgressBar, QPushButton,
     QScrollArea, QSizePolicy, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
     QWidget,
 )
@@ -114,7 +114,7 @@ class MassUploadTab(QWidget):
         self._tree.itemDoubleClicked.connect(self._edit_dest)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree.customContextMenuRequested.connect(self._queue_context_menu)
-        parent_lay.addWidget(self._tree, 1)
+        parent_lay.addWidget(self._tree)
 
     def _build_queue_toolbar(self, parent_lay: QVBoxLayout):
         qtb = QHBoxLayout()
@@ -156,23 +156,32 @@ class MassUploadTab(QWidget):
     def _build_progress_card(self, parent_lay: QVBoxLayout):
         prog_card = self._card()
         prog_lay  = QVBoxLayout(prog_card)
-        prog_lay.setSpacing(6)
+        prog_lay.setSpacing(8)
 
+        # Row 1: badge only (matches Upload tab)
         top_row = QHBoxLayout()
         self._badge_lbl = QLabel("● Idle")
         self._badge_lbl.setObjectName("status_badge")
         top_row.addWidget(self._badge_lbl)
         top_row.addStretch()
-        self._speed_lbl = QLabel("")
-        self._speed_lbl.setStyleSheet("color:#9ca3af; font-size:11px; background:transparent;")
-        top_row.addWidget(self._speed_lbl)
-        self._transferred_lbl = QLabel("")
-        self._transferred_lbl.setStyleSheet(
-            "color:#9ca3af; font-size:11px; background:transparent; margin-left:10px;"
-        )
-        top_row.addWidget(self._transferred_lbl)
         prog_lay.addLayout(top_row)
 
+        # Row 2: Speed label + value + stretch + transferred (matches Upload tab)
+        speed_row = QHBoxLayout()
+        speed_lbl = QLabel("Speed:")
+        speed_lbl.setObjectName("field_label")
+        self._speed_lbl = QLabel("")
+        self._speed_lbl.setObjectName("status_label")
+        self._speed_lbl.setStyleSheet("color:#9ca3af; font-size:11px; background:transparent;")
+        speed_row.addWidget(speed_lbl)
+        speed_row.addWidget(self._speed_lbl)
+        speed_row.addStretch()
+        self._transferred_lbl = QLabel("")
+        self._transferred_lbl.setStyleSheet("color:#9ca3af; font-size:11px; background:transparent;")
+        speed_row.addWidget(self._transferred_lbl)
+        prog_lay.addLayout(speed_row)
+
+        # Row 3: progress bar + % label
         pbar_row = QHBoxLayout()
         self._prog_bar = QProgressBar()
         self._prog_bar.setValue(0)
@@ -183,13 +192,11 @@ class MassUploadTab(QWidget):
         pbar_row.addWidget(self._pct_lbl)
         prog_lay.addLayout(pbar_row)
 
-        self._log_lbl = QPlainTextEdit("Add files or folders above, then click Start.")
+        # Row 4: log console — QLabel matching Upload tab style
+        self._log_lbl = QLabel("Add files or folders above, then click Start.")
         self._log_lbl.setObjectName("log_console")
-        self._log_lbl.setReadOnly(True)
-        self._log_lbl.setFixedHeight(62)
-        self._log_lbl.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
-        self._log_lbl.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._log_lbl.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._log_lbl.setWordWrap(True)
+        self._log_lbl.setMinimumHeight(46)
         prog_lay.addWidget(self._log_lbl)
         parent_lay.addWidget(prog_card)
 
@@ -210,6 +217,7 @@ class MassUploadTab(QWidget):
         self._cancel_btn.clicked.connect(self._cancel)
         self._cancel_btn.hide()
         parent_lay.addWidget(self._cancel_btn)
+        parent_lay.addStretch()
 
     # ── Widget helpers ────────────────────────────────────────────────────────
 
@@ -248,7 +256,7 @@ class MassUploadTab(QWidget):
             write_debug_log(msg)
             if not self.get_debug():
                 return
-        self._log_lbl.setPlainText(msg)
+        self._log_lbl.setText(msg)
 
     # ── Queue label + overall progress ────────────────────────────────────────
 
@@ -346,7 +354,10 @@ class MassUploadTab(QWidget):
         )
         dlg.setWindowTitle("Choose default destination")
         if dlg.exec():
+            from ..logging_utils import write_debug_log
+            write_debug_log(f"[MassUpload BrowseDest] dlg.selected={dlg.selected!r}")
             self._default_dest.setText(dlg.selected)
+            write_debug_log(f"[MassUpload BrowseDest] _default_dest now={self._default_dest.text()!r}")
 
     def _edit_dest(self, item: QTreeWidgetItem, _col):
         row = next((e for e in self._queue if e["item"] is item), None)
@@ -453,14 +464,14 @@ class MassUploadTab(QWidget):
     def _remove_selected(self):
         for item in list(self._tree.selectedItems()):
             row = next((e for e in self._queue if e["item"] is item), None)
-            if row and row.get("worker") is not None and row["status"] == "uploading":
-                continue
             if row:
                 w = row.get("worker")
                 if w is not None:
                     w.cancel()
                     if w in self._active_workers:
                         self._active_workers.remove(w)
+                    if row["status"] == "uploading":
+                        row["status"] = "cancelled"
                 self._detach_entry(row)
                 self._queue.remove(row)
             idx = self._tree.indexOfTopLevelItem(item)
@@ -471,10 +482,12 @@ class MassUploadTab(QWidget):
     def _clear_done(self):
         for entry in list(self._queue):
             if entry["status"] in ("done", "error", "cancelled"):
+                item = entry["item"]          # save ref BEFORE detach nulls it
                 self._detach_entry(entry)
-                idx = self._tree.indexOfTopLevelItem(entry["item"])
-                if idx >= 0:
-                    self._tree.takeTopLevelItem(idx)
+                if item is not None:
+                    idx = self._tree.indexOfTopLevelItem(item)
+                    if idx >= 0:
+                        self._tree.takeTopLevelItem(idx)
                 self._queue.remove(entry)
         self._update_queue_label()
 
@@ -538,7 +551,10 @@ class MassUploadTab(QWidget):
         entry["_bytes_done"]  = 0
         if not entry.get("_bytes_total"):
             entry["_bytes_total"] = entry.get("size", 0)
-        entry["item"].setText(self._COL_STATUS, "Uploading…")
+        # Pre-populate transfer string so the status column shows "0 B / <size>"
+        # from the very first paint, before the first bytes_progress signal fires.
+        entry["_xfr"] = f"0 B / {self._fmt(entry['_bytes_total'])}"
+        entry["item"].setText(self._COL_STATUS, f"Uploading…  ·  {entry['_xfr']}")
         entry["item"].setForeground(3, QColor("#c8a96e"))
 
         w = UploadWorker(
@@ -572,6 +588,9 @@ class MassUploadTab(QWidget):
             return
         if entry["status"] in ("done", "error", "cancelled"):
             return
+        # qint64 values arrive as Python ints but cast explicitly for safety
+        done_bytes  = int(done_bytes)
+        total_bytes = int(total_bytes)
         if total_bytes > 0:
             entry["_bytes_total"] = total_bytes
         done_bytes = min(done_bytes, entry["_bytes_total"])

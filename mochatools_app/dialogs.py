@@ -1,6 +1,6 @@
 import requests
 
-from PyQt6.QtCore import Qt, QTimer, QPoint
+from PyQt6.QtCore import Qt, QThread, QTimer, QPoint, pyqtSignal
 from PyQt6.QtGui import QColor, QMouseEvent
 from PyQt6.QtWidgets import (
     QApplication,
@@ -49,7 +49,6 @@ class MochaDialog(QDialog):
         tb_lay.setContentsMargins(12, 0, 8, 0)
         tb_lay.setSpacing(6)
 
-        # App icon dot
         dot = QLabel("◆")
         dot.setStyleSheet("color:#c8a96e; font-size:10px; background:transparent;")
         tb_lay.addWidget(dot)
@@ -71,13 +70,11 @@ class MochaDialog(QDialog):
 
         root.addWidget(tb)
 
-        # Divider
         div = QFrame()
         div.setObjectName("divider")
         div.setFixedHeight(1)
         root.addWidget(div)
 
-        # ── Content area ──────────────────────────────────────────────────────
         content_widget = QFrame()
         content_widget.setStyleSheet("background:#181614;")
         self.content_layout = QVBoxLayout(content_widget)
@@ -85,7 +82,6 @@ class MochaDialog(QDialog):
         self.content_layout.setSpacing(10)
         root.addWidget(content_widget)
 
-        # Size grip for resizing
         grip_row = QHBoxLayout()
         grip_row.addStretch()
         grip = QSizeGrip(self)
@@ -93,7 +89,6 @@ class MochaDialog(QDialog):
         grip_row.addWidget(grip)
         self.content_layout.addLayout(grip_row)
 
-        # Drag support via titlebar
         tb.mousePressEvent   = self._tb_press
         tb.mouseMoveEvent    = self._tb_move
         tb.mouseReleaseEvent = self._tb_release
@@ -132,9 +127,71 @@ def _grey_btn(text: str, width=160) -> QPushButton:
     return btn
 
 
+# ── Background worker for folder listings ─────────────────────────────────────
+class _FolderFetchWorker(QThread):
+    """
+    Fetches one folder listing off the main thread.
+
+    Uses a class-level persistent requests.Session so the underlying
+    TCP+TLS connection is reused across navigations and dialog openings.
+    Without this, every folder navigation pays the full TLS handshake cost
+    (200-400 ms extra on a typical connection) on top of the API round-trip.
+
+    A cancel token (single-element list) lets the caller suppress the result
+    if the user has already navigated elsewhere before the response arrives.
+    """
+    done = pyqtSignal(str, object)   # (path, data_dict | Exception)
+
+    # Persistent session shared across all workers — keeps the TCP+TLS
+    # connection alive so subsequent fetches skip the handshake entirely.
+    _session: "requests.Session | None" = None
+
+    @classmethod
+    def _get_session(cls) -> "requests.Session":
+        if cls._session is None:
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=1,
+                pool_maxsize=4,
+                max_retries=0,
+            )
+            cls._session = requests.Session()
+            cls._session.mount("https://", adapter)
+            cls._session.mount("http://",  adapter)
+        return cls._session
+
+    def __init__(self, api_key: str, base_url: str, path: str, cancel_token: list):
+        super().__init__()
+        self.api_key      = api_key
+        self.base_url     = base_url.rstrip("/")
+        self.path         = path
+        self._cancel      = cancel_token
+
+    def run(self):
+        try:
+            session = self._get_session()
+            resp = session.get(
+                f"{self.base_url}/api/files",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                params={"path": self.path, "includeSubfolders": "0"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            if not self._cancel[0]:
+                self.done.emit(self.path, data)
+        except Exception as e:
+            if not self._cancel[0]:
+                self.done.emit(self.path, e)
+
+
 # ── Remote Folder Browser ─────────────────────────────────────────────────────
 class FolderBrowserDialog(MochaDialog):
     """Fetches folders from the Mocha API and lets the user navigate, type, & pick one."""
+
+    # Class-level cache shared across all dialog instances in this session.
+    # Maps path -> folder list data so re-visiting a folder is instant.
+    _path_cache: dict = {}
 
     def __init__(self, api_key, base_url, current_path="/", parent=None):
         super().__init__("Browse remote folders", parent, min_size=(460, 440))
@@ -142,12 +199,14 @@ class FolderBrowserDialog(MochaDialog):
         self.base_url = base_url.rstrip("/")
         self.current  = current_path or "/"
         self.selected = self.current
+        self._worker: _FolderFetchWorker | None = None
+        self._cancel_token: list = [False]
+        self._dead_workers: list[_FolderFetchWorker] = []
 
         lay = self.content_layout
-        # Remove the size-grip placeholder row (last item) so we insert before it
         grip_item = lay.takeAt(lay.count() - 1)
 
-        # ── Path bar (typeable) ───────────────────────────────────────────────
+        # ── Path bar ──────────────────────────────────────────────────────────
         path_row = QHBoxLayout()
         path_row.setSpacing(6)
 
@@ -198,13 +257,12 @@ class FolderBrowserDialog(MochaDialog):
         cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(cancel_btn)
 
-        ok_btn = _gold_btn("Select this folder")
-        ok_btn.clicked.connect(self._on_accept)
-        btn_row.addWidget(ok_btn)
+        self._ok_btn = _gold_btn("Select this folder")
+        self._ok_btn.clicked.connect(self._on_accept)
+        btn_row.addWidget(self._ok_btn)
 
         lay.addLayout(btn_row)
 
-        # Re-add grip row
         if grip_item:
             lay.addItem(grip_item)
 
@@ -212,40 +270,78 @@ class FolderBrowserDialog(MochaDialog):
 
     # ── Path typed manually ───────────────────────────────────────────────────
     def _on_path_typed(self):
-        raw = self.path_edit.text().strip()
-        if not raw:
-            raw = "/"
-        # Normalise: always starts with /
+        raw = self.path_edit.text().strip() or "/"
         if not raw.startswith("/"):
             raw = "/" + raw
         self._navigate(raw)
 
-    # ── Navigate to a remote path ─────────────────────────────────────────────
-    def _navigate(self, path):
+    # ── Navigate ──────────────────────────────────────────────────────────────
+    def _navigate(self, path: str):
+        # Cancel any in-flight worker
+        self._cancel_token[0] = True
+        self._cancel_token = [False]
+
+        if self._worker is not None:
+            try:
+                self._worker.done.disconnect(self._on_fetch_done)
+            except RuntimeError:
+                pass
+            self._dead_workers = [w for w in self._dead_workers if not w.isFinished()]
+            self._dead_workers.append(self._worker)
+            self._worker = None
+
         self.current  = path
         self.selected = path
         self.path_edit.setText(path)
-        self.status_lbl.setText("Loading…")
-        self.list.clear()
-
-        try:
-            resp = requests.get(
-                f"{self.base_url}/api/files",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                params={"path": path, "includeSubfolders": "0"},
-                timeout=10,
+        self._ok_btn.setEnabled(True)
+        # Serve cached data instantly if available — identical render path as
+        # the original synchronous version
+        if path in FolderBrowserDialog._path_cache:
+            self._render(path, FolderBrowserDialog._path_cache[path])
+            self.status_lbl.setText(
+                self.status_lbl.text().rstrip("…") + "  (refreshing…)"
+                if self.status_lbl.text() else "Refreshing…"
             )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            self.status_lbl.setText(f"Error: {e}")
-            if hasattr(e, "response") and e.response is not None:
-                self.status_lbl.setText(
-                    f"Error {e.response.status_code}: {e.response.text[:200]}"
-                )
+        else:
+            self.list.clear()
+            self.status_lbl.setText("Loading…")
+
+        # Always fetch fresh in the background
+        w = _FolderFetchWorker(self.api_key, self.base_url, path, self._cancel_token)
+        w.done.connect(self._on_fetch_done)
+        self._worker = w
+        w.start()
+
+    # ── Fetch result ──────────────────────────────────────────────────────────
+    def _on_fetch_done(self, path: str, result):
+        if path != self.current:
             return
 
-        # ".." entry
+        self._worker = None
+        self._ok_btn.setEnabled(True)
+
+        if isinstance(result, Exception):
+            e = result
+            if hasattr(e, "response") and e.response is not None:
+                msg = f"Error {e.response.status_code}: {e.response.text[:200]}"
+            else:
+                first_line = str(e).splitlines()[0].strip()
+                if "):" in first_line:
+                    first_line = first_line.split("):", 1)[-1].strip()
+                msg = f"Connection error: {first_line[:120]}"
+            self.status_lbl.setText(msg)
+            return
+
+        # Cache the result for instant re-render next time
+        FolderBrowserDialog._path_cache[path] = result
+        self._render(path, result)
+
+    # ── Render folder list — exact same logic as the original ─────────────────
+    def _render(self, path: str, data):
+        self.list.blockSignals(True)
+        self.list.clear()
+
+        # "▲ .." entry
         if path and path != "/":
             parent = "/" + "/".join(path.strip("/").split("/")[:-1])
             parent = parent if parent != "/" else "/"
@@ -284,9 +380,15 @@ class FolderBrowserDialog(MochaDialog):
             item.setData(Qt.ItemDataRole.UserRole, ("dir", fullpath))
             self.list.addItem(item)
 
+        self.list.blockSignals(False)
+
+        # Restore path bar to the navigated folder, not the first child
+        self.path_edit.setText(path)
+        self.selected = path
         count = len(folders)
         self.status_lbl.setText(f"{count} folder{'s' if count != 1 else ''}")
 
+    # ── Selection / interaction ────────────────────────────────────────────────
     def _on_selection_changed(self, current, _previous):
         if current:
             _kind, path = current.data(Qt.ItemDataRole.UserRole)
@@ -299,13 +401,21 @@ class FolderBrowserDialog(MochaDialog):
             self._navigate(path)
 
     def _on_accept(self):
-        sel = self.list.currentItem()
-        if sel:
-            _kind, path = sel.data(Qt.ItemDataRole.UserRole)
-            self.selected = path
-        else:
-            self.selected = self.path_edit.text().strip() or self.current
+        # Always use self.current — the folder the user navigated into.
+        # self.selected gets clobbered by _on_selection_changed when Qt
+        # auto-highlights the first list item after blockSignals(False),
+        # so it cannot be trusted here.
+        self.selected = self.current
         self.accept()
+
+    def closeEvent(self, event):
+        self._cancel_token[0] = True
+        if self._worker is not None:
+            try:
+                self._worker.done.disconnect(self._on_fetch_done)
+            except RuntimeError:
+                pass
+        super().closeEvent(event)
 
 
 # ── Share Link Dialog ─────────────────────────────────────────────────────────
@@ -319,12 +429,10 @@ class ShareLinkDialog(MochaDialog):
         lay = self.content_layout
         grip_item = lay.takeAt(lay.count() - 1)
 
-        # Header
         header = QLabel("✓  Share link ready")
         header.setStyleSheet("color:#4ade80; font-size:14px; font-weight:700; background:transparent;")
         lay.addWidget(header)
 
-        # URL box
         self.url_edit = QLineEdit(url)
         self.url_edit.setReadOnly(True)
         self.url_edit.setStyleSheet(
@@ -334,7 +442,6 @@ class ShareLinkDialog(MochaDialog):
         )
         lay.addWidget(self.url_edit)
 
-        # Buttons
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
 
@@ -408,7 +515,6 @@ class LocalPathDialog(MochaDialog):
         if not path:
             self.status_lbl.setText("Path cannot be empty.")
             return
-        # If it's a local path and doesn't exist, offer to create it
         if not path.startswith("/") or os.name == "nt":
             abs_path = os.path.abspath(path)
         else:

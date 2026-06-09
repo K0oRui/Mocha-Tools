@@ -130,6 +130,16 @@ class UpdateCheckWorker(QThread):
             )
             resp.raise_for_status()
             data = resp.json()
+        except requests.exceptions.Timeout:
+            self.error.emit("Connection to GitHub timed out. Check your network and try again.")
+            return
+        except requests.exceptions.ConnectionError:
+            self.error.emit("Could not reach GitHub. Check your internet connection.")
+            return
+        except requests.exceptions.HTTPError as e:
+            code = e.response.status_code if e.response is not None else "?"
+            self.error.emit(f"GitHub returned an error (HTTP {code}). Try again later.")
+            return
         except Exception as e:
             self.error.emit(f"Update check failed: {e}")
             return
@@ -234,6 +244,16 @@ class UpdateDownloadWorker(QThread):
         try:
             resp = requests.get(self.download_url, stream=True, timeout=120)
             resp.raise_for_status()
+        except requests.exceptions.Timeout:
+            self.error.emit("Download timed out. Check your connection and try again.")
+            return
+        except requests.exceptions.ConnectionError:
+            self.error.emit("Could not reach the download server. Check your internet connection.")
+            return
+        except requests.exceptions.HTTPError as e:
+            code = e.response.status_code if e.response is not None else "?"
+            self.error.emit(f"Download failed: server returned HTTP {code}.")
+            return
         except Exception as e:
             self.error.emit(f"Download failed: {e}")
             return
