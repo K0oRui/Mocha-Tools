@@ -8,9 +8,6 @@ name: Build Multi-Platform
   workflow_dispatch:
 
 jobs:
-  # ──────────────────────────────────────────────
-  # Windows & Linux build (single job, matrix)
-  # ──────────────────────────────────────────────
   build:
     name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -122,16 +119,23 @@ jobs:
 
           powershell.exe -Command "& 'C:\Program Files (x86)\NSIS\makensis.exe' installer.nsi"
 
-      - name: Upload artifact
+      # ── Artifact names now match the release zip names ──
+      - name: Upload artifact (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.os }}-build
+          name: debian_ubuntu-${{ env.VERSION }}
           path: |
-            dist/
             *.deb
-            *.exe
-            MochaTools-Setup-*.exe
             MochaTools-*-linux.tar.gz
+
+      - name: Upload artifact (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ env.VERSION }}
+          path: |
+            MochaTools-Setup-*.exe
 
   # ──────────────────────────────────────────────
   # macOS arm64 (Apple Silicon — native)
@@ -205,7 +209,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: macos-arm64-build
+          name: macos-arm64-${{ env.VERSION }}
           path: MochaTools-*-macOS-arm64.dmg
 
   # ──────────────────────────────────────────────
@@ -280,5 +284,38 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: macos-x86-build
+          name: macos-x86_64-${{ env.VERSION }}
           path: MochaTools-*-macOS-x86_64.dmg
+
+  # ──────────────────────────────────────────────
+  # Draft release — collects all platform builds
+  # ──────────────────────────────────────────────
+  release:
+    name: Create Draft Release
+    needs: [build, build-macos-arm64, build-macos-x86]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Read version
+        run: echo "VERSION=$(cat VERSION | tr -d '\r\n')" >> $GITHUB_ENV
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: List release assets
+        run: find release-assets -type f | sort
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: MochaTools v${{ env.VERSION }}
+          draft: true
+          files: release-assets/**
