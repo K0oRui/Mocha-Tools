@@ -119,7 +119,6 @@ jobs:
 
           powershell.exe -Command "& 'C:\Program Files (x86)\NSIS\makensis.exe' installer.nsi"
 
-      # ── Artifact names now match the release zip names ──
       - name: Upload artifact (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
@@ -135,7 +134,9 @@ jobs:
         with:
           name: windows-${{ env.VERSION }}
           path: |
+            dist/
             MochaTools-Setup-*.exe
+            Mocha-Tools-windows.exe
 
   # ──────────────────────────────────────────────
   # macOS arm64 (Apple Silicon — native)
@@ -303,11 +304,38 @@ jobs:
       - name: Read version
         run: echo "VERSION=$(cat VERSION | tr -d '\r\n')" >> $GITHUB_ENV
 
-      - name: Download all artifacts
+      - name: Download debian_ubuntu artifact
         uses: actions/download-artifact@v4
         with:
-          path: release-assets
-          merge-multiple: true
+          name: debian_ubuntu-${{ env.VERSION }}
+          path: zipping/debian_ubuntu-${{ env.VERSION }}
+
+      - name: Download windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-${{ env.VERSION }}
+          path: zipping/windows-${{ env.VERSION }}
+
+      - name: Download macos-arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-arm64-${{ env.VERSION }}
+          path: zipping/macos-arm64-${{ env.VERSION }}
+
+      - name: Download macos-x86_64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-x86_64-${{ env.VERSION }}
+          path: zipping/macos-x86_64-${{ env.VERSION }}
+
+      - name: Repack artifacts as zips
+        run: |
+          mkdir release-assets
+          cd zipping
+          for dir in */; do
+            name="${dir%/}"
+            zip -r "../release-assets/${name}.zip" "$dir"
+          done
 
       - name: List release assets
         run: find release-assets -type f | sort
@@ -316,6 +344,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.VERSION }}
-          name: ${{ env.VERSION }}
+          name: ${{ env.VERSION }} -
           draft: true
-          files: release-assets/**
+          files: release-assets/*.zip
