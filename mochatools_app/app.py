@@ -664,6 +664,89 @@ class MochaTools(QMainWindow):
         self.update_status_lbl.setText(f"Download failed: {msg}")
         QMessageBox.warning(self, "Update failed", msg)
 
+    # ── Test-update helper (--test-update flag only) ──────────────────────────
+
+    def _trigger_test_update(self):
+        """
+        Fetch the latest GitHub release and immediately download+install it,
+        skipping the version comparison.  Invoked only via --test-update.
+        Navigates to Settings so progress is visible.
+        """
+        import requests as _req
+        from .constants import UPDATE_CHECK_URL
+        from .updater import _asset_name
+
+        self.tabs.setCurrentIndex(5)          # jump to Settings tab
+        self.update_status_lbl.setText("Test mode: fetching latest release info…")
+        self.update_progress.setValue(0)
+        self.update_progress.show()
+        self.check_update_btn.setEnabled(False)
+        self.install_update_btn.hide()
+
+        def _fetch():
+            try:
+                resp = _req.get(
+                    UPDATE_CHECK_URL,
+                    headers={"Accept": "application/vnd.github+json"},
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            except Exception as exc:
+                self.update_status_lbl.setText(f"Test-update fetch failed: {exc}")
+                self.check_update_btn.setEnabled(True)
+                return
+
+            tag    = data.get("tag_name", "")
+            assets = data.get("assets",   [])
+
+            if not tag:
+                self.update_status_lbl.setText("Test-update: release has no tag_name.")
+                self.check_update_btn.setEnabled(True)
+                return
+
+            try:
+                want = _asset_name(tag)
+            except ValueError as exc:
+                self.update_status_lbl.setText(f"Test-update asset name error: {exc}")
+                self.check_update_btn.setEnabled(True)
+                return
+
+            url = next(
+                (a["browser_download_url"] for a in assets if a["name"] == want),
+                "",
+            )
+            if not url:
+                self.update_status_lbl.setText(
+                    f"Test-update: no asset '{want}' found in release {tag}.\n"
+                    "Check that the build for this platform uploaded successfully."
+                )
+                self.check_update_btn.setEnabled(True)
+                return
+
+            self.update_status_lbl.setText(
+                f"Test mode: installing {tag} ({want}) - version check skipped"
+            )
+            self._update_tag = tag
+            self._update_url = url
+
+            w = UpdateDownloadWorker(url, tag)
+            w.progress.connect(self.update_progress.setValue)
+            w.status.connect(self.update_status_lbl.setText)
+            w.done.connect(self._on_update_done)
+            w.error.connect(self._on_update_dl_error)
+            w.start()
+            self._update_dl_worker = w
+
+        # Run the blocking requests call on a plain QThread so the UI stays alive
+        from PyQt6.QtCore import QThread
+        class _FetchThread(QThread):
+            def run(self_):
+                _fetch()
+
+        self._test_fetch_thread = _FetchThread(self)
+        self._test_fetch_thread.start()
+
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def closeEvent(self, event):
@@ -700,6 +783,8 @@ def main():
     palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#111010"))
     app.setPalette(palette)
 
+    test_update = "--test-update" in sys.argv
+
     win = MochaTools()
     win.show()
 
@@ -709,8 +794,15 @@ def main():
             # and delivers results via cache subscriptions — no extra workers needed.
             win._poller.start()
 
-    QTimer.singleShot(300,  _preload)
-    QTimer.singleShot(2000, lambda: win._check_for_updates(silent=True))
+    QTimer.singleShot(300, _preload)
+
+    if test_update:
+        # Skip the normal silent update check; immediately download+install
+        # the latest release regardless of version — for testing the updater.
+        QTimer.singleShot(500, win._trigger_test_update)
+    else:
+        QTimer.singleShot(2000, lambda: win._check_for_updates(silent=True))
+
     sys.exit(app.exec())
 
 

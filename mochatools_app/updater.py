@@ -52,6 +52,27 @@ def _current_exe() -> str:
     return ""
 
 
+def _current_exe_override() -> str:
+    """
+    Returns a fake frozen install path for --test-update when running from source.
+    Creates a dummy onefile layout under the system temp dir so the batch script
+    has a real file to back up and replace.
+
+    Layout created:
+      <tmp>/mochatools_test_install/
+          Mocha Tools.exe     ← placeholder — will be overwritten by the update
+    """
+    dummy_dir = os.path.join(tempfile.gettempdir(), "mochatools_test_install")
+    dummy_exe = os.path.join(dummy_dir, "Mocha Tools.exe")
+    os.makedirs(dummy_dir, exist_ok=True)
+    # Only create if it doesn't exist — don't overwrite if a previous test run
+    # already placed a real binary here (e.g. from a successful update test).
+    if not os.path.exists(dummy_exe):
+        with open(dummy_exe, "w") as fh:
+            fh.write("placeholder - old version")
+    return dummy_exe
+
+
 def _asset_prefix() -> str:
     """
     Return the platform-specific filename prefix used in GitHub release assets.
@@ -197,23 +218,27 @@ class UpdateDownloadWorker(QThread):
             self.error.emit(str(e))
 
     def _download_and_install(self):
-        system = platform.system()
-        target = _current_exe()
+        system     = platform.system()
+        _test_mode = "--test-update" in sys.argv and not getattr(sys, "frozen", False)
+        target     = _current_exe_override() if _test_mode else _current_exe()
         if not target:
             self.error.emit(
                 "Cannot auto-update when running from source. "
                 "Pull the latest code manually."
             )
             return
+        if _test_mode:
+            self.status.emit(f"[TEST] Fake install dir: {os.path.dirname(target)}")
 
-        # On Windows, ensure we have write permission (UAC elevation if needed)
+        # On Windows, ensure we have write permission (UAC elevation if needed).
+        # Probe the install directory rather than the target exe itself — the
+        # exe may be locked by the OS even though the directory is writable.
         if system == "Windows":
             try:
-                # Try a quick write-permission probe on the target's directory
-                test_file = target + ".write_test"
-                with open(test_file, "w") as fh:
+                probe = os.path.join(os.path.dirname(target), ".mocha_write_test")
+                with open(probe, "w") as fh:
                     fh.write("ok")
-                os.remove(test_file)
+                os.remove(probe)
             except PermissionError:
                 # We don't have write access — request elevation and bail
                 elevated = _ensure_admin_windows()
@@ -294,8 +319,15 @@ class UpdateDownloadWorker(QThread):
 
     def _install_windows(self, zip_path: str, target: str, tmp_dir: str):
         """
-        Unzip the release archive, then use a batch script to swap the binary
-        after this process exits (the running .exe is locked on Windows).
+        Onefile layout: the zip contains dist/Mocha Tools.exe (and some
+        installer stubs at the root).  We just need to wait for our process
+        to exit, copy the new exe over the old one, and relaunch.
+
+        zip layout:
+          dist/
+            Mocha Tools.exe   ← the new build
+          MochaTools-Setup-x.x.x.exe
+          Mocha-Tools-windows.exe
         """
         extract_dir = os.path.join(tmp_dir, "extracted")
         os.makedirs(extract_dir, exist_ok=True)
@@ -306,33 +338,76 @@ class UpdateDownloadWorker(QThread):
         except zipfile.BadZipFile as e:
             raise RuntimeError(f"Downloaded file is not a valid zip archive: {e}") from e
 
-        new_exe = next(
-            (os.path.join(extract_dir, f)
-             for f in os.listdir(extract_dir) if f.lower().endswith(".exe")),
-            None,
-        )
+        # Find the new exe — it lives in dist/ and is NOT a setup/installer stub.
+        new_exe = None
+        for root, _dirs, files in os.walk(extract_dir):
+            for f in files:
+                if f.lower().endswith(".exe") and not any(
+                    k in f.lower() for k in ("setup", "installer", "uninstall")
+                ):
+                    new_exe = os.path.join(root, f)
+                    break
+            if new_exe:
+                break
         if not new_exe:
-            raise RuntimeError("No .exe found inside the downloaded zip.")
+            raise RuntimeError(
+                "No application .exe found inside the downloaded zip.\n"
+                f"Searched under: {extract_dir}"
+            )
 
-        bat = os.path.join(tmp_dir, "update.bat")
-        pid = os.getpid()
-        script = (
-            "@echo off\n"
-            ":wait\n"
-            f'tasklist /FI "PID eq {pid}" 2>NUL | find /I "{pid}" >NUL\n'
-            "if not errorlevel 1 (\n"
-            "    timeout /t 1 /nobreak >NUL\n"
-            "    goto wait\n"
-            ")\n"
-            f'copy /Y "{new_exe}" "{target}"\n'
-            f'start "" "{target}"\n'
-        )
-        with open(bat, "w") as fh:
+        backup = target + ".bak"
+        bat    = os.path.join(tmp_dir, "update.bat")
+        pid    = os.getpid()
+
+        _test_mode = "--test-update" in sys.argv and not getattr(sys, "frozen", False)
+
+        lines = [
+            "@echo off",
+            "setlocal",
+            "",
+            "rem -- wait for the app to exit --",
+            ":wait",
+            f'tasklist /FI "PID eq {pid}" 2>NUL | find /I "{pid}" >NUL',
+            "if not errorlevel 1 (",
+            "    timeout /t 1 /nobreak >NUL",
+            "    goto wait",
+            ")",
+            "",
+            "rem -- back up old exe then copy new one over --",
+            f'if exist "{backup}" del /F /Q "{backup}"',
+            f'copy /Y "{target}" "{backup}"',
+            f'copy /Y "{new_exe}" "{target}"',
+            "if errorlevel 1 (",
+            f'    echo [update] ERROR: copy failed - restoring backup',
+            f'    copy /Y "{backup}" "{target}"',
+            "    goto fail",
+            ")",
+            f'echo [update] install succeeded',
+            "",
+            "rem -- relaunch (skipped in test mode) --",
+            *([] if _test_mode else [f'start "" "{target}"']),
+            "",
+            "rem -- cleanup --",
+            "timeout /t 3 /nobreak >NUL",
+            f'if exist "{backup}"  del /F /Q "{backup}"',
+            f'if exist "{tmp_dir}" rmdir /S /Q "{tmp_dir}"',
+            "goto end",
+            "",
+            ":fail",
+            "rem copy failed, old exe restored",
+            *([f'pause'] if _test_mode else []),
+            "",
+            ":end",
+            "endlocal",
+        ]
+
+        script = "\r\n".join(lines) + "\r\n"
+        with open(bat, "w", newline="", encoding="utf-8") as fh:
             fh.write(script)
 
         subprocess.Popen(
             ["cmd.exe", "/C", bat],
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=0 if _test_mode else subprocess.CREATE_NO_WINDOW,
             close_fds=True,
         )
 
