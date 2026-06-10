@@ -105,12 +105,13 @@ class FilesBrowserTab(QWidget):
 
         self.refresh_btn = self._tb("Refresh",    "refresh-cw", self._refresh)
         self.mkdir_btn   = self._tb("New Folder", "folder",     self._create_folder)
+        self.rename_btn  = self._tb("Rename",     "pencil",     self._rename_selected)
         self.move_btn    = self._tb("Move",       "move",       self._move_selected)
         self.share_btn   = self._tb("Share",      "share-2",    self._share_selected)
         self.delete_btn  = self._tb("Delete",     "trash-2",    self._delete_selected, danger=True)
 
-        for btn in (self.refresh_btn, self.mkdir_btn, self.move_btn,
-                    self.share_btn, self.delete_btn):
+        for btn in (self.refresh_btn, self.mkdir_btn, self.rename_btn,
+                    self.move_btn, self.share_btn, self.delete_btn):
             tb.addWidget(btn)
         tb.addStretch()
 
@@ -300,7 +301,7 @@ class FilesBrowserTab(QWidget):
             cache.invalidate("list", path=self.current_path)
             if hasattr(self, "_poller"):
                 self._poller.force_refresh("list", path=self.current_path)
-        elif op in ("move", "mkdir"):
+        elif op in ("move", "mkdir", "rename"):
             self._status("✓ Done")
             cache.invalidate("list", path=self.current_path)
             self._refresh()
@@ -507,12 +508,15 @@ class FilesBrowserTab(QWidget):
         items       = self._selected_items()
         has         = len(items) > 0
         single      = len(items) == 1
-        single_file = single and items[0].data(0, Qt.ItemDataRole.UserRole).get("_type") == "file"
+        single_file   = single and items[0].data(0, Qt.ItemDataRole.UserRole).get("_type") == "file"
+        single_folder = single and items[0].data(0, Qt.ItemDataRole.UserRole).get("_type") == "folder"
+        self.rename_btn.setEnabled(single_folder)
         self.move_btn.setEnabled(single)
         self.share_btn.setEnabled(single_file)
         self.delete_btn.setEnabled(has)
 
     def _set_action_btns_enabled(self, enabled: bool):
+        self.rename_btn.setEnabled(enabled)
         self.move_btn.setEnabled(enabled)
         self.share_btn.setEnabled(enabled)
         self.delete_btn.setEnabled(enabled)
@@ -535,6 +539,37 @@ class FilesBrowserTab(QWidget):
         path = f"{self.current_path.rstrip('/')}/{name.strip()}"
         self._status(f"Creating {path}…")
         self._run_worker("mkdir", path=path)
+
+    def _rename_selected(self):
+        items = self._selected_items()
+        if len(items) != 1:
+            return
+        meta = items[0].data(0, Qt.ItemDataRole.UserRole) or {}
+        if meta.get("_type") != "folder":
+            return
+
+        folder_path = meta.get("path", "").rstrip("/")
+        old_name    = folder_path.split("/")[-1]
+        parent_path = "/".join(folder_path.split("/")[:-1]) or "/"
+
+        if not old_name:
+            QMessageBox.warning(self, "Rename", "Cannot determine the current folder name.")
+            return
+
+        new_name, ok = QInputDialog.getText(
+            self, "Rename Folder", f"New name for {old_name!r}:", text=old_name
+        )
+        if not ok or not new_name.strip() or new_name.strip() == old_name:
+            return
+
+        new_name = new_name.strip()
+        self._status(f"Renaming {old_name!r} → {new_name!r}…")
+        self._run_worker(
+            "rename",
+            path=parent_path,
+            old_name=old_name,
+            new_name=new_name,
+        )
 
     def _delete_selected(self):
         items = self._selected_items()
@@ -744,7 +779,9 @@ class FilesBrowserTab(QWidget):
         if meta.get("_type") == "file":
             menu.addAction("⬇  Download", self._download_selected)
             menu.addAction("⤴  Share",    self._share_selected)
-        menu.addAction("↦  Move", self._move_selected)
+        if meta.get("_type") == "folder":
+            menu.addAction("✎  Rename", self._rename_selected)
+        menu.addAction("↦  Move",   self._move_selected)
         menu.addSeparator()
         menu.addAction("✕  Delete", self._delete_selected)
         menu.exec(self.tree.viewport().mapToGlobal(pos))
