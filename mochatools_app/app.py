@@ -654,8 +654,6 @@ class MochaTools(QMainWindow):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if result == QMessageBox.StandardButton.Yes:
-            import subprocess
-            subprocess.Popen([sys.executable] + sys.argv)
             QApplication.quit()
 
     def _on_update_dl_error(self, msg: str):
