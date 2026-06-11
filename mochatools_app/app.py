@@ -223,10 +223,11 @@ class MochaTools(QMainWindow):
 
         prog_row = QHBoxLayout()
         self.progress_bar = QProgressBar()
+        self.progress_bar.setMaximum(100_000)
         self.progress_bar.setValue(0)
-        self.pct_label = QLabel("0%")
+        self.pct_label = QLabel("0.000%")
         self.pct_label.setObjectName("status_label")
-        self.pct_label.setFixedWidth(36)
+        self.pct_label.setFixedWidth(58)
         prog_row.addWidget(self.progress_bar, 1)
         prog_row.addWidget(self.pct_label)
         status_lay.addLayout(prog_row)
@@ -391,7 +392,7 @@ class MochaTools(QMainWindow):
         self._set_uploading(True)
         self.share_result.hide()
         self.progress_bar.setValue(0)
-        self.pct_label.setText("0%")
+        self.pct_label.setText("0.000%")
         self.speed_label.setText("")
         self.transferred_label.setText("")
         self._badge("Uploading", "#c8a96e")
@@ -451,7 +452,7 @@ class MochaTools(QMainWindow):
         self._set_uploading(False)
         self._badge("Cancelled", "#9ca3af")
         self.progress_bar.setValue(0)
-        self.pct_label.setText("0%")
+        self.pct_label.setText("0.000%")
         self.speed_label.setText("")
         self.transferred_label.setText("")
         self.share_result.hide()
@@ -464,18 +465,18 @@ class MochaTools(QMainWindow):
 
     # ── Upload signal handlers ────────────────────────────────────────────────
 
-    def _on_progress(self, pct: int):
-        self.progress_bar.setValue(pct)
-        self.pct_label.setText(f"{pct}%")
+    def _on_progress(self, pct: float):
+        self.progress_bar.setValue(int(pct * 1000))
+        self.pct_label.setText(f"{pct:.3f}%")
 
     def _on_bytes_progress(self, done_bytes: int, total_bytes: int):
         grand = getattr(self, "_upload_grand_total", 0) or total_bytes
         self.transferred_label.setText(f"{self._fmt(done_bytes)} / {self._fmt(grand)}")
 
     def _on_speed(self, bps: float):
-        if bps < 1024:      txt = f"{bps:.0f} B/s"
-        elif bps < 1024**2: txt = f"{bps/1024:.1f} KB/s"
-        else:               txt = f"{bps/1024**2:.2f} MB/s"
+        if bps < 1024:      txt = f"{bps:.3f} B/s"
+        elif bps < 1024**2: txt = f"{bps/1024:.3f} KB/s"
+        else:               txt = f"{bps/1024**2:.3f} MB/s"
         self.speed_label.setText(txt)
 
     def _on_finished(self, result: dict):
@@ -564,9 +565,9 @@ class MochaTools(QMainWindow):
     @staticmethod
     def _fmt(n: int) -> str:
         if n < 1024:      return f"{n} B"
-        if n < 1024**2:   return f"{n/1024:.1f} KB"
-        if n < 1024**3:   return f"{n/1024**2:.1f} MB"
-        return f"{n/1024**3:.2f} GB"
+        if n < 1024**2:   return f"{n/1024:.3f} KB"
+        if n < 1024**3:   return f"{n/1024**2:.3f} MB"
+        return f"{n/1024**3:.3f} GB"
 
     # ── Tab switching ─────────────────────────────────────────────────────────
 

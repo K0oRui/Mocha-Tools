@@ -779,8 +779,8 @@ class FilesBrowserTab(QWidget):
         w.done.connect(_on_done)
         w.error.connect(_on_err)
         w.speed.connect(lambda bps: self._status(
-            f"Downloading {name}… {bps/1024/1024:.1f} MB/s" if bps >= 1024 * 1024
-            else f"Downloading {name}… {bps/1024:.0f} KB/s"
+            f"Downloading {name}… {bps/1024/1024:.3f} MB/s" if bps >= 1024 * 1024
+            else f"Downloading {name}… {bps/1024:.3f} KB/s"
         ))
         self._dl_workers.append(w)
         w.start()

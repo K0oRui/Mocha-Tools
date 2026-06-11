@@ -184,10 +184,11 @@ class MassUploadTab(QWidget):
         # Row 3: progress bar + % label
         pbar_row = QHBoxLayout()
         self._prog_bar = QProgressBar()
+        self._prog_bar.setMaximum(100_000)
         self._prog_bar.setValue(0)
-        self._pct_lbl = QLabel("0%")
+        self._pct_lbl = QLabel("0.000%")
         self._pct_lbl.setObjectName("status_label")
-        self._pct_lbl.setFixedWidth(36)
+        self._pct_lbl.setFixedWidth(58)
         pbar_row.addWidget(self._prog_bar, 1)
         pbar_row.addWidget(self._pct_lbl)
         prog_lay.addLayout(pbar_row)
@@ -236,9 +237,9 @@ class MassUploadTab(QWidget):
     @staticmethod
     def _fmt(n: int) -> str:
         if n < 1024:      return f"{n} B"
-        if n < 1024**2:   return f"{n/1024:.1f} KB"
-        if n < 1024**3:   return f"{n/1024**2:.1f} MB"
-        return f"{n/1024**3:.2f} GB"
+        if n < 1024**2:   return f"{n/1024:.3f} KB"
+        if n < 1024**3:   return f"{n/1024**2:.3f} MB"
+        return f"{n/1024**3:.3f} GB"
 
     def _set_badge(self, text: str, color: str):
         self._badge_lbl.setText(f"● {text}")
@@ -273,18 +274,18 @@ class MassUploadTab(QWidget):
         if not self._queue:
             return
         total_pct = sum(
-            100 if e["status"] in ("done", "error", "cancelled") else e.get("_pct", 0)
+            100.0 if e["status"] in ("done", "error", "cancelled") else e.get("_pct", 0.0)
             for e in self._queue
         )
-        pct = int(total_pct / len(self._queue))
-        self._prog_bar.setValue(pct)
-        self._pct_lbl.setText(f"{pct}%")
+        pct = total_pct / len(self._queue)
+        self._prog_bar.setValue(int(pct * 1000))
+        self._pct_lbl.setText(f"{pct:.3f}%")
 
     def _on_file_progress(self, pct: int, entry: dict):
         if entry not in self._queue or entry.get("item") is None:
             return
-        entry["_pct"] = pct
-        entry["item"].setText(self._COL_STATUS, f"{pct}%  ·  {entry.get('_xfr', '')}")
+        entry["_pct"] = float(pct)
+        entry["item"].setText(self._COL_STATUS, f"{pct:.3f}%  ·  {entry.get('_xfr', '')}")
         self._update_overall_progress()
 
     # ── Queue management ──────────────────────────────────────────────────────
@@ -499,7 +500,7 @@ class MassUploadTab(QWidget):
         self._tree.clear()
         self._queue.clear()
         self._prog_bar.setValue(0)
-        self._pct_lbl.setText("0%")
+        self._pct_lbl.setText("0.000%")
         self._speed_lbl.setText("")
         self._transferred_lbl.setText("")
         self._update_queue_label()

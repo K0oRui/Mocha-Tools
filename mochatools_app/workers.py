@@ -49,7 +49,7 @@ class ProgressTracker:
             elapsed = max(now - self._start, 0.001)
             if now - self._last_emit >= self.EMIT_INTERVAL:
                 self._last_emit = now
-                pct = min(int(self._sent / self._total * 100), 99)
+                pct = min(self._sent / self._total * 100, 99.999)
                 bps = self._sent / elapsed
                 self._on_prog(pct)
                 self._on_speed(bps)
@@ -105,7 +105,7 @@ class ProgressTracker:
 
 # ── Upload Worker ────────────────────────────────────────────────────────────
 class UploadWorker(QThread):
-    progress        = pyqtSignal(int)                    # 0-100
+    progress        = pyqtSignal(float)                  # 0.0-100.0
     speed           = pyqtSignal(float)                  # bytes/sec
     bytes_progress  = pyqtSignal('qint64', 'qint64')     # (bytes_done, bytes_total) — 64-bit to handle files > 2 GB
     status          = pyqtSignal(str)          # log message
@@ -742,9 +742,9 @@ class UploadWorker(QThread):
     def _fmt_size(b):
         for unit in ("B", "KB", "MB", "GB", "TB"):
             if b < 1024:
-                return f"{b:.1f} {unit}"
+                return f"{b:.3f} {unit}"
             b /= 1024
-        return f"{b:.1f} PB"
+        return f"{b:.3f} PB"
 
 
 # ── Files API Worker ─────────────────────────────────────────────────────────
@@ -1067,7 +1067,7 @@ class RemoteWorker(QThread):
 # ── Direct Download Worker ────────────────────────────────────────────────────
 class DownloadWorker(QThread):
     """Downloads a file from a presigned URL directly to a local path."""
-    progress = pyqtSignal(int)      # 0-100
+    progress = pyqtSignal(float)    # 0.0-100.0
     speed    = pyqtSignal(float)    # bytes/sec
     done     = pyqtSignal(str)      # local file path on success
     error    = pyqtSignal(str)
@@ -1098,8 +1098,8 @@ class DownloadWorker(QThread):
                         elapsed  = max(time.monotonic() - start, 0.001)
                         self.speed.emit(fetched / elapsed)
                         if total:
-                            self.progress.emit(min(int(fetched / total * 100), 99))
-            self.progress.emit(100)
+                            self.progress.emit(min(fetched / total * 100, 99.999))
+            self.progress.emit(100.0)
             self.done.emit(self.dest_path)
         except Exception as e:
             self.error.emit(str(e))
