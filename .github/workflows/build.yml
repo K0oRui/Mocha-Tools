@@ -42,7 +42,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install pydependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
@@ -51,7 +51,7 @@ jobs:
         shell: bash
         run: python builditems/stamp_version.py "${{ env.VERSION }}"
 
-      - name: Build executable
+      - name: Build Windows executable
         shell: bash
         run: |
           if [[ "$RUNNER_OS" == "Windows" ]]; then
@@ -78,23 +78,46 @@ jobs:
               mochatools.py
           fi
 
-      - name: Build .deb package (Ubuntu only)
+      - name: Build Debian/Ubuntu .deb package 
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y ruby ruby-dev build-essential
           sudo gem install --no-document fpm
+
           mkdir -p deb_build/usr/bin
           cp "dist/Mocha Tools" deb_build/usr/bin/mochatools
           chmod 755 deb_build/usr/bin/mochatools
+
+          # Install icon
+          mkdir -p deb_build/usr/share/icons/hicolor/256x256/apps
+          cp builditems/debian_ubuntu/icon.png \
+            deb_build/usr/share/icons/hicolor/256x256/apps/mocha-tools.png
+
+          # .desktop entry — sets display name, icon, and category
+          mkdir -p deb_build/usr/share/applications
+          cat > deb_build/usr/share/applications/mocha-tools.desktop << 'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Mocha Tools
+          Comment=File sharing and management
+          Exec=/usr/bin/mochatools
+          Icon=mocha-tools
+          Categories=Utility;FileManager;
+          Terminal=false
+          EOF
+
           fpm -s dir -t deb \
             -n mocha-tools \
             -v "${{ env.VERSION }}" \
-            --description "Mocha Tools" \
+            --description "Mocha Tools — file sharing and management" \
+            --vendor "nxllxvxxd2" \
+            --maintainer "nxllxvxxd2" \
+            --url "https://github.com/nxllxvxxd2/mochatools" \
             "deb_build/=/"
 
-      - name: Bundle Linux installer script (Ubuntu only)
+      - name: Bundle Debian/Ubuntu installer script
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
@@ -109,7 +132,7 @@ jobs:
           fi
           tar -czf "MochaTools-${{ env.VERSION }}-linux.tar.gz" -C linux-installer .
 
-      - name: Build NSIS installer (Windows only)
+      - name: Build NSIS installer
         if: matrix.os == 'windows-latest'
         shell: bash
         run: |
@@ -126,7 +149,7 @@ jobs:
 
           powershell.exe -Command "& 'C:\Program Files (x86)\NSIS\makensis.exe' installer.nsi"
 
-      - name: Upload artifact (Ubuntu)
+      - name: Upload artifact Debian/Ubuntu
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
@@ -135,7 +158,7 @@ jobs:
             *.deb
             MochaTools-*-linux.tar.gz
 
-      - name: Upload artifact (Windows)
+      - name: Upload artifact windows
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
@@ -149,7 +172,7 @@ jobs:
   # macOS arm64 (Apple Silicon — native)
   # ──────────────────────────────────────────────
   build-macos-arm64:
-    name: Build macOS (arm64)
+    name: Build macOS-arm64
     runs-on: macos-15
     steps:
       - name: Checkout code
@@ -173,7 +196,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install py dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller pyinstaller-hooks-contrib
@@ -181,7 +204,7 @@ jobs:
       - name: Stamp version into constants.py
         run: python builditems/stamp_version.py "${{ env.VERSION }}"
 
-      - name: Build arm64 .app
+      - name: Build macOS-arm64 .app
         run: |
           pyinstaller --noconsole --windowed \
             --collect-submodules mochatools_app \
@@ -199,7 +222,7 @@ jobs:
         run: |
           python3 builditems/macos/patch_info_plist.py "dist/Mocha Tools.app/Contents/Info.plist" "${{ env.VERSION }}"
 
-      - name: Build DMG
+      - name: Build macOS-arm64 DMG
         run: |
           brew install create-dmg 2>/dev/null || true
           create-dmg \
@@ -229,7 +252,7 @@ jobs:
   # macOS x86_64 (Intel — also runs via Rosetta)
   # ──────────────────────────────────────────────
   build-macos-x86:
-    name: Build macOS (x86_64)
+    name: Build macOS-x86_64
     runs-on: macos-15-intel
     steps:
       - name: Checkout code
@@ -253,7 +276,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install py dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller pyinstaller-hooks-contrib
@@ -261,7 +284,7 @@ jobs:
       - name: Stamp version into constants.py
         run: python builditems/stamp_version.py "${{ env.VERSION }}"
 
-      - name: Build x86_64 .app
+      - name: Build macOS-x86_64 .app
         run: |
           pyinstaller --noconsole --windowed \
             --collect-submodules mochatools_app \
@@ -279,7 +302,7 @@ jobs:
         run: |
           python3 builditems/macos/patch_info_plist.py "dist/Mocha Tools.app/Contents/Info.plist" "${{ env.VERSION }}"
 
-      - name: Build DMG
+      - name: Build macOS-x86_64 DMG
         run: |
           brew install create-dmg 2>/dev/null || true
           create-dmg \
@@ -299,7 +322,7 @@ jobs:
                 "MochaTools-${{ env.VERSION }}-macOS-x86_64.dmg"
             }
 
-      - name: Upload artifact
+      - name: Upload macos-x86_64 artifact
         uses: actions/upload-artifact@v4
         with:
           name: macos-x86_64-${{ env.VERSION }}
