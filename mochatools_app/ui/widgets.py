@@ -254,7 +254,6 @@ class CustomTitleBar(QFrame):
     def __init__(self, window: QMainWindow, app_name: str, version: str, parent=None):
         super().__init__(parent)
         self._window   = window
-        self._drag_pos = None
         self.setObjectName("titlebar")
         self.setFixedHeight(42)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -322,16 +321,19 @@ class CustomTitleBar(QFrame):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_pos = event.globalPosition().toPoint() - self._window.frameGeometry().topLeft()
+            # startSystemMove() works on both X11 and Wayland.
+            # Manual move() calls are silently ignored by Wayland compositors,
+            # so the old _drag_pos approach only ever worked on X11.
+            win = self._window.windowHandle()
+            if win is not None:
+                win.startSystemMove()
             event.accept()
 
     def mouseMoveEvent(self, event):
-        if self._drag_pos and event.buttons() & Qt.MouseButton.LeftButton:
-            self._window.move(event.globalPosition().toPoint() - self._drag_pos)
-            event.accept()
+        event.accept()
 
     def mouseReleaseEvent(self, event):
-        self._drag_pos = None
+        event.accept()
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
