@@ -2,3 +2,4 @@ requests
 PyQt6
 pyinstaller
 packaging
+keyring

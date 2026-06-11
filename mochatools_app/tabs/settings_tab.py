@@ -9,6 +9,16 @@ Exposes:
 
 import json
 
+try:
+    import keyring
+    import keyring.errors
+    _KEYRING_OK = True
+except ImportError:
+    _KEYRING_OK = False
+
+_KR_SERVICE = "MochaTools"
+_KR_USER    = "api_key"
+
 from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
@@ -212,7 +222,18 @@ def _build_updates_section(win, lay: QVBoxLayout):
 def load_settings(win):
     """Restore persisted QSettings onto win's widgets."""
     s = QSettings(ORG_NAME, APP_NAME)
-    win.api_key_edit.setText(s.value("api_key", ""))
+    # Load API key from OS credential store; migrate from QSettings on first run
+    if _KEYRING_OK:
+        key = keyring.get_password(_KR_SERVICE, _KR_USER) or ""
+        if not key:
+            # one-time migration from old plaintext QSettings value
+            key = s.value("api_key", "")
+            if key:
+                keyring.set_password(_KR_SERVICE, _KR_USER, key)
+                s.remove("api_key")
+    else:
+        key = s.value("api_key", "")
+    win.api_key_edit.setText(key)
     win.upload_path_edit.setText(s.value("upload_path", "/"))
     win.remote_tab.path_edit.setText(s.value("remote_path", "/"))
     win.remember_cb.setChecked(s.value("remember", False, type=bool))
@@ -261,11 +282,19 @@ def save_settings(win):
             pass
 
     if win.remember_cb.isChecked():
-        s.setValue("api_key",     win.api_key_edit.text())
+        if _KEYRING_OK:
+            keyring.set_password(_KR_SERVICE, _KR_USER, win.api_key_edit.text())
+        else:
+            s.setValue("api_key", win.api_key_edit.text())
         s.setValue("upload_path", win.upload_path_edit.text())
         s.setValue("remote_path", win.remote_tab.path_edit.text())
         s.setValue("remember",    True)
     else:
+        if _KEYRING_OK:
+            try:
+                keyring.delete_password(_KR_SERVICE, _KR_USER)
+            except keyring.errors.PasswordDeleteError:
+                pass
         s.remove("api_key")
         s.remove("upload_path")
         s.remove("remote_path")

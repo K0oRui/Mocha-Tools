@@ -58,6 +58,9 @@ jobs:
             pyinstaller --onefile --noconsole \
               --collect-submodules mochatools_app \
               --collect-all PyQt6 \
+              --hidden-import keyring.backends.Windows \
+              --hidden-import keyring.backends.fail \
+              --hidden-import keyring.backends.null \
               --version-file ./builditems/windows/version.txt \
               --icon=./builditems/windows/icon.ico \
               --name "Mocha Tools" \
@@ -66,6 +69,10 @@ jobs:
             pyinstaller --onefile --noconsole \
               --collect-submodules mochatools_app \
               --collect-all PyQt6 \
+              --hidden-import keyring.backends.SecretService \
+              --hidden-import keyring.backends.kwallet \
+              --hidden-import keyring.backends.fail \
+              --hidden-import keyring.backends.null \
               --icon=./builditems/debian_ubuntu/icon.png \
               --name "Mocha Tools" \
               mochatools.py
@@ -181,6 +188,9 @@ jobs:
           pyinstaller --noconsole --windowed \
             --collect-submodules mochatools_app \
             --collect-all PyQt6 \
+            --hidden-import keyring.backends.macOS \
+            --hidden-import keyring.backends.fail \
+            --hidden-import keyring.backends.null \
             --icon=./builditems/macos/icon.icns \
             --osx-bundle-identifier com.nxllxvxxd2.mochatools \
             --target-arch arm64 \
@@ -258,6 +268,9 @@ jobs:
           pyinstaller --noconsole --windowed \
             --collect-submodules mochatools_app \
             --collect-all PyQt6 \
+            --hidden-import keyring.backends.macOS \
+            --hidden-import keyring.backends.fail \
+            --hidden-import keyring.backends.null \
             --icon=./builditems/macos/icon.icns \
             --osx-bundle-identifier com.nxllxvxxd2.mochatools \
             --target-arch x86_64 \
