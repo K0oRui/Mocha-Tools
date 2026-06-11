@@ -2,7 +2,9 @@
 """
 builditems/stamp_version.py
 Called by build.yml before PyInstaller runs.
-Rewrites the APP_VERSION line in mochatools_app/constants.py.
+Rewrites the APP_VERSION line in mochatools_app/constants.py,
+patches !define APP_VERSION in installer.nsi, and generates
+builditems/windows/version.txt for PyInstaller's --version-file.
 
 Usage:
     python builditems/stamp_version.py v4.0.0
@@ -11,17 +13,25 @@ import re
 import sys
 from pathlib import Path
 
+def make_tuple(version: str) -> str:
+    """Convert '4.1.3' -> '4, 1, 3, 0'"""
+    parts = (version.lstrip("v").split(".") + ["0", "0", "0", "0"])[:4]
+    return ", ".join(p.zfill(1) for p in parts)
+
 def main():
     if len(sys.argv) != 2:
         print("Usage: stamp_version.py <version>", file=sys.stderr)
         sys.exit(1)
 
-    version = sys.argv[1].strip()
+    version = sys.argv[1].strip().lstrip("v")
     if not version:
         print("Version string is empty", file=sys.stderr)
         sys.exit(1)
 
-    constants = Path(__file__).parent.parent / "mochatools_app" / "constants.py"
+    root = Path(__file__).parent.parent
+
+    # ── 1. constants.py ───────────────────────────────────────────────────────
+    constants = root / "mochatools_app" / "constants.py"
     if not constants.exists():
         print(f"Not found: {constants}", file=sys.stderr)
         sys.exit(1)
@@ -33,13 +43,68 @@ def main():
         text,
         flags=re.MULTILINE,
     )
-
     if count == 0:
         print("ERROR: APP_VERSION line not found in constants.py", file=sys.stderr)
         sys.exit(1)
-
     constants.write_text(new_text, encoding="utf-8")
     print(f"Stamped APP_VERSION = \"{version}\" into {constants}")
+
+    # ── 2. installer.nsi ─────────────────────────────────────────────────────
+    nsi = root / "installer.nsi"
+    if nsi.exists():
+        nsi_text = nsi.read_text(encoding="utf-8")
+        nsi_new, n = re.subn(
+            r'(!define APP_VERSION\s+")([\d.]+)(")',
+            rf'\g<1>{version}\3',
+            nsi_text,
+        )
+        if n:
+            nsi.write_text(nsi_new, encoding="utf-8")
+            print(f"Patched APP_VERSION = \"{version}\" into {nsi}")
+        else:
+            print(f"WARNING: APP_VERSION not found in installer.nsi", file=sys.stderr)
+
+    # ── 3. builditems/windows/version.txt (generated for PyInstaller) ────────
+    ver_tuple = make_tuple(version)
+    ver_dir = root / "builditems" / "windows"
+    ver_dir.mkdir(parents=True, exist_ok=True)
+    ver_file = ver_dir / "version.txt"
+    ver_file.write_text(f"""\
+# UTF-8
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=({ver_tuple}),
+    prodvers=({ver_tuple}),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          u'040904B0',
+          [
+            StringStruct(u'CompanyName',      u'nxllxvxxd2'),
+            StringStruct(u'FileDescription',  u'Mocha Tools'),
+            StringStruct(u'FileVersion',      u'{version}'),
+            StringStruct(u'InternalName',     u'MochaTools'),
+            StringStruct(u'LegalCopyright',   u'\\xa9 nxllxvxxd2'),
+            StringStruct(u'OriginalFilename', u'Mocha Tools.exe'),
+            StringStruct(u'ProductName',      u'Mocha Tools'),
+            StringStruct(u'ProductVersion',   u'{version}'),
+          ]
+        )
+      ]
+    ),
+    VarFileInfo([VarStruct(u'Translation', [0x0409, 1200])])
+  ]
+)
+""", encoding="utf-8")
+    print(f"Generated {ver_file}")
 
 if __name__ == "__main__":
     main()

@@ -124,8 +124,6 @@ jobs:
 
           cp 'dist/Mocha Tools.exe' Mocha-Tools-windows.exe
 
-          PYTHONUTF8=1 python3 builditems/windows/patch_version.py "${{ env.VERSION }}"
-
           powershell.exe -Command "& 'C:\Program Files (x86)\NSIS\makensis.exe' installer.nsi"
 
       - name: Upload artifact (Ubuntu)

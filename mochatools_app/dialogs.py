@@ -202,6 +202,7 @@ class FolderBrowserDialog(MochaDialog):
         self._worker: _FolderFetchWorker | None = None
         self._cancel_token: list = [False]
         self._dead_workers: list[_FolderFetchWorker] = []
+        self._navigating: bool = False   # suppresses auto-highlight during render
 
         lay = self.content_layout
         grip_item = lay.takeAt(lay.count() - 1)
@@ -338,6 +339,7 @@ class FolderBrowserDialog(MochaDialog):
 
     # ── Render folder list — exact same logic as the original ─────────────────
     def _render(self, path: str, data):
+        self._navigating = True
         self.list.blockSignals(True)
         self.list.clear()
 
@@ -387,9 +389,12 @@ class FolderBrowserDialog(MochaDialog):
         self.selected = path
         count = len(folders)
         self.status_lbl.setText(f"{count} folder{'s' if count != 1 else ''}")
+        self._navigating = False
 
     # ── Selection / interaction ────────────────────────────────────────────────
     def _on_selection_changed(self, current, _previous):
+        if self._navigating:
+            return
         if current:
             _kind, path = current.data(Qt.ItemDataRole.UserRole)
             self.selected = path
@@ -401,11 +406,10 @@ class FolderBrowserDialog(MochaDialog):
             self._navigate(path)
 
     def _on_accept(self):
-        # Always use self.current — the folder the user navigated into.
-        # self.selected gets clobbered by _on_selection_changed when Qt
-        # auto-highlights the first list item after blockSignals(False),
-        # so it cannot be trusted here.
-        self.selected = self.current
+        # self.selected is either:
+        #   - the folder the user explicitly single-clicked in the list, or
+        #   - self.current (set in _render / _navigate) if no explicit click happened.
+        # Either way it's the right answer — no need to override with self.current.
         self.accept()
 
     def closeEvent(self, event):

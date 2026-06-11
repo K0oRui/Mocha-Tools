@@ -363,6 +363,16 @@ class FilesBrowserTab(QWidget):
     # ── Tree population ───────────────────────────────────────────────────────
 
     def _populate(self, path: str, data):
+        # Remember which items were selected so we can restore them after
+        # the tree rebuild (background refreshes shouldn't steal focus).
+        selected_keys = set()
+        for item in self.tree.selectedItems():
+            meta = item.data(0, Qt.ItemDataRole.UserRole) or {}
+            key = meta.get("id") or meta.get("path") or meta.get("name")
+            if key:
+                selected_keys.add(key)
+
+        self.tree.blockSignals(True)
         self.tree.setSortingEnabled(False)
         self.tree.clear()
 
@@ -404,11 +414,24 @@ class FilesBrowserTab(QWidget):
             self.tree.addTopLevelItem(item)
 
         self.tree.setSortingEnabled(True)
+        self.tree.blockSignals(False)
+
+        # Restore previous selection if those items still exist in the new listing
+        if selected_keys:
+            root = self.tree.invisibleRootItem()
+            for i in range(root.childCount()):
+                item = root.child(i)
+                meta = item.data(0, Qt.ItemDataRole.UserRole) or {}
+                key = meta.get("id") or meta.get("path") or meta.get("name")
+                if key in selected_keys:
+                    item.setSelected(True)
+
         self._status(
             f"{len(folders)} folder{'s' if len(folders) != 1 else ''}, "
             f"{len(files)} file{'s' if len(files) != 1 else ''}"
         )
-        self._set_action_btns_enabled(False)
+        # Fire selection-changed once to sync toolbar button states
+        self._on_selection_changed()
         self._refresh_share_indicators()
 
     def _parse_listing(self, path: str, data) -> tuple[list, list]:
