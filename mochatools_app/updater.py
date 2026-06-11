@@ -391,7 +391,10 @@ class UpdateDownloadWorker(QThread):
             f'echo [update] install succeeded',
             "",
             "rem -- relaunch (skipped in test mode) --",
-            *([] if _test_mode else [f'start "" "{target}"']),
+            *([] if _test_mode else [
+                f'cd /D "{os.path.dirname(target)}"',
+                f'start "" "{target}"',
+            ]),
             "",
             "rem -- cleanup --",
             "timeout /t 3 /nobreak >NUL",
@@ -461,9 +464,49 @@ class UpdateDownloadWorker(QThread):
             raise RuntimeError("No binary found inside the downloaded zip.")
 
         new_bin = candidates[0]
-        backup  = target + ".bak"
-        if os.path.exists(backup):
-            os.remove(backup)
-        shutil.copy2(target, backup)
-        shutil.move(new_bin, target)
-        os.chmod(target, os.stat(target).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        # Make the new binary executable before moving it into place
+        os.chmod(new_bin, os.stat(new_bin).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+        backup = target + ".bak"
+        install_dir = os.path.dirname(target)
+
+        # Probe whether we can write to the install directory directly
+        try:
+            probe = os.path.join(install_dir, ".mocha_write_test")
+            with open(probe, "w") as fh:
+                fh.write("ok")
+            os.remove(probe)
+            needs_elevation = False
+        except PermissionError:
+            needs_elevation = True
+
+        if needs_elevation:
+            # Prefer pkexec (graphical polkit prompt); fall back to sudo
+            # Build a small shell snippet: backup old, move new, chmod
+            shell_cmd = (
+                f'cp -f "{target}" "{backup}" && '
+                f'mv -f "{new_bin}" "{target}" && '
+                f'chmod 755 "{target}"'
+            )
+            elevated = False
+            for elevator in ("pkexec", "sudo"):
+                if shutil.which(elevator):
+                    result = subprocess.run(
+                        [elevator, "sh", "-c", shell_cmd],
+                        timeout=60,
+                    )
+                    if result.returncode == 0:
+                        elevated = True
+                        break
+            if not elevated:
+                raise RuntimeError(
+                    "Cannot write to the installation directory.\n"
+                    "Neither pkexec nor sudo succeeded. "
+                    "Try running the updater with elevated permissions."
+                )
+        else:
+            if os.path.exists(backup):
+                os.remove(backup)
+            shutil.copy2(target, backup)
+            shutil.move(new_bin, target)
+            os.chmod(target, os.stat(target).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
