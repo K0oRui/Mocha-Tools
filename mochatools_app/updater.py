@@ -392,7 +392,7 @@ class UpdateDownloadWorker(QThread):
             "",
             "rem -- relaunch via explorer to break inherited _MEI* env from old process --",
             *([] if _test_mode else [
-                'for /f "skip=1 delims=" %%P in ('wmic process where name="Mocha Tools.exe" get ExecutablePath') do if not "%%~P"=="" set "RUNNING_EXE=%%~P"',
+                r'''for /f "skip=1 delims=" %%P in ('wmic process where name="Mocha Tools.exe" get ExecutablePath') do if not "%%~P"=="" set "RUNNING_EXE=%%~P"''',
                 'start "" "%RUNNING_EXE%"',
             ]),
             "",
