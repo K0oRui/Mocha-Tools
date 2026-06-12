@@ -15,7 +15,7 @@
 ![Last Commit](https://img.shields.io/github/last-commit/nxllxvxxd2/Mocha-Tools?style=for-the-badge&color=C8A96E&labelColor=000000&logo=github)
 ![Repo Size](https://img.shields.io/github/repo-size/nxllxvxxd2/Mocha-Tools?style=for-the-badge&color=C8A96E&labelColor=000000)
 
-![Contributors](https://contrib.rocks/image?repo=nxllxvxxd2/Mocha-Tools)
+![Contributors](https://contrib.rocks/image?repo=nxllxvxxd/Mocha-Tools)
 
 ![Divider](https://capsule-render.vercel.app/api?type=rect&color=C8A96E&height=3)
 
