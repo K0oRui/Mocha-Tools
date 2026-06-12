@@ -11,6 +11,7 @@ DEFAULT_MAX_CHUNKS    = 20
 APP_NAME = "MochaTools"
 ORG_NAME = "Mocha"
 HARDCODED_BASE_URL = "https://api.mocha.my"
+SHARE_BASE_URL     = "https://mocha.my"
 
 # Stamped at build time by builditems/stamp_version.py — do not edit manually.
 APP_VERSION = "v0.0.0"

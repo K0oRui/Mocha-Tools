@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from ..constants import HARDCODED_BASE_URL
+from ..constants import HARDCODED_BASE_URL, SHARE_BASE_URL
 from ..workers import FilesWorker
 from ..ui.icons import lucide_icon
 from ..remote_cache import cache, registry
@@ -173,7 +173,7 @@ class SharesTab(QWidget):
             expires   = s.get("expires_at") or s.get("expiresAt") or s.get("expiry") or "Never"
             if expires and expires != "Never" and len(expires) > 10:
                 expires = expires[:10]
-            url = f"{self.base_url}/share/{token}" if token else ""
+            url = f"{SHARE_BASE_URL}/share/{token}" if token else ""
 
             active_text  = "● Active"  if is_active else "○ Inactive"
             active_color = "#4ade80"   if is_active else "#9ca3af"

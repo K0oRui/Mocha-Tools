@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from ..constants import HARDCODED_BASE_URL
+from ..constants import HARDCODED_BASE_URL, SHARE_BASE_URL
 from ..dialogs import FolderBrowserDialog, ShareLinkDialog
 from ..logging_utils import write_debug_log
 from ..workers import FilesWorker, UploadWorker
@@ -494,7 +494,7 @@ class FilesBrowserTab(QWidget):
             file_name = s.get("fileName") or s.get("file_name") or ""
             token     = s.get("token", "")
             share = {
-                "url":     f"{self.base_url}/share/{token}" if token else "",
+                "url":     f"{SHARE_BASE_URL}/share/{token}" if token else "",
                 "token":   token,
                 "expires": s.get("expiresAt") or s.get("expires_at") or s.get("expiry") or "—",
                 "active":  s.get("active", s.get("is_active", True)),
