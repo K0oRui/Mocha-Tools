@@ -642,11 +642,14 @@ class MochaTools(QMainWindow):
         w.progress.connect(self.update_progress.setValue)
         w.status.connect(self.update_status_lbl.setText)
         w.done.connect(self._on_update_done)
+        w.ready_to_restart.connect(self._on_update_ready_to_restart)
         w.error.connect(self._on_update_dl_error)
         w.start()
         self._update_dl_worker = w
+        self._update_bat_path: str = ""
 
-    def _on_update_done(self):
+    def _on_update_ready_to_restart(self, bat_path: str):
+        self._update_bat_path = bat_path
         self.update_progress.setValue(100)
         self.install_update_btn.hide()
         result = QMessageBox.question(
@@ -655,7 +658,22 @@ class MochaTools(QMainWindow):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if result == QMessageBox.StandardButton.Yes:
+            self.update_status_lbl.setText("Restarting…")
+            from .updater import launch_update_batch
+            test_mode = "--test-update" in sys.argv and not getattr(sys, "frozen", False)
+            launch_update_batch(self._update_bat_path, test_mode=test_mode)
+            # Quit cleanly so the batch doesn't need to taskkill us — the batch
+            # simply waits for our PID to disappear then copies the new exe in.
             QApplication.quit()
+
+    def _on_update_done(self):
+        self.update_progress.setValue(100)
+        self.install_update_btn.hide()
+        QMessageBox.information(
+            self, "Update installed",
+            f"Mocha Tools {self._update_tag} has been installed.\n\n"
+            "Please restart the application to apply the update.",
+        )
 
     def _on_update_dl_error(self, msg: str):
         self.update_progress.hide()
@@ -733,6 +751,7 @@ class MochaTools(QMainWindow):
             w.progress.connect(self.update_progress.setValue)
             w.status.connect(self.update_status_lbl.setText)
             w.done.connect(self._on_update_done)
+            w.ready_to_restart.connect(self._on_update_ready_to_restart)
             w.error.connect(self._on_update_dl_error)
             w.start()
             self._update_dl_worker = w

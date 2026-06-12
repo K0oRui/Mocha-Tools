@@ -193,12 +193,39 @@ class UpdateCheckWorker(QThread):
 
 # ── Download & install ───────────────────────────────────────────────────────
 
+def launch_update_batch(bat_path: str, test_mode: bool = False) -> None:
+    """
+    Launch a previously-prepared update batch script (see
+    UpdateDownloadWorker.ready_to_restart). The batch script will force-kill
+    this process and relaunch the updated exe.
+    """
+    if not bat_path or not os.path.exists(bat_path):
+        return
+
+    # DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP ensures the batch is NOT a
+    # child of this process.  Without this, `taskkill /F /T` in the batch kills
+    # the batch script itself before it can copy the new exe and relaunch.
+    DETACHED_PROCESS         = 0x00000008
+    CREATE_NEW_PROCESS_GROUP = 0x00000200
+    flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+
+    subprocess.Popen(
+        ["cmd.exe", "/C", bat_path],
+        creationflags=flags,
+        close_fds=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 class UpdateDownloadWorker(QThread):
     """Downloads the update asset and replaces the running binary."""
 
     progress = pyqtSignal(int)          # 0–100
     status   = pyqtSignal(str)          # human-readable status text
     done     = pyqtSignal()             # update installed; caller should prompt restart
+    ready_to_restart = pyqtSignal(str)  # (windows only) batch script path, ready to launch on restart
     error    = pyqtSignal(str)
 
     def __init__(self, download_url: str, tag: str = "", parent=None):
@@ -305,7 +332,11 @@ class UpdateDownloadWorker(QThread):
         self.progress.emit(92)
 
         if system == "Windows":
-            self._install_windows(tmp_asset, target, tmp_dir)
+            bat = self._install_windows(tmp_asset, target, tmp_dir)
+            self.progress.emit(100)
+            self.status.emit("Update ready. Restart to apply.")
+            self.ready_to_restart.emit(bat)
+            return
         elif system == "Darwin":
             self._install_macos(tmp_asset, target, tmp_dir)
         else:
@@ -338,73 +369,57 @@ class UpdateDownloadWorker(QThread):
         except zipfile.BadZipFile as e:
             raise RuntimeError(f"Downloaded file is not a valid zip archive: {e}") from e
 
-        # Find the new exe — it lives in dist/ and is NOT a setup/installer stub.
-        new_exe = None
+
+        # Log everything extracted so we can see the actual structure
+        extracted_files = []
         for root, _dirs, files in os.walk(extract_dir):
             for f in files:
-                if f.lower().endswith(".exe") and not any(
-                    k in f.lower() for k in ("setup", "installer", "uninstall")
-                ):
-                    new_exe = os.path.join(root, f)
-                    break
-            if new_exe:
-                break
-        if not new_exe:
+                extracted_files.append(os.path.join(root, f))
+
+        # Find the setup installer anywhere in the extracted tree
+        installer = next(
+            (p for p in extracted_files
+             if "setup" in os.path.basename(p).lower()
+             and p.lower().endswith(".exe")),
+            None,
+        )
+        if not installer:
             raise RuntimeError(
-                "No application .exe found inside the downloaded zip.\n"
-                f"Searched under: {extract_dir}"
+                "No setup installer found inside the downloaded zip.\n"
+                f"Files found: {extracted_files}"
             )
 
-        backup = target + ".bak"
-        bat    = os.path.join(tmp_dir, "update.bat")
-        pid    = os.getpid()
-
+        bat        = os.path.join(tmp_dir, "update.bat")
         _test_mode = "--test-update" in sys.argv and not getattr(sys, "frozen", False)
+        log        = os.path.join(os.path.dirname(target), "update.log")
 
         lines = [
             "@echo off",
+            f'set "LOG={log}"',
             "setlocal",
+            f'call :log "=== Mocha Tools updater started ==="',
             "",
-            "rem -- initial grace period: give the launching process time to fully exit --",
-            "timeout /t 4 /nobreak >NUL",
+            f'call :log "App already exited, proceeding..."',
             "",
-            "rem -- wait for the app PID to disappear --",
-            ":wait",
-            f'tasklist /FI "PID eq {pid}" 2>NUL | find /I "{pid}" >NUL',
-            "if not errorlevel 1 (",
-            "    timeout /t 1 /nobreak >NUL",
-            "    goto wait",
-            ")",
+            f'call :log "Waiting 3s for file locks to clear..."',
+            "timeout /t 3 /nobreak >NUL",
             "",
-            "rem -- extra settle time so Windows releases file locks --",
-            "timeout /t 2 /nobreak >NUL",
-            "",
-            "rem -- back up old exe then copy new one over --",
-            f'if exist "{backup}" del /F /Q "{backup}"',
-            f'copy /Y "{target}" "{backup}"',
-            f'copy /Y "{new_exe}" "{target}"',
-            "if errorlevel 1 (",
-            f'    echo [update] ERROR: copy failed - restoring backup',
-            f'    copy /Y "{backup}" "{target}"',
-            "    goto fail",
-            ")",
-            f'echo [update] install succeeded',
-            "",
-            "rem -- relaunch via explorer to break inherited _MEI* env from old process --",
+            f'call :log "Launching installer: {installer}"',
             *([] if _test_mode else [
-                r'''for /f "skip=1 delims=" %%P in ('wmic process where name="Mocha Tools.exe" get ExecutablePath') do if not "%%~P"=="" set "RUNNING_DIR=%%~dpP"''',
-                'start "" "%RUNNING_DIR%Mocha Tools.exe"',
+                f'start "" "{installer}"',
             ]),
             "",
-            "rem -- cleanup --",
-            "timeout /t 3 /nobreak >NUL",
-            f'if exist "{backup}"  del /F /Q "{backup}"',
-            f'if exist "{tmp_dir}" rmdir /S /Q "{tmp_dir}"',
+            f'call :log "Done."',
             "goto end",
             "",
             ":fail",
-            "rem copy failed, old exe restored",
-            *([f'pause'] if _test_mode else []),
+            f'call :log "FAILED - see %LOG%"',
+            "goto end",
+            "",
+            ":log",
+            r'echo %~1',
+            r'echo %~1 >>"%LOG%"',
+            "exit /b",
             "",
             ":end",
             "endlocal",
@@ -414,11 +429,9 @@ class UpdateDownloadWorker(QThread):
         with open(bat, "w", newline="", encoding="utf-8") as fh:
             fh.write(script)
 
-        subprocess.Popen(
-            ["cmd.exe", "/C", bat],
-            creationflags=0 if _test_mode else subprocess.CREATE_NO_WINDOW,
-            close_fds=True,
-        )
+        # Don't launch yet — the batch script will be spawned when the user
+        # clicks "Restart".
+        return bat
 
     def _install_macos(self, zip_path: str, target: str, tmp_dir: str):
         extract_dir = os.path.join(tmp_dir, "extracted")
