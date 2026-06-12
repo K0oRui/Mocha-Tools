@@ -39,29 +39,17 @@ from .constants import APP_VERSION, UPDATE_CHECK_URL
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-# Capture the real exe path at import time.  On Windows with a PyInstaller
-# onefile build, sys.executable is correct here (it's the original .exe
-# path, not the temp extraction dir).  We resolve it immediately so that
-# even if os.getcwd() or the working directory drifts later (e.g. the batch
-# script runs from tmp_dir), we always have the canonical install path.
-_FROZEN_EXE: str = (
-    os.path.normpath(os.path.abspath(sys.executable))
-    if getattr(sys, "frozen", False)
-    else ""
-)
-
-
 def _current_exe() -> str:
     """Return the path to the running executable (or .app bundle on macOS)."""
-    if not getattr(sys, "frozen", False):
-        return ""
-    exe = _FROZEN_EXE or os.path.normpath(os.path.abspath(sys.executable))
-    if platform.system() == "Darwin":
-        contents = os.path.dirname(os.path.dirname(exe))
-        bundle   = os.path.dirname(contents)
-        if bundle.endswith(".app"):
-            return bundle
-    return exe
+    if getattr(sys, "frozen", False):
+        exe = sys.executable
+        if platform.system() == "Darwin":
+            contents = os.path.dirname(os.path.dirname(exe))
+            bundle   = os.path.dirname(contents)
+            if bundle.endswith(".app"):
+                return bundle
+        return exe
+    return ""
 
 
 def _current_exe_override() -> str:
@@ -373,17 +361,9 @@ class UpdateDownloadWorker(QThread):
 
         _test_mode = "--test-update" in sys.argv and not getattr(sys, "frozen", False)
 
-        install_dir = os.path.dirname(target)
-        exe_name    = os.path.basename(target)
-
         lines = [
             "@echo off",
             "setlocal",
-            "",
-            f'set "INSTALL_DIR={install_dir}"',
-            f'set "INSTALL_EXE={target}"',
-            f'set "BACKUP_EXE={backup}"',
-            f'set "NEW_EXE={new_exe}"',
             "",
             "rem -- initial grace period: give the launching process time to fully exit --",
             "timeout /t 4 /nobreak >NUL",
@@ -400,30 +380,31 @@ class UpdateDownloadWorker(QThread):
             "timeout /t 2 /nobreak >NUL",
             "",
             "rem -- back up old exe then copy new one over --",
-            'if exist "%BACKUP_EXE%" del /F /Q "%BACKUP_EXE%"',
-            'copy /Y "%INSTALL_EXE%" "%BACKUP_EXE%"',
-            'copy /Y "%NEW_EXE%" "%INSTALL_EXE%"',
+            f'if exist "{backup}" del /F /Q "{backup}"',
+            f'copy /Y "{target}" "{backup}"',
+            f'copy /Y "{new_exe}" "{target}"',
             "if errorlevel 1 (",
-            '    echo [update] ERROR: copy failed - restoring backup',
-            '    copy /Y "%BACKUP_EXE%" "%INSTALL_EXE%"',
+            f'    echo [update] ERROR: copy failed - restoring backup',
+            f'    copy /Y "{backup}" "{target}"',
             "    goto fail",
             ")",
-            'echo [update] install succeeded',
+            f'echo [update] install succeeded',
             "",
-            "rem -- relaunch from install dir (skipped in test mode) --",
+            "rem -- relaunch via explorer to break inherited _MEI* env from old process --",
             *([] if _test_mode else [
-                'start /D "%INSTALL_DIR%" "" "%INSTALL_EXE%"',
+                'for /f "skip=1 delims=" %%P in ('wmic process where name="Mocha Tools.exe" get ExecutablePath') do if not "%%~P"=="" set "RUNNING_EXE=%%~P"',
+                'start "" "%RUNNING_EXE%"',
             ]),
             "",
             "rem -- cleanup --",
             "timeout /t 3 /nobreak >NUL",
-            'if exist "%BACKUP_EXE%"  del /F /Q "%BACKUP_EXE%"',
+            f'if exist "{backup}"  del /F /Q "{backup}"',
             f'if exist "{tmp_dir}" rmdir /S /Q "{tmp_dir}"',
             "goto end",
             "",
             ":fail",
             "rem copy failed, old exe restored",
-            *(['pause'] if _test_mode else []),
+            *([f'pause'] if _test_mode else []),
             "",
             ":end",
             "endlocal",
