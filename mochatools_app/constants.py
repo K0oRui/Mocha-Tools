@@ -16,4 +16,4 @@ SHARE_BASE_URL     = "https://mocha.my"
 # Stamped at build time by builditems/stamp_version.py — do not edit manually.
 APP_VERSION = "v0.0.0"
 
-UPDATE_CHECK_URL = "https://api.github.com/repos/nxllxvxxd2/Mocha-Tools/releases/latest"
+UPDATE_CHECK_URL = "https://api.github.com/repos/nxllvxxd/Mocha-Tools/releases/latest"
