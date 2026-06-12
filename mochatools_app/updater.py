@@ -390,10 +390,9 @@ class UpdateDownloadWorker(QThread):
             ")",
             f'echo [update] install succeeded',
             "",
-            "rem -- relaunch via explorer to break inherited _MEI* env from old process --",
+            "rem -- relaunch the freshly-installed exe --",
             *([] if _test_mode else [
-                r'''for /f "skip=1 delims=" %%P in ('wmic process where name="Mocha Tools.exe" get ExecutablePath') do if not "%%~P"=="" set "RUNNING_EXE=%%~P"''',
-                'start "" "%RUNNING_EXE%"',
+                f'start "" "{target}"',
             ]),
             "",
             "rem -- cleanup --",
