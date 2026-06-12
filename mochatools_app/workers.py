@@ -17,6 +17,7 @@ from .constants import (
     RELAY_MAX_CONCURRENCY,
     S3_DEFAULT_CONCURRENCY,
     S3_MAX_CONCURRENCY,
+    SHARE_BASE_URL,
 )
 from .logging_utils import write_debug_log
 
@@ -736,7 +737,7 @@ class UploadWorker(QThread):
         data  = resp.json()
         token = data.get("token") or data.get("share", {}).get("token", "")
         self.status.emit(f"[DEBUG] Share token: {token!r}  full JSON: {data}")
-        return f"{self.base_url}/share/{token}" if token else "(no share URL returned)"
+        return f"{SHARE_BASE_URL}/share/{token}" if token else "(no share URL returned)"
 
     @staticmethod
     def _fmt_size(b):
@@ -914,7 +915,7 @@ class FilesWorker(QThread):
         resp.raise_for_status()
         data  = resp.json()
         token = data.get("token") or (data.get("share") or {}).get("token", "")
-        url   = f"{self.base_url}/share/{token}" if token else ""
+        url   = f"{SHARE_BASE_URL}/share/{token}" if token else ""
         self.done.emit({"op": "share", "url": url, "token": token})
 
     def _mkdir(self):
