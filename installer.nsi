@@ -9,16 +9,20 @@
 ; Produces:
 ;   MochaTools-Setup-<version>.exe
 ;
-; The built .exe can be uploaded as an additional release asset alongside
-; the raw Mocha-Tools-windows.exe if you want a proper install experience.
+; This installer packages dist\Mocha Tools.exe (built by PyInstaller).
 ; ─────────────────────────────────────────────────────────────────────────────
 
 !define APP_NAME      "Mocha Tools"
 !define APP_EXE       "Mocha Tools.exe"
-!define APP_VERSION   "1.0.0"
 !define PUBLISHER     "nxllxvxxd2"
 !define REGKEY        "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}"
 !define INSTDIR_REG   "Software\${PUBLISHER}\${APP_NAME}"
+
+; APP_VERSION can be overridden at build time:
+;   makensis /DAPP_VERSION=3.0.1 installer.nsi
+!ifndef APP_VERSION
+  !define APP_VERSION "1.0.0"
+!endif
 
 ; Output filename
 OutFile "MochaTools-Setup-${APP_VERSION}.exe"
@@ -74,9 +78,9 @@ Section "Install" SecInstall
 
   SetOutPath "$INSTDIR"
 
-  ; Main executable — expects Mocha-Tools-windows.exe in the same dir as this script
+  ; Main executable — comes from PyInstaller's dist\ folder
   ; FIX: single-quote the /oname flag so the space in "Mocha Tools.exe" is handled correctly
-  File '/oname=${APP_EXE}' "Mocha-Tools-windows.exe"
+  File '/oname=${APP_EXE}' "dist\Mocha Tools.exe"
 
   ; Optional: icon file for shortcuts
   File "builditems\windows\icon.ico"

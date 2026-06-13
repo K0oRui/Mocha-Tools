@@ -143,7 +143,7 @@ jobs:
             echo 'ERROR: dist/Mocha Tools.exe not found.' && exit 1
           fi
 
-          powershell.exe -Command "& 'C:\Program Files (x86)\NSIS\makensis.exe' installer.nsi"
+          powershell.exe -Command "& 'C:\Program Files (x86)\NSIS\makensis.exe' /DAPP_VERSION=${{ env.VERSION }} installer.nsi"
 
       - name: Upload .deb artifacts (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
