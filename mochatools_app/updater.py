@@ -12,9 +12,9 @@ Flow:
      prompt a restart.
 
 Asset naming convention (must match build.yml):
-  Windows : windows-<version>.zip         e.g. windows-v3.0.1.zip
-  Ubuntu  : debian_ubuntu-<version>.zip   e.g. debian_ubuntu-v3.0.1.zip
-  macOS   : macos-<arch>-<version>.zip    e.g. macos-arm64-v3.0.1.zip
+  Windows : MochaTools-Setup-<version>.exe   e.g. MochaTools-Setup-3.0.1.exe
+  Ubuntu  : debian_ubuntu-<version>.zip      e.g. debian_ubuntu-3.0.1.zip
+  macOS   : macos-<arch>-<version>.zip       e.g. macos-arm64-3.0.1.zip
               arch is one of: x86_64 | arm64 | universal
 """
 
@@ -97,6 +97,14 @@ def _asset_name(tag: str) -> str:
     tag = str(tag).strip() if tag else ""
     if not tag:
         raise ValueError("_asset_name() called with an empty tag")
+
+    if platform.system() == "Windows":
+        # Windows installer asset is named with the version number WITHOUT
+        # the leading 'v' (matches build.yml's ${{ env.VERSION }}), e.g.
+        # tag "v3.0.1" -> "MochaTools-Setup-3.0.1.exe"
+        version = tag.lstrip("v")
+        return f"MochaTools-Setup-{version}.exe"
+
     return f"{_asset_prefix()}-{tag}.zip"
 
 
@@ -284,9 +292,12 @@ class UpdateDownloadWorker(QThread):
 
         # Build asset filename
         try:
-            asset_name = _asset_name(self.tag) if self.tag else (
-                f"{_asset_prefix()}-update.zip"
-            )
+            if self.tag:
+                asset_name = _asset_name(self.tag)
+            elif platform.system() == "Windows":
+                asset_name = "MochaTools-Setup-update.exe"
+            else:
+                asset_name = f"{_asset_prefix()}-update.zip"
         except ValueError as exc:
             self.error.emit(str(exc))
             return
@@ -348,46 +359,14 @@ class UpdateDownloadWorker(QThread):
 
     # ── Platform installers ──────────────────────────────────────────────────
 
-    def _install_windows(self, zip_path: str, target: str, tmp_dir: str):
+    def _install_windows(self, installer_path: str, target: str, tmp_dir: str):
         """
-        Onefile layout: the zip contains dist/Mocha Tools.exe (and some
-        installer stubs at the root).  We just need to wait for our process
-        to exit, copy the new exe over the old one, and relaunch.
-
-        zip layout:
-          dist/
-            Mocha Tools.exe   ← the new build
-          MochaTools-Setup-x.x.x.exe
-          Mocha-Tools-windows.exe
+        The downloaded asset IS the NSIS setup installer (MochaTools-Setup-x.x.x.exe)
+        — no zip, no extraction needed. We just need to wait for our process to
+        exit, then launch the installer.
         """
-        extract_dir = os.path.join(tmp_dir, "extracted")
-        os.makedirs(extract_dir, exist_ok=True)
-
-        try:
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(extract_dir)
-        except zipfile.BadZipFile as e:
-            raise RuntimeError(f"Downloaded file is not a valid zip archive: {e}") from e
-
-
-        # Log everything extracted so we can see the actual structure
-        extracted_files = []
-        for root, _dirs, files in os.walk(extract_dir):
-            for f in files:
-                extracted_files.append(os.path.join(root, f))
-
-        # Find the setup installer anywhere in the extracted tree
-        installer = next(
-            (p for p in extracted_files
-             if "setup" in os.path.basename(p).lower()
-             and p.lower().endswith(".exe")),
-            None,
-        )
-        if not installer:
-            raise RuntimeError(
-                "No setup installer found inside the downloaded zip.\n"
-                f"Files found: {extracted_files}"
-            )
+        if not os.path.exists(installer_path):
+            raise RuntimeError(f"Downloaded installer not found: {installer_path}")
 
         bat        = os.path.join(tmp_dir, "update.bat")
         _test_mode = "--test-update" in sys.argv and not getattr(sys, "frozen", False)
@@ -404,9 +383,9 @@ class UpdateDownloadWorker(QThread):
             f'call :log "Waiting 3s for file locks to clear..."',
             "timeout /t 3 /nobreak >NUL",
             "",
-            f'call :log "Launching installer: {installer}"',
+            f'call :log "Launching installer: {installer_path}"',
             *([] if _test_mode else [
-                f'start "" "{installer}"',
+                f'start "" "{installer_path}"',
             ]),
             "",
             f'call :log "Done."',

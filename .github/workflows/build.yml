@@ -78,7 +78,7 @@ jobs:
               mochatools.py
           fi
 
-      - name: Build .deb package (Ubuntu only)
+      - name: Build .deb packages (Ubuntu only)
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
@@ -100,14 +100,20 @@ jobs:
           printf '[Desktop Entry]\nType=Application\nName=Mocha Tools\nGenericName=File Manager\nComment=File sharing and management by nxllxvxxd2\nExec=/usr/bin/mochatools\nIcon=mocha-tools\nCategories=Utility;FileManager;\nTerminal=false\nStartupNotify=true\n' \
             > deb_build/usr/share/applications/mocha-tools.desktop
 
-          fpm -s dir -t deb \
-            -n "Mocha Tools" \
-            -v "${{ env.VERSION }}" \
-            --description "File sharing and management by nxllxvxxd2" \
-            --vendor "nxllxvxxd2" \
-            --maintainer "nxllxvxxd2" \
-            --url "https://github.com/nxllxvxxd2/mochatools" \
-            "deb_build/=/"
+          mkdir -p deb_out
+
+          for arch in amd64 x86_64 arm64; do
+            fpm -s dir -t deb \
+              -n "Mocha Tools" \
+              -v "${{ env.VERSION }}" \
+              -a "$arch" \
+              -p "deb_out/mocha-tools_${{ env.VERSION }}_${arch}.deb" \
+              --description "File sharing and management by nxllxvxxd2" \
+              --vendor "nxllxvxxd2" \
+              --maintainer "nxllxvxxd2" \
+              --url "https://github.com/nxllxvxxd2/mochatools" \
+              "deb_build/=/"
+          done
 
       - name: Bundle Linux installer script (Ubuntu only)
         if: matrix.os == 'ubuntu-latest'
@@ -137,28 +143,35 @@ jobs:
             echo 'ERROR: dist/Mocha Tools.exe not found.' && exit 1
           fi
 
-          cp 'dist/Mocha Tools.exe' Mocha-Tools-windows.exe
-
           powershell.exe -Command "& 'C:\Program Files (x86)\NSIS\makensis.exe' installer.nsi"
 
-      - name: Upload artifact (Ubuntu)
+      - name: Upload .deb artifacts (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: debian_ubuntu-${{ env.VERSION }}
-          path: |
-            *.deb
-            MochaTools-*-linux.tar.gz
+          name: debian_ubuntu-deb-${{ env.VERSION }}
+          path: deb_out/*.deb
 
-      - name: Upload artifact (Windows)
+      - name: Upload Linux tarball (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian_ubuntu-tar-${{ env.VERSION }}
+          path: MochaTools-${{ env.VERSION }}-linux.tar.gz
+
+      - name: Upload portable exe (Windows)
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: windows-${{ env.VERSION }}
-          path: |
-            dist/
-            MochaTools-Setup-*.exe
-            Mocha-Tools-windows.exe
+          name: windows-portable-${{ env.VERSION }}
+          path: dist/Mocha Tools.exe
+
+      - name: Upload installer exe (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-${{ env.VERSION }}
+          path: MochaTools-Setup-*.exe
 
   # ──────────────────────────────────────────────
   # macOS arm64 (Apple Silicon — native)
@@ -338,38 +351,41 @@ jobs:
           RAW=$(cat VERSION | tr -d '\r\n')
           echo "VERSION=${RAW#v}" >> $GITHUB_ENV
 
-      - name: Download debian_ubuntu artifact
+      - name: Download .deb artifacts
         uses: actions/download-artifact@v4
         with:
-          name: debian_ubuntu-${{ env.VERSION }}
-          path: zipping/debian_ubuntu-${{ env.VERSION }}
+          name: debian_ubuntu-deb-${{ env.VERSION }}
+          path: release-assets
 
-      - name: Download windows artifact
+      - name: Download Linux tarball
         uses: actions/download-artifact@v4
         with:
-          name: windows-${{ env.VERSION }}
-          path: zipping/windows-${{ env.VERSION }}
+          name: debian_ubuntu-tar-${{ env.VERSION }}
+          path: release-assets
+
+      - name: Download Windows portable exe
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-portable-${{ env.VERSION }}
+          path: release-assets
+
+      - name: Download Windows installer exe
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer-${{ env.VERSION }}
+          path: release-assets
 
       - name: Download macos-arm64 artifact
         uses: actions/download-artifact@v4
         with:
           name: macos-arm64-${{ env.VERSION }}
-          path: zipping/macos-arm64-${{ env.VERSION }}
+          path: release-assets
 
       - name: Download macos-x86_64 artifact
         uses: actions/download-artifact@v4
         with:
           name: macos-x86_64-${{ env.VERSION }}
-          path: zipping/macos-x86_64-${{ env.VERSION }}
-
-      - name: Repack artifacts as zips
-        run: |
-          mkdir release-assets
-          cd zipping
-          for dir in */; do
-            name="${dir%/}"
-            zip -r "../release-assets/${name}.zip" "$dir"
-          done
+          path: release-assets
 
       - name: List release assets
         run: find release-assets -type f | sort
@@ -380,4 +396,4 @@ jobs:
           tag_name: ${{ env.VERSION }}
           name: ${{ env.VERSION }} -
           draft: true
-          files: release-assets/*.zip
+          files: release-assets/*

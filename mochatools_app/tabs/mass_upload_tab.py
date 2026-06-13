@@ -105,11 +105,12 @@ class MassUploadTab(QWidget):
         self._tree.setRootIsDecorated(False)
         self._tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         hdr = self._tree.header()
-        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
-        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.resizeSection(2, 160)
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        hdr.setStretchLastSection(True)
+        hdr.resizeSection(0, 280)   # File / Folder
+        hdr.resizeSection(1, 90)    # Size
+        hdr.resizeSection(2, 160)   # Destination
+        hdr.resizeSection(3, 110)   # Status
         self._tree.setMinimumHeight(160)
         self._tree.itemDoubleClicked.connect(self._edit_dest)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)

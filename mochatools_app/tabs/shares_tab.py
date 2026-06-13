@@ -86,10 +86,12 @@ class SharesTab(QWidget):
 
         from PyQt6.QtWidgets import QHeaderView
         hdr = self.tree.header()
-        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        hdr.setStretchLastSection(True)
+        hdr.resizeSection(0, 220)   # File
+        hdr.resizeSection(1, 320)   # Share Link
+        hdr.resizeSection(2, 90)    # Active
+        hdr.resizeSection(3, 100)   # Expires
         parent_lay.addWidget(self.tree, 1)
 
     def _build_copy_bar(self, parent_lay: QVBoxLayout):
@@ -160,8 +162,18 @@ class SharesTab(QWidget):
 
     def _render(self, data):
         shares = data.get("shares", data) if isinstance(data, dict) else data
+
+        # Preserve current selection (by token) across rebuild
+        selected_tokens = {
+            meta["token"]
+            for meta in self._selected_meta()
+            if meta and meta.get("token")
+        }
+
         self.tree.setSortingEnabled(False)
         self.tree.clear()
+
+        restored_items = []
 
         for s in shares:
             token     = s.get("token", "")
@@ -185,6 +197,17 @@ class SharesTab(QWidget):
             item.setForeground(2, QColor(active_color))
             item.setForeground(1, QColor("#9ca3af"))
             self.tree.addTopLevelItem(item)
+
+            if token and token in selected_tokens:
+                restored_items.append(item)
+
+        if restored_items:
+            # Block signals while restoring so we don't spam selection-changed
+            self.tree.blockSignals(True)
+            for item in restored_items:
+                item.setSelected(True)
+            self.tree.blockSignals(False)
+            self._on_selection_changed()
 
         self.tree.setSortingEnabled(True)
         count = self.tree.topLevelItemCount()

@@ -143,10 +143,12 @@ class RemoteTab(QWidget):
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.tree.itemSelectionChanged.connect(self._on_selection_changed)
         hdr = self.tree.header()
-        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        hdr.setStretchLastSection(True)
+        hdr.resizeSection(0, 280)   # File
+        hdr.resizeSection(1, 100)   # Status
+        hdr.resizeSection(2, 90)    # Progress
+        hdr.resizeSection(3, 160)   # Job ID
         parent_lay.addWidget(self.tree, 1)
 
     def _make_card(self) -> QFrame:

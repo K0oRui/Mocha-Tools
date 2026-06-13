@@ -134,14 +134,13 @@ class FilesBrowserTab(QWidget):
         self.tree.customContextMenuRequested.connect(self._context_menu)
 
         hdr = self.tree.header()
-        for col, mode in enumerate([
-            QHeaderView.ResizeMode.Stretch,
-            QHeaderView.ResizeMode.ResizeToContents,
-            QHeaderView.ResizeMode.ResizeToContents,
-            QHeaderView.ResizeMode.ResizeToContents,
-            QHeaderView.ResizeMode.ResizeToContents,
-        ]):
-            hdr.setSectionResizeMode(col, mode)
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        hdr.setStretchLastSection(True)
+        hdr.resizeSection(0, 320)   # Name
+        hdr.resizeSection(1, 90)    # Size
+        hdr.resizeSection(2, 90)    # Type
+        hdr.resizeSection(3, 80)    # Shared
+        hdr.resizeSection(4, 100)   # Expires
 
         parent_lay.addWidget(self.tree, 1)
 
