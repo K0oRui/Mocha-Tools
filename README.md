@@ -54,7 +54,7 @@
 ## Preview
 
 <p align="center"> 
-  <img src=".github/resources/sharecreation.gif" alt="Managing shares in Mocha Tools" width="420">
+  <img src=".github/resources/massupload.gif" alt="Managing shares in Mocha Tools" width="420">
 </p>
 <p align="center"> 
   <img src=".github/resources/remoteingest.gif" alt="Uploading files with drag and drop" width="400">
