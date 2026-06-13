@@ -21,13 +21,13 @@
 
 ## HUGE THANKS TO [BINK-LAB](https://github.com/Bink-lab) FOR MOCHA, ACCESS TO IT AND THE API, AS WELL AS CONTRIBUTIONS
 ## Source Requirements
-- Python 3.10 or higher (can be downloader [here](https://www.python.org/downloads/)
+- Python 3.10 or higher (can be downloader [here](https://www.python.org/downloads/))
 - PyQt6
 - requests
 - pyinstaller
 - Packaging
 - Keyring
-- A Mocha account and an API key which can be obtained [here](https://mocha.my))
+- A Mocha account and an API key which can be obtained [here](https://mocha.my)
 
 ![Divider](https://capsule-render.vercel.app/api?type=rect&color=C8A96E&height=3)
 
