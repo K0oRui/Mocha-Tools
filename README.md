@@ -74,7 +74,7 @@
 | Add to context menu (traditiional and Windows 11 (maybe idk how that works yet) for easy uploading | ❌ |
 | Complete control over files, deletion, moving, sharing, etc. | ✅ |
 | Debug and token management in its own tab | ✅ |
-| Add support for multiple files and folders at once | ❌ |
+| Add support for multiple files and folders at once | ✅ |
 | Configurable upload settings, such as chunk size and number of threads | ✅ |
 
 ![Divider](https://capsule-render.vercel.app/api?type=rect&color=C8A96E&height=3)
