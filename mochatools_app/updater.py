@@ -7,14 +7,22 @@ Flow:
      If a newer version exists it emits update_available(tag, url, release_notes).
 
   2. When the user clicks "Update Now", UpdateDownloadWorker downloads
-     the correct asset for the running platform, replaces the current
-     executable (or .app on macOS), and emits done() so the UI can
-     prompt a restart.
+     the correct asset for the running platform.
+
+     - Windows: downloads the NSIS installer exe and emits
+       ready_to_restart(path) with a batch script that launches it
+       after this process exits.
+     - Linux: downloads the linux tarball and emits
+       ready_to_restart(path) with a shell script that extracts the
+       tarball and runs installer.sh in a terminal window after this
+       process exits, so the user can respond to any sudo/password
+       prompts interactively.
+     - macOS: replaces the .app bundle in-place and emits done().
 
 Asset naming convention (must match build.yml):
-  Windows : MochaTools-Setup-<version>.exe   e.g. MochaTools-Setup-3.0.1.exe
-  Ubuntu  : debian_ubuntu-<version>.zip      e.g. debian_ubuntu-3.0.1.zip
-  macOS   : macos-<arch>-<version>.zip       e.g. macos-arm64-3.0.1.zip
+  Windows : MochaTools-Setup-<version>.exe      e.g. MochaTools-Setup-3.0.1.exe
+  Linux   : MochaTools-<version>-linux.tar.gz   e.g. MochaTools-3.0.1-linux.tar.gz
+  macOS   : macos-<arch>-<version>.zip          e.g. macos-arm64-3.0.1.zip
               arch is one of: x86_64 | arm64 | universal
 """
 
@@ -75,20 +83,16 @@ def _current_exe_override() -> str:
 
 def _asset_prefix() -> str:
     """
-    Return the platform-specific filename prefix used in GitHub release assets.
-    The full asset name is  <prefix>-<tag>.zip  e.g. windows-v3.0.1.zip
+    Return the macOS arch-specific filename prefix used in GitHub release
+    assets, e.g. "macos-arm64-3.0.1.zip". Windows and Linux assets use their
+    own naming schemes handled directly in _asset_name().
     """
-    system = platform.system()
-    if system == "Windows":
-        return "windows"
-    if system == "Darwin":
-        machine = platform.machine().lower()
-        if machine == "arm64":
-            return "macos-arm64"
-        if machine == "x86_64":
-            return "macos-x86_64"
-        return "macos-universal"
-    return "debian_ubuntu"
+    machine = platform.machine().lower()
+    if machine == "arm64":
+        return "macos-arm64"
+    if machine == "x86_64":
+        return "macos-x86_64"
+    return "macos-universal"
 
 
 def _asset_name(tag: str) -> str:
@@ -99,11 +103,13 @@ def _asset_name(tag: str) -> str:
         raise ValueError("_asset_name() called with an empty tag")
 
     if platform.system() == "Windows":
-        # Windows installer asset is named with the version number WITHOUT
-        # the leading 'v' (matches build.yml's ${{ env.VERSION }}), e.g.
-        # tag "v3.0.1" -> "MochaTools-Setup-3.0.1.exe"
-        version = tag.lstrip("v")
-        return f"MochaTools-Setup-{version}.exe"
+        # Windows installer asset filename matches build.yml's ${{ env.VERSION }},
+        # e.g. tag "3.0.1" -> "MochaTools-Setup-3.0.1.exe"
+        return f"MochaTools-Setup-{tag}.exe"
+
+    if platform.system() != "Darwin":
+        # Linux asset is the standalone tarball, e.g. "MochaTools-3.0.1-linux.tar.gz"
+        return f"MochaTools-{tag}-linux.tar.gz"
 
     return f"{_asset_prefix()}-{tag}.zip"
 
@@ -203,28 +209,108 @@ class UpdateCheckWorker(QThread):
 
 def launch_update_batch(bat_path: str, test_mode: bool = False) -> None:
     """
-    Launch a previously-prepared update batch script (see
-    UpdateDownloadWorker.ready_to_restart). The batch script will force-kill
-    this process and relaunch the updated exe.
+    Launch a previously-prepared update script (see
+    UpdateDownloadWorker.ready_to_restart).
+
+    - Windows : runs the .bat via cmd.exe with DETACHED_PROCESS so it survives
+                this process exiting.
+    - Linux   : delegates to launch_update_terminal() to open the .sh in a
+                terminal emulator so the user can see progress and answer sudo
+                prompts.  Falls back to a bare background Popen if no terminal
+                is found, and raises RuntimeError if that also fails.
+    - macOS   : update is applied in-place by _install_macos; this function is
+                not normally called on that platform.
     """
     if not bat_path or not os.path.exists(bat_path):
         return
 
-    # DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP ensures the batch is NOT a
-    # child of this process.  Without this, `taskkill /F /T` in the batch kills
-    # the batch script itself before it can copy the new exe and relaunch.
-    DETACHED_PROCESS         = 0x00000008
-    CREATE_NEW_PROCESS_GROUP = 0x00000200
-    flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    system = platform.system()
 
-    subprocess.Popen(
-        ["cmd.exe", "/C", bat_path],
-        creationflags=flags,
-        close_fds=True,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    if system == "Windows":
+        # DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP ensures the batch is NOT
+        # a child of this process.  Without this, `taskkill /F /T` in the batch
+        # kills the batch script itself before it can copy the new exe and
+        # relaunch.
+        DETACHED_PROCESS         = 0x00000008
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+
+        subprocess.Popen(
+            ["cmd.exe", "/C", bat_path],
+            creationflags=flags,
+            close_fds=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    else:
+        # Linux (and macOS fallback): the script is a .sh — open it in a
+        # terminal so the user can interact with installer.sh (sudo prompts, etc.)
+        launched = launch_update_terminal(bat_path)
+        if not launched:
+            # No graphical terminal found — run headlessly as a last resort.
+            # The user won't see output, but the update will still proceed.
+            os.chmod(
+                bat_path,
+                os.stat(bat_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH,
+            )
+            subprocess.Popen(
+                ["bash", bat_path],
+                close_fds=True,
+                start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+
+def launch_update_terminal(script_path: str) -> bool:
+    """
+    Launch a previously-prepared update shell script (see
+    UpdateDownloadWorker._install_linux) inside a terminal emulator so the
+    user can see output and respond to any sudo/password prompts.
+
+    Returns True if a terminal was launched, False if none could be found
+    (caller should show an error pointing the user at the script path).
+    """
+    if not script_path or not os.path.exists(script_path):
+        return False
+
+    os.chmod(script_path, os.stat(script_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    # Try common terminal emulators in order of preference. Each needs a
+    # slightly different "run this command and keep the window open" syntax.
+    candidates = [
+        ("x-terminal-emulator", ["-e", "bash", "-c", f"sudo bash {script_path}"]),
+        ("gnome-terminal",      ["--", "bash", "-c", f"sudo bash {script_path}"]),
+        ("konsole",             ["-e", "bash", "-c", f"sudo bash {script_path}"]),
+        ("xfce4-terminal",      ["-e", f"bash -c 'sudo bash {script_path}'"]),
+        ("mate-terminal",       ["-e", f"bash -c 'sudo bash {script_path}'"]),
+        ("tilix",               ["-e", f"bash -c 'sudo bash {script_path}'"]),
+        ("alacritty",           ["-e", "bash", "-c", f"sudo bash {script_path}"]),
+        ("kitty",               ["bash", "-c", f"sudo bash {script_path}"]),
+        ("xterm",               ["-hold", "-e", "bash", "-c", f"sudo bash {script_path}"]),
+    ]
+
+    for terminal, args in candidates:
+        path = shutil.which(terminal)
+        if not path:
+            continue
+        try:
+            subprocess.Popen(
+                [path, *args],
+                close_fds=True,
+                start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True
+        except Exception:
+            continue
+
+    return False
 
 
 class UpdateDownloadWorker(QThread):
@@ -233,7 +319,9 @@ class UpdateDownloadWorker(QThread):
     progress = pyqtSignal(int)          # 0–100
     status   = pyqtSignal(str)          # human-readable status text
     done     = pyqtSignal()             # update installed; caller should prompt restart
-    ready_to_restart = pyqtSignal(str)  # (windows only) batch script path, ready to launch on restart
+    ready_to_restart = pyqtSignal(str)  # path to a script ready to launch on restart
+                                          # (Windows: .bat that launches the installer exe;
+                                          #  Linux: .sh launched in a terminal that runs installer.sh)
     error    = pyqtSignal(str)
 
     def __init__(self, download_url: str, tag: str = "", parent=None):
@@ -296,8 +384,10 @@ class UpdateDownloadWorker(QThread):
                 asset_name = _asset_name(self.tag)
             elif platform.system() == "Windows":
                 asset_name = "MochaTools-Setup-update.exe"
-            else:
+            elif platform.system() == "Darwin":
                 asset_name = f"{_asset_prefix()}-update.zip"
+            else:
+                asset_name = "MochaTools-update-linux.tar.gz"
         except ValueError as exc:
             self.error.emit(str(exc))
             return
@@ -350,12 +440,16 @@ class UpdateDownloadWorker(QThread):
             return
         elif system == "Darwin":
             self._install_macos(tmp_asset, target, tmp_dir)
+            self.progress.emit(100)
+            self.status.emit("Update installed. Restart to apply.")
+            self.done.emit()
+            return
         else:
-            self._install_linux(tmp_asset, target, tmp_dir)
-
-        self.progress.emit(100)
-        self.status.emit("Update installed. Restart to apply.")
-        self.done.emit()
+            script = self._install_linux(tmp_asset, target, tmp_dir)
+            self.progress.emit(100)
+            self.status.emit("Update ready. Quit to continue in terminal.")
+            self.ready_to_restart.emit(script)
+            return
 
     # ── Platform installers ──────────────────────────────────────────────────
 
@@ -438,67 +532,64 @@ class UpdateDownloadWorker(QThread):
             check=False,
         )
 
-    def _install_linux(self, zip_path: str, target: str, tmp_dir: str):
+    def _install_linux(self, tarball_path: str, target: str, tmp_dir: str) -> str:
+        """
+        Write a small shell script that, once this app has quit, extracts the
+        downloaded tarball and runs its installer.sh. The script is launched
+        in a terminal window (see launch_update_terminal) so the user can
+        watch progress and respond to any sudo password prompts.
+
+        tarball layout (see build.yml):
+          Mocha-Tools-linux        ← new binary
+          installer.sh
+          builditems/debian_ubuntu/icon.png (optional)
+
+        Returns the path to the generated shell script.
+        """
+        if not os.path.exists(tarball_path):
+            raise RuntimeError(f"Downloaded update not found: {tarball_path}")
+
         extract_dir = os.path.join(tmp_dir, "extracted")
-        os.makedirs(extract_dir, exist_ok=True)
+        _test_mode  = "--test-update" in sys.argv and not getattr(sys, "frozen", False)
+        log         = os.path.join(tempfile.gettempdir(), "mochatools_update.log")
 
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(extract_dir)
+        script_path = os.path.join(tmp_dir, "update.sh")
 
-        candidates = [
-            os.path.join(extract_dir, f)
-            for f in os.listdir(extract_dir)
-            if not f.endswith((".zip", ".sh", ".txt", ".md"))
+        lines = [
+            "#!/bin/bash",
+            f'LOG="{log}"',
+            'echo "=== Mocha Tools updater started ===" | tee -a "$LOG"',
+            "",
+            'echo "Waiting for app to exit..." | tee -a "$LOG"',
+            "sleep 2",
+            "",
+            f'mkdir -p "{extract_dir}"',
+            f'echo "Extracting update..." | tee -a "$LOG"',
+            f'tar -xzf "{tarball_path}" -C "{extract_dir}"',
+            "",
+            'if [ ! -f "' + os.path.join(extract_dir, "installer.sh") + '" ]; then',
+            '  echo "ERROR: installer.sh not found in update archive." | tee -a "$LOG"',
+            '  read -n 1 -s -r -p "Press any key to close..."',
+            "  exit 1",
+            "fi",
+            "",
+            f'cd "{extract_dir}"',
+            'chmod +x installer.sh "Mocha-Tools-linux" 2>/dev/null',
+            "",
+            'echo "Running installer.sh — you may be prompted for your password." | tee -a "$LOG"',
+            "echo",
+            *([] if _test_mode else [
+                "./installer.sh",
+            ]),
+            "",
+            'echo',
+            'echo "Update complete. You can close this window and relaunch Mocha Tools."',
+            'read -n 1 -s -r -p "Press any key to close..."',
         ]
-        if not candidates:
-            candidates = [os.path.join(extract_dir, f) for f in os.listdir(extract_dir)]
-        if not candidates:
-            raise RuntimeError("No binary found inside the downloaded zip.")
 
-        new_bin = candidates[0]
-        # Make the new binary executable before moving it into place
-        os.chmod(new_bin, os.stat(new_bin).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        script = "\n".join(lines) + "\n"
+        with open(script_path, "w", encoding="utf-8") as fh:
+            fh.write(script)
+        os.chmod(script_path, os.stat(script_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
-        backup = target + ".bak"
-        install_dir = os.path.dirname(target)
-
-        # Probe whether we can write to the install directory directly
-        try:
-            probe = os.path.join(install_dir, ".mocha_write_test")
-            with open(probe, "w") as fh:
-                fh.write("ok")
-            os.remove(probe)
-            needs_elevation = False
-        except PermissionError:
-            needs_elevation = True
-
-        if needs_elevation:
-            # Prefer pkexec (graphical polkit prompt); fall back to sudo
-            # Build a small shell snippet: backup old, move new, chmod
-            shell_cmd = (
-                f'cp -f "{target}" "{backup}" && '
-                f'mv -f "{new_bin}" "{target}" && '
-                f'chmod 755 "{target}"'
-            )
-            elevated = False
-            for elevator in ("pkexec", "sudo"):
-                if shutil.which(elevator):
-                    result = subprocess.run(
-                        [elevator, "sh", "-c", shell_cmd],
-                        timeout=60,
-                    )
-                    if result.returncode == 0:
-                        elevated = True
-                        break
-            if not elevated:
-                raise RuntimeError(
-                    "Cannot write to the installation directory.\n"
-                    "Neither pkexec nor sudo succeeded. "
-                    "Try running the updater with elevated permissions."
-                )
-        else:
-            if os.path.exists(backup):
-                os.remove(backup)
-            shutil.copy2(target, backup)
-            shutil.move(new_bin, target)
-            os.chmod(target, os.stat(target).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        return script_path

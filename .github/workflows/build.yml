@@ -78,43 +78,6 @@ jobs:
               mochatools.py
           fi
 
-      - name: Build .deb packages (Ubuntu only)
-        if: matrix.os == 'ubuntu-latest'
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ruby ruby-dev build-essential
-          sudo gem install --no-document fpm
-
-          mkdir -p deb_build/usr/bin
-          cp "dist/Mocha Tools" deb_build/usr/bin/mochatools
-          chmod 755 deb_build/usr/bin/mochatools
-
-          # Icon — goes into the hicolor theme so App Center picks it up
-          mkdir -p deb_build/usr/share/icons/hicolor/256x256/apps
-          cp builditems/debian_ubuntu/icon.png \
-            deb_build/usr/share/icons/hicolor/256x256/apps/mocha-tools.png
-
-          # .desktop entry — use printf to avoid heredoc/YAML conflicts
-          mkdir -p deb_build/usr/share/applications
-          printf '[Desktop Entry]\nType=Application\nName=Mocha Tools\nGenericName=File Manager\nComment=File sharing and management by nxllxvxxd2\nExec=/usr/bin/mochatools\nIcon=mocha-tools\nCategories=Utility;FileManager;\nTerminal=false\nStartupNotify=true\n' \
-            > deb_build/usr/share/applications/mocha-tools.desktop
-
-          mkdir -p deb_out
-
-          for arch in amd64 x86_64 arm64; do
-            fpm -s dir -t deb \
-              -n "Mocha Tools" \
-              -v "${{ env.VERSION }}" \
-              -a "$arch" \
-              -p "deb_out/mocha-tools_${{ env.VERSION }}_${arch}.deb" \
-              --description "File sharing and management by nxllxvxxd2" \
-              --vendor "nxllxvxxd2" \
-              --maintainer "nxllxvxxd2" \
-              --url "https://github.com/nxllxvxxd2/mochatools" \
-              "deb_build/=/"
-          done
-
       - name: Bundle Linux installer script (Ubuntu only)
         if: matrix.os == 'ubuntu-latest'
         shell: bash
@@ -144,13 +107,6 @@ jobs:
           fi
 
           powershell.exe -Command "& 'C:\Program Files (x86)\NSIS\makensis.exe' /DAPP_VERSION=${{ env.VERSION }} installer.nsi"
-
-      - name: Upload .deb artifacts (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@v4
-        with:
-          name: debian_ubuntu-deb-${{ env.VERSION }}
-          path: deb_out/*.deb
 
       - name: Upload Linux tarball (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
@@ -350,12 +306,6 @@ jobs:
         run: |
           RAW=$(cat VERSION | tr -d '\r\n')
           echo "VERSION=${RAW#v}" >> $GITHUB_ENV
-
-      - name: Download .deb artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: debian_ubuntu-deb-${{ env.VERSION }}
-          path: release-assets
 
       - name: Download Linux tarball
         uses: actions/download-artifact@v4

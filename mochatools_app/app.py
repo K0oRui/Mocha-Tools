@@ -28,7 +28,7 @@ from .logging_utils import write_debug_log
 from .styles import STYLESHEET
 from .workers import UploadWorker
 from .dialogs import FolderBrowserDialog
-from .updater import UpdateCheckWorker, UpdateDownloadWorker
+from .updater import UpdateCheckWorker, UpdateDownloadWorker, launch_update_batch
 from .remote_cache import cache, registry, CachePoller
 
 from .ui import lucide_icon, CustomTitleBar, DropZone, FullWidthTabWidget
@@ -659,11 +659,8 @@ class MochaTools(QMainWindow):
         )
         if result == QMessageBox.StandardButton.Yes:
             self.update_status_lbl.setText("Restarting…")
-            from .updater import launch_update_batch
-            test_mode = "--test-update" in sys.argv and not getattr(sys, "frozen", False)
-            launch_update_batch(self._update_bat_path, test_mode=test_mode)
-            # Quit cleanly so the batch doesn't need to taskkill us — the batch
-            # simply waits for our PID to disappear then copies the new exe in.
+            launch_update_batch(self._update_bat_path)
+            # Quit cleanly so the update script doesn't need to force-kill us.
             QApplication.quit()
 
     def _on_update_done(self):
