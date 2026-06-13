@@ -30,7 +30,7 @@
 ![Divider](https://capsule-render.vercel.app/api?type=rect&color=C8A96E&height=3)
 
 ### Running From Source
-1. `git clone https://github.com/nxllvxxd2/Mocha-Tools`
+1. `git clone https://github.com/nxllvxxd/Mocha-Tools`
 2. `cd Mocha-Tools`
 3. `pip install -r requirements.txt`
 4. `python mochatools.py`
