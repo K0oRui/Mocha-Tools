@@ -9,13 +9,13 @@
 
 ![Status](https://img.shields.io/badge/STATUS-ACTIVE-C8A96E?style=for-the-badge&labelColor=000000&logo=github&logoColor=C8A96E)
 ![Python](https://img.shields.io/badge/Python-3.10+-C8A96E?style=for-the-badge&labelColor=000000&logo=python&logoColor=C8A96E)
-![License](https://img.shields.io/github/license/nxllxvxxd2/Mocha-Tools?style=for-the-badge&color=C8A96E&labelColor=000000)
+![License](https://img.shields.io/github/license/nxllvxxd/Mocha-Tools?style=for-the-badge&color=C8A96E&labelColor=000000)
 
-![Commits](https://img.shields.io/github/commit-activity/m/nxllxvxxd2/Mocha-Tools?style=for-the-badge&color=C8A96E&labelColor=000000&label=Commits+This+Month)
-![Last Commit](https://img.shields.io/github/last-commit/nxllxvxxd2/Mocha-Tools?style=for-the-badge&color=C8A96E&labelColor=000000&logo=github)
-![Repo Size](https://img.shields.io/github/repo-size/nxllxvxxd2/Mocha-Tools?style=for-the-badge&color=C8A96E&labelColor=000000)
+![Commits](https://img.shields.io/github/commit-activity/m/nxllvxxd/Mocha-Tools?style=for-the-badge&color=C8A96E&labelColor=000000&label=Commits+This+Month)
+![Last Commit](https://img.shields.io/github/last-commit/nxllvxxd/Mocha-Tools?style=for-the-badge&color=C8A96E&labelColor=000000&logo=github)
+![Repo Size](https://img.shields.io/github/repo-size/nxllvxxd/Mocha-Tools?style=for-the-badge&color=C8A96E&labelColor=000000)
 
-![Contributors](https://contrib.rocks/image?repo=nxllxvxxd/Mocha-Tools)
+![Contributors](https://contrib.rocks/image?repo=nxllvxxd/Mocha-Tools)
 
 ![Divider](https://capsule-render.vercel.app/api?type=rect&color=C8A96E&height=3)
 
@@ -30,7 +30,7 @@
 ![Divider](https://capsule-render.vercel.app/api?type=rect&color=C8A96E&height=3)
 
 ### Running From Source
-1. `git clone https://github.com/nxllxvxxd2/Mocha-Tools`
+1. `git clone https://github.com/nxllvxxd2/Mocha-Tools`
 2. `cd Mocha-Tools`
 3. `pip install -r requirements.txt`
 4. `python mochatools.py`
