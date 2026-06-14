@@ -1,12 +1,5 @@
 <img src=".github/resources/banner.png" alt="Mocha Tools banner" width="900">
 
-[![Typing SVG](https://readme-typing-svg.demolab.com?font=Fira+Code&pause=1000&color=C8A96E&background=000000&width=900&lines=Cross+platform+tools+for+Mocha+written+in+Python;Designed+to+be+compiled+with+PyInstaller)](https://git.io/typing-svg)        
-<p align="center">
-  <img src=".github/resources/screenshot.png" alt="Mocha Tools main window" width="720">
-</p>
-
-![Divider](https://capsule-render.vercel.app/api?type=rect&color=C8A96E&height=3)
-
 ![Status](https://img.shields.io/badge/STATUS-ACTIVE-C8A96E?style=for-the-badge&labelColor=000000&logo=github&logoColor=C8A96E)
 ![Python](https://img.shields.io/badge/Python-3.10+-C8A96E?style=for-the-badge&labelColor=000000&logo=python&logoColor=C8A96E)
 ![License](https://img.shields.io/github/license/nxllvxxd/Mocha-Tools?style=for-the-badge&color=C8A96E&labelColor=000000)
@@ -15,9 +8,15 @@
 ![Last Commit](https://img.shields.io/github/last-commit/nxllvxxd/Mocha-Tools?style=for-the-badge&color=C8A96E&labelColor=000000&logo=github)
 ![Repo Size](https://img.shields.io/github/repo-size/nxllvxxd/Mocha-Tools?style=for-the-badge&color=C8A96E&labelColor=000000)
 
+
+[![Typing SVG](https://readme-typing-svg.demolab.com?font=Fira+Code&pause=1000&color=C8A96E&background=000000&width=900&lines=Cross+platform+tools+for+Mocha+written+in+Python;Designed+to+be+compiled+with+PyInstaller)](https://git.io/typing-svg)        
 ![Contributors](https://contrib.rocks/image?repo=nxllvxxd/Mocha-Tools)
+<p align="center">
+  <img src=".github/resources/screenshot.png" alt="Mocha Tools main window" width="720">
+</p>
 
 ![Divider](https://capsule-render.vercel.app/api?type=rect&color=C8A96E&height=3)
+
 ## Features
 - Uploads files to Mocha with a simple drag and drop interface, or selection through file manager.
 - Folder upload support
