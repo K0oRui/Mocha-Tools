@@ -11,7 +11,7 @@ from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView, QCheckBox, QFrame, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QMessageBox, QPushButton, QTreeWidget, QTreeWidgetItem,
+    QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
 
@@ -40,12 +40,34 @@ class RemoteTab(QWidget):
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(12, 12, 12, 12)
-        outer.setSpacing(10)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        self._build_ingest_card(outer)
-        self._build_jobs_toolbar(outer)
-        self._build_jobs_tree(outer)
+        # Ingest card lives inside a scroll area — same pattern as the Upload tab
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        inner = QWidget()
+        self._inner_lay = QVBoxLayout(inner)
+        self._inner_lay.setContentsMargins(16, 16, 16, 16)
+        self._inner_lay.setSpacing(10)
+        scroll.setWidget(inner)
+
+        self._build_ingest_card(self._inner_lay)
+        self._inner_lay.addStretch()
+
+        outer.addWidget(scroll)
+
+        # Toolbar and tree sit below the scroll, not inside it
+        bottom = QWidget()
+        bottom_lay = QVBoxLayout(bottom)
+        bottom_lay.setContentsMargins(12, 6, 12, 12)
+        bottom_lay.setSpacing(8)
+        self._build_jobs_toolbar(bottom_lay)
+        self._build_jobs_tree(bottom_lay)
+        outer.addWidget(bottom, 1)
 
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(5000)

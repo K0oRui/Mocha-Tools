@@ -214,6 +214,23 @@ def _build_updates_section(win, lay: QVBoxLayout):
     btn_row.addWidget(win.install_update_btn)
     btn_row.addStretch()
     card_lay.addLayout(btn_row)
+
+    # ── Behaviour checkboxes ──────────────────────────────────────────────────
+    win.check_updates_on_launch_cb = QCheckBox("Check for updates on launch")
+    win.check_updates_on_launch_cb.setToolTip(
+        "Automatically check for a new version each time Mocha Tools starts.\n"
+        "If an update is found you will be prompted to download it."
+    )
+    win.check_updates_on_launch_cb.setChecked(True)   # default on
+    card_lay.addWidget(win.check_updates_on_launch_cb)
+
+    win.auto_restart_cb = QCheckBox("Auto-restart after update downloads")
+    win.auto_restart_cb.setToolTip(
+        "Restart Mocha Tools automatically once an update has finished\n"
+        "downloading, without showing a confirmation prompt."
+    )
+    card_lay.addWidget(win.auto_restart_cb)
+
     lay.addWidget(card)
 
 
@@ -244,6 +261,12 @@ def load_settings(win):
     win.mass_chunk_spin.setValue(s.value("mass_chunk_mb", DEFAULT_CHUNK_SIZE_MB, type=int))
     win.mass_maxchunk_spin.setValue(s.value("mass_max_chunks", DEFAULT_MAX_CHUNKS, type=int))
     win.browser_download_cb.setChecked(s.value("browser_download", False, type=bool))
+    win.check_updates_on_launch_cb.setChecked(
+        s.value("check_updates_on_launch", True, type=bool)
+    )
+    win.auto_restart_cb.setChecked(
+        s.value("auto_restart_after_update", False, type=bool)
+    )
 
     # Pre-populate shares cache so both tabs render before the first network fetch
     raw = s.value("shares_cache", None)
@@ -266,13 +289,15 @@ def load_settings(win):
 def save_settings(win):
     """Persist win's widget values to QSettings."""
     s = QSettings(ORG_NAME, APP_NAME)
-    s.setValue("debug",            win.debug_cb.isChecked())
-    s.setValue("chunk_size_mb",    win.chunk_size_spin.value())
-    s.setValue("max_chunks",       win.max_chunks_spin.value())
-    s.setValue("mass_conc",        win.mass_conc_spin.value())
-    s.setValue("mass_chunk_mb",    win.mass_chunk_spin.value())
-    s.setValue("mass_max_chunks",  win.mass_maxchunk_spin.value())
-    s.setValue("browser_download", win.browser_download_cb.isChecked())
+    s.setValue("debug",                     win.debug_cb.isChecked())
+    s.setValue("chunk_size_mb",             win.chunk_size_spin.value())
+    s.setValue("max_chunks",                win.max_chunks_spin.value())
+    s.setValue("mass_conc",                 win.mass_conc_spin.value())
+    s.setValue("mass_chunk_mb",             win.mass_chunk_spin.value())
+    s.setValue("mass_max_chunks",           win.mass_maxchunk_spin.value())
+    s.setValue("browser_download",          win.browser_download_cb.isChecked())
+    s.setValue("check_updates_on_launch",   win.check_updates_on_launch_cb.isChecked())
+    s.setValue("auto_restart_after_update", win.auto_restart_cb.isChecked())
 
     cache = win.shares_tab._cache
     if cache is not None:

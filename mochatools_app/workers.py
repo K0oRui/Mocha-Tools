@@ -785,6 +785,8 @@ class FilesWorker(QThread):
                 self._delete_folder()
             elif self.op == "delete_shares":
                 self._delete_shares()
+            elif self.op == "rename":
+                self._rename()
         except Exception as e:
             self.error.emit(str(e))
 
@@ -931,6 +933,20 @@ class FilesWorker(QThread):
         )
         resp.raise_for_status()
         self.done.emit({"op": "mkdir", "path": full_path})
+
+    def _rename(self):
+        resp = requests.patch(
+            f"{self.base_url}/api/files/folders",
+            headers=self._h(),
+            json={
+                "path":    self.kwargs.get("path", "/"),
+                "oldName": self.kwargs.get("old_name", ""),
+                "newName": self.kwargs.get("new_name", ""),
+            },
+            timeout=self._TIMEOUT,
+        )
+        resp.raise_for_status()
+        self.done.emit({"op": "rename"})
 
     def _delete_shares(self):
         """Delete multiple shares by token. Attempts all; collects errors."""

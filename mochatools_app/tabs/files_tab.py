@@ -20,10 +20,10 @@ import os
 
 import requests
 
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QFileDialog, QFrame, QHBoxLayout, QHeaderView,
+    QAbstractItemView, QApplication, QFileDialog, QFrame, QHBoxLayout, QHeaderView,
     QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
@@ -56,6 +56,7 @@ class FilesBrowserTab(QWidget):
         self.current_path    = "/"
         self._workers        = []
         self._shares_map     = {}
+        self._current_share_url = ""
         # Legacy in-tab cache kept only as a fallback seed before the poller
         # delivers its first result; remote_cache is authoritative.
         self._shares_cache   = None
@@ -145,19 +146,38 @@ class FilesBrowserTab(QWidget):
         parent_lay.addWidget(self.tree, 1)
 
     def _build_share_bar(self, parent_lay: QVBoxLayout):
+        self._share_bar_row = QHBoxLayout()
+        self._share_bar_row.setContentsMargins(0, 0, 0, 0)
+        self._share_bar_row.setSpacing(8)
+
         self.share_bar = QLabel("")
         self.share_bar.setObjectName("log_console")
         self.share_bar.setWordWrap(True)
-        self.share_bar.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse |
-            Qt.TextInteractionFlag.TextSelectableByKeyboard |
-            Qt.TextInteractionFlag.LinksAccessibleByMouse |
-            Qt.TextInteractionFlag.LinksAccessibleByKeyboard
-        )
-        self.share_bar.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
         self.share_bar.setOpenExternalLinks(True)
-        self.share_bar.hide()
-        parent_lay.addWidget(self.share_bar)
+
+        self.copy_share_btn = QPushButton("Copy link")
+        self.copy_share_btn.setFixedHeight(36)
+        self.copy_share_btn.setStyleSheet(
+            "min-height:0px; padding:0px 16px; font-size:13px; font-weight:600;"
+            "background:#1e1c19; color:#f0ece6; border:1px solid #3d3a35; border-radius:7px;"
+        )
+        self.copy_share_btn.setIcon(lucide_icon("copy", "#9c9484", 13))
+        self.copy_share_btn.setIconSize(QSize(13, 13))
+        self.copy_share_btn.clicked.connect(self._copy_share_url)
+
+        self._share_bar_row.addWidget(self.share_bar, 1)
+        self._share_bar_row.addWidget(self.copy_share_btn)
+
+        # Wrap in a container widget so we can show/hide the whole row
+        self._share_bar_widget = QWidget()
+        self._share_bar_widget.setLayout(self._share_bar_row)
+        self._share_bar_widget.hide()
+        parent_lay.addWidget(self._share_bar_widget)
+
+    def _copy_share_url(self):
+        QApplication.clipboard().setText(self._current_share_url)
+        self.copy_share_btn.setText("Copied!")
+        QTimer.singleShot(1500, lambda: self.copy_share_btn.setText("Copy link"))
 
     def _tb(self, label: str, icon_name: str, slot, danger: bool = False) -> QPushButton:
         btn = QPushButton(f"  {label}")
@@ -212,7 +232,7 @@ class FilesBrowserTab(QWidget):
 
         self.current_path = path
         self.path_edit.setText(path)
-        self.share_bar.hide()
+        self._share_bar_widget.hide()
         write_debug_log(f"[DEBUG] _navigate: navigating to path={path!r}")
 
         # Subscribe to cache updates for the new path
@@ -697,11 +717,12 @@ class FilesBrowserTab(QWidget):
                 QMessageBox.StandardButton.Cancel,
             )
             if ans == QMessageBox.StandardButton.No:
+                self._current_share_url = existing_url
                 self.share_bar.setText(
                     f'Share link: <a href="{existing_url}" style="color:#c8a96e;">'
                     f'{existing_url}</a>'
                 )
-                self.share_bar.show()
+                self._share_bar_widget.show()
                 return
             elif ans == QMessageBox.StandardButton.Cancel:
                 return

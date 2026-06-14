@@ -240,19 +240,27 @@ class MochaTools(QMainWindow):
         self.log_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         status_lay.addWidget(self.log_label)
 
+        self._share_result_url = ""
+        share_result_row = QHBoxLayout()
+        share_result_row.setContentsMargins(0, 0, 0, 0)
+        share_result_row.setSpacing(8)
         self.share_result = QLabel("")
         self.share_result.setObjectName("log_console")
         self.share_result.setWordWrap(True)
-        self.share_result.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse |
-            Qt.TextInteractionFlag.TextSelectableByKeyboard |
-            Qt.TextInteractionFlag.LinksAccessibleByMouse |
-            Qt.TextInteractionFlag.LinksAccessibleByKeyboard
-        )
-        self.share_result.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
         self.share_result.setOpenExternalLinks(True)
-        self.share_result.hide()
-        status_lay.addWidget(self.share_result)
+        self.copy_share_result_btn = QPushButton("Copy link")
+        self.copy_share_result_btn.setFixedHeight(36)
+        self.copy_share_result_btn.setStyleSheet(
+            "min-height:0px; padding:0px 16px; font-size:13px; font-weight:600;"
+            "background:#1e1c19; color:#f0ece6; border:1px solid #3d3a35; border-radius:7px;"
+        )
+        self.copy_share_result_btn.clicked.connect(self._copy_share_result)
+        share_result_row.addWidget(self.share_result, 1)
+        share_result_row.addWidget(self.copy_share_result_btn)
+        self._share_result_widget = QWidget()
+        self._share_result_widget.setLayout(share_result_row)
+        self._share_result_widget.hide()
+        status_lay.addWidget(self._share_result_widget)
         main.addWidget(status_card)
 
         # SHARE OPTIONS section
@@ -373,7 +381,7 @@ class MochaTools(QMainWindow):
             self._log(f"[DEBUG] Selected: {os.path.basename(file_list[0])}")
         else:
             self._log(f"[DEBUG] Selected folder: {len(file_list)} files")
-        self.share_result.hide()
+        self._share_result_widget.hide()
 
     # ── Upload flow ───────────────────────────────────────────────────────────
 
@@ -390,7 +398,7 @@ class MochaTools(QMainWindow):
 
         save_settings(self)
         self._set_uploading(True)
-        self.share_result.hide()
+        self._share_result_widget.hide()
         self.progress_bar.setValue(0)
         self.pct_label.setText("0.000%")
         self.speed_label.setText("")
@@ -455,7 +463,7 @@ class MochaTools(QMainWindow):
         self.pct_label.setText("0.000%")
         self.speed_label.setText("")
         self.transferred_label.setText("")
-        self.share_result.hide()
+        self._share_result_widget.hide()
         self._log("Upload cancelled by user.")
 
     def _set_uploading(self, active: bool):
@@ -489,8 +497,9 @@ class MochaTools(QMainWindow):
         self._on_upload_done(upload_path)
         if result.get("share_url"):
             url = result["share_url"]
+            self._share_result_url = url
             self.share_result.setText(f'<a href="{url}" style="color:#c8a96e;">{url}</a>')
-            self.share_result.show()
+            self._share_result_widget.show()
             # A new share was created — invalidate shares cache
             self._on_share_created()
 
@@ -537,6 +546,12 @@ class MochaTools(QMainWindow):
         from .remote_cache import cache as _cache
         _cache.invalidate_op("shares")
         self._poller.force_refresh("shares")
+
+    def _copy_share_result(self):
+        from PyQt6.QtWidgets import QApplication
+        QApplication.clipboard().setText(self._share_result_url)
+        self.copy_share_result_btn.setText("Copied!")
+        QTimer.singleShot(1500, lambda: self.copy_share_result_btn.setText("Copy link"))
 
     # ── Status helpers ────────────────────────────────────────────────────────
 
