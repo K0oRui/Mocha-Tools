@@ -10,7 +10,6 @@
 
 
 [![Typing SVG](https://readme-typing-svg.demolab.com?font=Fira+Code&pause=1000&color=C8A96E&background=000000&width=900&lines=Cross+platform+tools+for+Mocha+written+in+Python;Designed+to+be+compiled+with+PyInstaller)](https://git.io/typing-svg)        
-![Contributors](https://contrib.rocks/image?repo=nxllvxxd/Mocha-Tools)
 <p align="center">
   <img src=".github/resources/screenshot.png" alt="Mocha Tools main window" width="720">
 </p>
