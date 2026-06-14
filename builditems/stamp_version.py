@@ -3,7 +3,8 @@
 builditems/stamp_version.py
 Called by build.yml before PyInstaller runs.
 Rewrites the APP_VERSION line in mochatools_app/constants.py,
-patches !define APP_VERSION in installer.nsi, and generates
+patches !define APP_VERSION in installer.nsi,
+patches APP_VERSION in installer.sh, and generates
 builditems/windows/version.txt for PyInstaller's --version-file.
 
 Usage:
@@ -47,7 +48,7 @@ def main():
         print("ERROR: APP_VERSION line not found in constants.py", file=sys.stderr)
         sys.exit(1)
     constants.write_text(new_text, encoding="utf-8")
-    print(f"Stamped APP_VERSION = \"{version}\" into {constants}")
+    print(f'Stamped APP_VERSION = "{version}" into {constants}')
 
     # ── 2. installer.nsi ─────────────────────────────────────────────────────
     nsi = root / "installer.nsi"
@@ -60,11 +61,27 @@ def main():
         )
         if n:
             nsi.write_text(nsi_new, encoding="utf-8")
-            print(f"Patched APP_VERSION = \"{version}\" into {nsi}")
+            print(f'Patched APP_VERSION = "{version}" into {nsi}')
         else:
-            print(f"WARNING: APP_VERSION not found in installer.nsi", file=sys.stderr)
+            print("WARNING: APP_VERSION not found in installer.nsi", file=sys.stderr)
 
-    # ── 3. builditems/windows/version.txt (generated for PyInstaller) ────────
+    # ── 3. installer.sh ──────────────────────────────────────────────────────
+    installer_sh = root / "installer.sh"
+    if installer_sh.exists():
+        sh_text = installer_sh.read_text(encoding="utf-8")
+        sh_new, n = re.subn(
+            r'^(APP_VERSION=")v?[\d.]+(")',
+            rf'\g<1>v{version}\2',
+            sh_text,
+            flags=re.MULTILINE,
+        )
+        if n:
+            installer_sh.write_text(sh_new, encoding="utf-8")
+            print(f'Patched APP_VERSION = "v{version}" into {installer_sh}')
+        else:
+            print("WARNING: APP_VERSION not found in installer.sh", file=sys.stderr)
+
+    # ── 4. builditems/windows/version.txt (generated for PyInstaller) ────────
     ver_tuple = make_tuple(version)
     ver_dir = root / "builditems" / "windows"
     ver_dir.mkdir(parents=True, exist_ok=True)

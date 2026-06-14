@@ -282,15 +282,15 @@ def launch_update_terminal(script_path: str) -> bool:
     # Try common terminal emulators in order of preference. Each needs a
     # slightly different "run this command and keep the window open" syntax.
     candidates = [
-        ("x-terminal-emulator", ["-e", "bash", "-c", f"sudo bash {script_path}"]),
-        ("gnome-terminal",      ["--", "bash", "-c", f"sudo bash {script_path}"]),
-        ("konsole",             ["-e", "bash", "-c", f"sudo bash {script_path}"]),
-        ("xfce4-terminal",      ["-e", f"bash -c 'sudo bash {script_path}'"]),
-        ("mate-terminal",       ["-e", f"bash -c 'sudo bash {script_path}'"]),
-        ("tilix",               ["-e", f"bash -c 'sudo bash {script_path}'"]),
-        ("alacritty",           ["-e", "bash", "-c", f"sudo bash {script_path}"]),
-        ("kitty",               ["bash", "-c", f"sudo bash {script_path}"]),
-        ("xterm",               ["-hold", "-e", "bash", "-c", f"sudo bash {script_path}"]),
+        ("x-terminal-emulator", ["-e", "bash", script_path]),
+        ("gnome-terminal",      ["--", "bash", script_path]),
+        ("konsole",             ["-e", "bash", script_path]),
+        ("xfce4-terminal",      ["-e", f"bash {script_path}"]),
+        ("mate-terminal",       ["-e", f"bash {script_path}"]),
+        ("tilix",               ["-e", f"bash {script_path}"]),
+        ("alacritty",           ["-e", "bash", script_path]),
+        ("kitty",               ["bash", script_path]),
+        ("xterm",               ["-hold", "-e", "bash", script_path]),
     ]
 
     for terminal, args in candidates:
@@ -558,10 +558,24 @@ class UpdateDownloadWorker(QThread):
         lines = [
             "#!/bin/bash",
             f'LOG="{log}"',
+            f'TMP_DIR="{tmp_dir}"',
             'echo "=== Mocha Tools updater started ===" | tee -a "$LOG"',
             "",
-            'echo "Waiting for app to exit..." | tee -a "$LOG"',
-            "sleep 2",
+            # Kill any running mochatools process
+            'echo "Checking for running mochatools process..." | tee -a "$LOG"',
+            'if pgrep -x "mochatools" > /dev/null 2>&1; then',
+            '  echo "Stopping running mochatools..." | tee -a "$LOG"',
+            '  pkill -x "mochatools" 2>/dev/null || true',
+            '  sleep 2',
+            '  # Force kill if still running',
+            '  if pgrep -x "mochatools" > /dev/null 2>&1; then',
+            '    pkill -9 -x "mochatools" 2>/dev/null || true',
+            '    sleep 1',
+            '  fi',
+            '  echo "Process stopped." | tee -a "$LOG"',
+            'else',
+            '  echo "No running instance found." | tee -a "$LOG"',
+            'fi',
             "",
             f'mkdir -p "{extract_dir}"',
             f'echo "Extracting update..." | tee -a "$LOG"',
@@ -576,11 +590,16 @@ class UpdateDownloadWorker(QThread):
             f'cd "{extract_dir}"',
             'chmod +x installer.sh "Mocha-Tools-linux" 2>/dev/null',
             "",
-            'echo "Running installer.sh — you may be prompted for your password." | tee -a "$LOG"',
+            # installer.sh handles its own sudo escalation via exec sudo
+            'echo "Running installer..." | tee -a "$LOG"',
             "echo",
             *([] if _test_mode else [
                 "./installer.sh",
             ]),
+            "",
+            # Cleanup temp directory
+            'echo "Cleaning up..." | tee -a "$LOG"',
+            f'rm -rf "$TMP_DIR"',
             "",
             'echo',
             'echo "Update complete. You can close this window and relaunch Mocha Tools."',

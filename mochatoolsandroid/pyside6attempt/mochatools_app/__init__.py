@@ -1,1 +1,0 @@
-"""Mocha Tools application package."""

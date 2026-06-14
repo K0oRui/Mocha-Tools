@@ -8,8 +8,8 @@
 #   ./installer.sh --uninstall
 #
 # What it does:
-#   • Copies the binary to /usr/local/bin/mochatools  (system) or
-#     ~/.local/bin/mochatools                          (user, no sudo)
+#   • Escalates to root via sudo if not already running as root
+#   • Copies the binary to /usr/local/bin/mochatools
 #   • Installs a .desktop file for the app launcher
 #   • Installs an icon to the hicolor icon theme
 #   • Writes an uninstall script to the install prefix
@@ -56,20 +56,14 @@ for arg in "$@"; do
 done
 
 # ── Privilege / prefix selection ─────────────────────────────────────────────
-if [[ $EUID -eq 0 ]]; then
-    PREFIX="/usr/local"
-    DESKTOP_DIR="/usr/share/applications"
-    ICON_DIR="/usr/share/icons/hicolor/256x256/apps"
-    SYSTEM_INSTALL=true
-else
-    PREFIX="$HOME/.local"
-    DESKTOP_DIR="$HOME/.local/share/applications"
-    ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
-    SYSTEM_INSTALL=false
-    echo "Running without root — installing to $PREFIX (no sudo required)."
-    echo "For a system-wide install, re-run with sudo."
-    echo ""
+if [[ $EUID -ne 0 ]]; then
+    echo "Root privileges required. Re-running with sudo..."
+    exec sudo bash "$0" "$@"
 fi
+
+PREFIX="/usr/local"
+DESKTOP_DIR="/usr/share/applications"
+ICON_DIR="/usr/share/icons/hicolor/256x256/apps"
 
 BIN_DIR="$PREFIX/bin"
 UNINSTALL_SCRIPT="$PREFIX/lib/mochatools/uninstall.sh"
@@ -82,13 +76,8 @@ if $UNINSTALL; then
     rm -f  "$ICON_DIR/mochatools.png"
     rm -f  "$UNINSTALL_SCRIPT"
     rmdir --ignore-fail-on-non-empty "$PREFIX/lib/mochatools" 2>/dev/null || true
-    if $SYSTEM_INSTALL; then
-        update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
-        gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
-    else
-        update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
-        gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
-    fi
+    update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
+    gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
     echo "✓ $APP_NAME uninstalled."
     exit 0
 fi
@@ -158,19 +147,7 @@ echo "  ✓ Uninstall script → $UNINSTALL_SCRIPT"
 
 # Refresh desktop DB / icon cache
 update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
-if $SYSTEM_INSTALL; then
-    gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
-else
-    gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
-fi
-
-# PATH hint for user installs
-if ! $SYSTEM_INSTALL && [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
-    echo ""
-    echo "  ⚠ $BIN_DIR is not in your PATH."
-    echo "  Add this line to your ~/.bashrc or ~/.zshrc:"
-    echo "      export PATH=\"\$HOME/.local/bin:\$PATH\""
-fi
+gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
 
 echo ""
 echo "✓ $APP_NAME $APP_VERSION installed successfully."
