@@ -5,8 +5,8 @@ MochaTools is the application shell.  All tab content lives in
 mochatools_app/tabs/ and shared widgets in mochatools_app/ui/.
 
 Tab index reference:
-  0  Upload        1  Mass Upload   2  Remote
-  3  Files         4  Shares        5  Settings
+  0  Upload        1  Remote       2  Files
+  3  Shares        4  Sync         5  Settings
 """
 
 import os
@@ -33,7 +33,7 @@ from .remote_cache import cache, registry, CachePoller
 
 from .ui import lucide_icon, CustomTitleBar, DropZone, FullWidthTabWidget
 from .tabs import (
-    FilesBrowserTab, MassUploadTab, RemoteTab, SharesTab,
+    FilesBrowserTab, MassUploadTab, RemoteTab, SharesTab, SyncTab,
     build_settings_tab, load_settings, save_settings,
 )
 
@@ -81,6 +81,7 @@ class MochaTools(QMainWindow):
         upload_tab   = self._build_upload_tab()
         settings_tab = build_settings_tab(self)   # attaches spinboxes etc. to self
 
+        # Create mass-upload widget but embed it into the main Upload tab
         self.mass_upload_tab = MassUploadTab(
             get_api_key=lambda: self.api_key_edit.text().strip(),
             get_mass_settings=lambda: (
@@ -104,14 +105,33 @@ class MochaTools(QMainWindow):
         self.shares_tab = SharesTab(
             get_api_key=lambda: self.api_key_edit.text().strip(),
         )
+        self.sync_tab = SyncTab(
+            get_api_key=lambda: self.api_key_edit.text().strip(),
+            get_sync_settings=lambda: (
+                self.sync_conc_spin.value(),
+                self.sync_chunk_spin.value(),
+                self.sync_maxchunk_spin.value(),
+            ),
+            get_debug=lambda: self.debug_cb.isChecked(),
+        )
+
+        # Embed the Mass Upload UI inside the main Upload tab so there's a
+        # single Upload tab that contains both single-file and mass upload
+        # functionality.
+        try:
+            upload_tab.layout().addWidget(self.mass_upload_tab)
+        except Exception:
+            # Fallback: if layout isn't available for any reason, add as a
+            # separate tab (keeps behaviour safe)
+            self.tabs.addTab(self.mass_upload_tab, "Mass Upload")
 
         # Add tabs in order
-        self.tabs.addTab(upload_tab,           "Upload")
-        self.tabs.addTab(self.mass_upload_tab, "Mass Upload")
-        self.tabs.addTab(self.remote_tab,      "Remote")
-        self.tabs.addTab(self.files_tab,       "Files")
-        self.tabs.addTab(self.shares_tab,      "Shares")
-        self.tabs.addTab(settings_tab,         "Settings")
+        self.tabs.addTab(upload_tab,      "Upload")
+        self.tabs.addTab(self.remote_tab,  "Remote")
+        self.tabs.addTab(self.files_tab,   "Files")
+        self.tabs.addTab(self.shares_tab,  "Shares")
+        self.tabs.addTab(self.sync_tab,    "Sync")
+        self.tabs.addTab(settings_tab,     "Settings")
 
         # ── Remote cache poller ───────────────────────────────────────────────
         # Created here so it can be passed to tabs that need to dynamically
@@ -128,10 +148,10 @@ class MochaTools(QMainWindow):
 
         _tab_icons = [
             ("upload",         "#9c9484"),
-            ("upload",         "#9c9484"),
             ("download-cloud", "#9c9484"),
             ("folder",         "#9c9484"),
             ("share-2",        "#9c9484"),
+            ("refresh-cw",     "#9c9484"),
             ("settings",       "#9c9484"),
         ]
         for i, (icon_name, color) in enumerate(_tab_icons):
@@ -587,20 +607,20 @@ class MochaTools(QMainWindow):
     # ── Tab switching ─────────────────────────────────────────────────────────
 
     def _on_tab_changed(self, index: int):
-        # 0=Upload, 1=Mass Upload, 2=Remote, 3=Files, 4=Shares, 5=Settings
-        self.remote_tab.set_active(index == 2)
+        # 0=Upload, 1=Remote, 2=Files, 3=Shares, 4=Sync, 5=Settings
+        self.remote_tab.set_active(index == 1)
 
         api_key = self.api_key_edit.text().strip()
         if not api_key:
             return
 
-        if index in (3, 4) and self._poller:
+        if index in (2, 3) and self._poller:
             # Ensure poller is running whenever Files or Shares tab is visible
             self._poller.start()
 
-        if index == 3:
+        if index == 2:
             self.files_tab._navigate(self.files_tab.current_path)
-        elif index == 4:
+        elif index == 3:
             # Poller is already running after start() above; serve stale cache
             # instantly if available, fresh data arrives via subscription.
             stale = cache.get("shares")
@@ -608,7 +628,7 @@ class MochaTools(QMainWindow):
                 self.shares_tab._cache = stale
                 self.shares_tab._render(stale)
                 self.shares_tab._status("Refreshing…")
-        elif index != 2 and index != 5:
+        elif index != 2 and index != 6:
             save_settings(self)
 
     # ── Auto-update ───────────────────────────────────────────────────────────
@@ -705,7 +725,7 @@ class MochaTools(QMainWindow):
         from .constants import UPDATE_CHECK_URL
         from .updater import _asset_name
 
-        self.tabs.setCurrentIndex(5)          # jump to Settings tab
+        self.tabs.setCurrentIndex(6)          # jump to Settings tab
         self.update_status_lbl.setText("Test mode: fetching latest release info…")
         self.update_progress.setValue(0)
         self.update_progress.show()
@@ -782,6 +802,7 @@ class MochaTools(QMainWindow):
     def closeEvent(self, event):
         save_settings(self)
         self.remote_tab.set_active(False)
+        self.sync_tab.closeEvent(event)
         if self._poller:
             self._poller.stop()
         for w in list(self.remote_tab._workers):

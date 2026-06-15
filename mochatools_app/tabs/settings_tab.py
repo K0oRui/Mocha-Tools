@@ -63,6 +63,7 @@ def build_settings_tab(win) -> QWidget:
     _build_api_section(win, lay)
     _build_logging_section(win, lay)
     _build_mass_upload_section(win, lay)
+    _build_sync_section(win, lay)
     _build_multipart_section(win, lay)
     _build_updates_section(win, lay)
     lay.addStretch()
@@ -144,6 +145,28 @@ def _build_mass_upload_section(win, lay: QVBoxLayout):
     win.mass_maxchunk_spin = _spinbox(1, 20, DEFAULT_MAX_CHUNKS, " chunks",
         "Max parts sent in parallel per file (1–20).")
     _add_spin_row(card_lay, "Parallel chunks", win.mass_maxchunk_spin)
+    lay.addWidget(card)
+
+
+def _build_sync_section(win, lay: QVBoxLayout):
+    lay.addWidget(_sh("Sync"))
+    card     = _card()
+    card_lay = QVBoxLayout(card)
+    card_lay.setSpacing(10)
+
+    win.sync_conc_spin = _spinbox(1, 10, 2, " files",
+        "How many files the sync watcher uploads at the same time.\n"
+        "Higher values can saturate slower connections.")
+    _add_spin_row(card_lay, "Concurrent files", win.sync_conc_spin)
+
+    win.sync_chunk_spin = _spinbox(1, 100, DEFAULT_CHUNK_SIZE_MB, " MB",
+        "Size of each multipart part for sync uploads (1–100 MB).\n"
+        "Files smaller than this upload in one request.")
+    _add_spin_row(card_lay, "Chunk size", win.sync_chunk_spin)
+
+    win.sync_maxchunk_spin = _spinbox(1, 20, DEFAULT_MAX_CHUNKS, " chunks",
+        "Max parts sent in parallel per file during sync (1–20).")
+    _add_spin_row(card_lay, "Parallel chunks", win.sync_maxchunk_spin)
     lay.addWidget(card)
 
 
@@ -260,6 +283,9 @@ def load_settings(win):
     win.mass_conc_spin.setValue(s.value("mass_conc", 2, type=int))
     win.mass_chunk_spin.setValue(s.value("mass_chunk_mb", DEFAULT_CHUNK_SIZE_MB, type=int))
     win.mass_maxchunk_spin.setValue(s.value("mass_max_chunks", DEFAULT_MAX_CHUNKS, type=int))
+    win.sync_conc_spin.setValue(s.value("sync_conc", 2, type=int))
+    win.sync_chunk_spin.setValue(s.value("sync_chunk_mb", DEFAULT_CHUNK_SIZE_MB, type=int))
+    win.sync_maxchunk_spin.setValue(s.value("sync_max_chunks", DEFAULT_MAX_CHUNKS, type=int))
     win.browser_download_cb.setChecked(s.value("browser_download", False, type=bool))
     win.check_updates_on_launch_cb.setChecked(
         s.value("check_updates_on_launch", True, type=bool)
@@ -295,6 +321,9 @@ def save_settings(win):
     s.setValue("mass_conc",                 win.mass_conc_spin.value())
     s.setValue("mass_chunk_mb",             win.mass_chunk_spin.value())
     s.setValue("mass_max_chunks",           win.mass_maxchunk_spin.value())
+    s.setValue("sync_conc",                 win.sync_conc_spin.value())
+    s.setValue("sync_chunk_mb",             win.sync_chunk_spin.value())
+    s.setValue("sync_max_chunks",           win.sync_maxchunk_spin.value())
     s.setValue("browser_download",          win.browser_download_cb.isChecked())
     s.setValue("check_updates_on_launch",   win.check_updates_on_launch_cb.isChecked())
     s.setValue("auto_restart_after_update", win.auto_restart_cb.isChecked())
