@@ -872,8 +872,8 @@ class FilesBrowserTab(QWidget):
             "QMenu::item:selected { background:#332b1a; }"
             "QMenu::icon { padding:0 8px 0 6px; width:12px; height:12px; }"
         )
+        from ..theme import get_accent
         if meta.get("_type") == "file":
-            from ..theme import get_accent
             act = menu.addAction(lucide_icon("download-cloud", get_accent(), 12), "Download")
             act.triggered.connect(self._download_selected)
             act = menu.addAction(lucide_icon("share-2", get_accent(), 12), "Share")
@@ -881,7 +881,6 @@ class FilesBrowserTab(QWidget):
         if meta.get("_type") == "folder":
             act = menu.addAction(lucide_icon("pencil", get_accent(), 12), "Rename")
             act.triggered.connect(self._rename_selected)
-        from ..theme import get_accent
         act = menu.addAction(lucide_icon("move", get_accent(), 12), "Move")
         act.triggered.connect(self._move_selected)
         menu.addSeparator()
