@@ -396,9 +396,10 @@ QMenu {{
     color: #f0ece6;
     font-size: __FONT_SIZE__px;
 }}
-QMenu::item {{ padding: 6px 24px; border-radius: 4px; }}
+QMenu::item {{ padding: 6px 8px; border-radius: 4px; }}
 QMenu::item:selected {{ background: __ACCENT_PRESSED__; }}
 QMenu::separator {{ height: 1px; background: #2e2b27; margin: 4px 8px; }}
+QMenu::icon {{ padding: 0 6px 0 4px; width: 12px; height: 12px; }}
 QDialog {{ background-color: #181614; }}
 QDialogButtonBox QPushButton {{
     min-width: 72px;

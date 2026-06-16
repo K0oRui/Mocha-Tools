@@ -12,7 +12,7 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView, QCheckBox, QFrame, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QTreeWidget, QTreeWidgetItem,
-    QVBoxLayout, QWidget,
+    QVBoxLayout, QWidget, QAbstractScrollArea, QSizePolicy,
 )
 
 from ..constants import HARDCODED_BASE_URL
@@ -58,16 +58,19 @@ class RemoteTab(QWidget):
         self._build_ingest_card(self._inner_lay)
         self._inner_lay.addStretch()
 
-        outer.addWidget(scroll)
+        # Put the toolbar and jobs tree inside the same scroll area so the
+        # whole remote tab content scrolls as a single region.
+        # Add a small separator spacing and then build the jobs UI into the
+        # same inner layout used by the QScrollArea.
+        sep = QWidget()
+        sep.setFixedHeight(6)
+        self._inner_lay.addWidget(sep)
+        # toolbar
+        self._build_jobs_toolbar(self._inner_lay)
+        # tree
+        self._build_jobs_tree(self._inner_lay)
 
-        # Toolbar and tree sit below the scroll, not inside it
-        bottom = QWidget()
-        bottom_lay = QVBoxLayout(bottom)
-        bottom_lay.setContentsMargins(12, 6, 12, 12)
-        bottom_lay.setSpacing(8)
-        self._build_jobs_toolbar(bottom_lay)
-        self._build_jobs_tree(bottom_lay)
-        outer.addWidget(bottom, 1)
+        outer.addWidget(scroll)
 
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(5000)
@@ -158,6 +161,8 @@ class RemoteTab(QWidget):
         self.status_lbl = QLabel("")
         self.status_lbl.setStyleSheet(f"color: {accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;")
         tb.addWidget(self.status_lbl)
+        # parent_lay may be an outer layout or the inner scroll area layout;
+        # accept either by adding the QHBoxLayout to the provided layout.
         parent_lay.addLayout(tb)
         try:
             notifier().accent_changed.connect(lambda _old, _new: self._on_accent_changed(_old, _new))
@@ -190,6 +195,20 @@ class RemoteTab(QWidget):
         hdr.resizeSection(1, 100)   # Status
         hdr.resizeSection(2, 90)    # Progress
         hdr.resizeSection(3, 160)   # Job ID
+        # When the jobs tree is inside the scroll area, disable its own
+        # vertical scrollbar and let the outer QScrollArea provide scrolling
+        # for the whole page. Also adjust size to contents so the tree grows
+        # naturally and the QScrollArea handles overflow.
+        try:
+            # Let the outer scroll area handle vertical scrolling; make the
+            # tree expand to take available space so it isn't rendered tiny.
+            self.tree.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.tree.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            # Provide a reasonable minimum so the jobs area is usable even
+            # when there are few or no items yet.
+            self.tree.setMinimumHeight(200)
+        except Exception:
+            pass
         parent_lay.addWidget(self.tree, 1)
 
     def _make_card(self) -> QFrame:

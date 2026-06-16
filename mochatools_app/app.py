@@ -431,11 +431,11 @@ class MassUploadSection(QWidget):
     def _queue_context_menu(self, pos):
         item  = self._tree.itemAt(pos)
         menu  = QMenu(self)
+        # prefer central stylesheet QMenu::icon rules; keep only small item padding here
         menu.setStyleSheet(
             "QMenu { background:#1f1f1f; border:1px solid #3a3a3a; border-radius:8px; color:#f0f0f0; font-size:12px; }"
             "QMenu::item { padding:6px 8px; }"
             "QMenu::item:selected { background:#332b1a; }"
-            "QMenu::icon { padding:0 8px 0 6px; width:12px; height:12px; }"
         )
         if item:
             entry = next((e for e in self._queue if e.get("item") is item), None)
@@ -1280,7 +1280,7 @@ class MochaTools(QMainWindow):
             write_debug_log(msg)
 
     def _badge(self, text: str, color: str):
-        from .theme import get_accent
+        from .theme import get_accent, DEFAULT_ACCENT
         self.status_badge.setText(f"● {text}")
         # resolve dynamic default token
         if color == DEFAULT_ACCENT:

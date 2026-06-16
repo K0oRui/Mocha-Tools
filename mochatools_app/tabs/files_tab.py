@@ -950,7 +950,6 @@ class FilesBrowserTab(QWidget):
             "QMenu { background:#1f1f1f; border:1px solid #3a3a3a; border-radius:8px; color:#f0f0f0; font-size:12px; }"
             "QMenu::item { padding:6px 8px; }"
             "QMenu::item:selected { background:#332b1a; }"
-            "QMenu::icon { padding:0 8px 0 6px; width:12px; height:12px; }"
         )
         from ..theme import get_accent
         if meta.get("_type") == "file":

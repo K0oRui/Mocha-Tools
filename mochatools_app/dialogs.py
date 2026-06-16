@@ -20,6 +20,10 @@ from PyQt6.QtWidgets import (
 from .ui import lucide_icon
 
 
+# Keep references to in-flight fetch threads here so dialogs can be destroyed
+# without the QThread objects being garbage-collected while still running.
+_OUTSTANDING_FETCH_WORKERS = []
+
 # ── Shared: Mocha-styled frameless dialog base ────────────────────────────────
 class MochaDialog(QDialog):
     """
@@ -385,6 +389,11 @@ class FolderBrowserDialog(MochaDialog):
         w = _FolderFetchWorker(self.api_key, self.base_url, path, self._cancel_token)
         w.done.connect(self._on_fetch_done)
         self._worker = w
+        # retain a module-level reference to avoid QThread: Destroyed while running
+        try:
+            _OUTSTANDING_FETCH_WORKERS.append(w)
+        except Exception:
+            pass
         w.start()
 
     # ── Fetch result ──────────────────────────────────────────────────────────
@@ -410,6 +419,12 @@ class FolderBrowserDialog(MochaDialog):
         # Cache the result for instant re-render next time
         FolderBrowserDialog._path_cache[path] = result
         self._render(path, result)
+        # Remove finished worker references so list doesn't grow unbounded
+        try:
+            global _OUTSTANDING_FETCH_WORKERS
+            _OUTSTANDING_FETCH_WORKERS = [w for w in _OUTSTANDING_FETCH_WORKERS if not getattr(w, 'isFinished', lambda: True)()]
+        except Exception:
+            pass
 
     # ── Render folder list — exact same logic as the original ─────────────────
     def _render(self, path: str, data):
@@ -502,6 +517,15 @@ class FolderBrowserDialog(MochaDialog):
                 self._worker.done.disconnect(self._on_fetch_done)
             except RuntimeError:
                 pass
+        # also mark any outstanding workers for cancellation
+        try:
+            for w in list(_OUTSTANDING_FETCH_WORKERS):
+                try:
+                    w._cancel[0] = True
+                except Exception:
+                    pass
+        except Exception:
+            pass
         super().closeEvent(event)
 
 
