@@ -68,8 +68,9 @@ class SharesTab(QWidget):
             tb.addWidget(btn)
         tb.addStretch()
 
+        from ..theme import get_font
         self.status_lbl = QLabel("")
-        self.status_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:11px; background:transparent;")
+        self.status_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;")
         tb.addWidget(self.status_lbl)
         parent_lay.addLayout(tb)
         try:
@@ -83,7 +84,8 @@ class SharesTab(QWidget):
             self.refresh_btn.setIcon(lucide_icon("refresh-cw", get_accent(), 13))
             self.copy_btn.setIcon(lucide_icon("copy", get_accent(), 13))
             self.toggle_btn.setIcon(lucide_icon("link", get_accent(), 13))
-            self.status_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:11px; background:transparent;")
+            from ..theme import get_font
+            self.status_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;")
         except Exception:
             pass
 

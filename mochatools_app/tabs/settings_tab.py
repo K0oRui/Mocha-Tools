@@ -177,7 +177,12 @@ def build_settings_tab(win) -> QWidget:
                         pass
                 # tighten item height and font size via stylesheet as a fallback
                 try:
-                    v.setStyleSheet("QListView { font-size: 12px; } QListView::item { height: 26px; }")
+                    try:
+                        from ..theme import get_font
+                        fsz = int(get_font()[1])
+                    except Exception:
+                        fsz = 12
+                    v.setStyleSheet(f"QListView {{ font-size: {fsz}px; }} QListView::item {{ height: 26px; }}")
                 except Exception:
                     pass
             except Exception:

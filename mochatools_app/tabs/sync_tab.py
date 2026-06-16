@@ -159,8 +159,9 @@ class SyncTab(QWidget):
             tb.addWidget(btn)
         tb.addStretch()
 
+        from ..theme import get_font
         self.status_lbl = QLabel("")
-        self.status_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:11px; background:transparent;")
+        self.status_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;")
         tb.addWidget(self.status_lbl)
         parent_lay.addLayout(tb)
         try:
@@ -174,7 +175,8 @@ class SyncTab(QWidget):
             self.add_btn.setIcon(lucide_icon('folder', get_accent(), 13))
             self.refresh_btn.setIcon(lucide_icon('refresh-cw', get_accent(), 13))
             self.pause_btn.setIcon(lucide_icon('pause', get_accent(), 13))
-            self.status_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:11px; background:transparent;")
+            from ..theme import get_font
+            self.status_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;")
         except Exception:
             pass
 

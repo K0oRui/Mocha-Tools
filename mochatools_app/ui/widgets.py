@@ -54,15 +54,47 @@ class DropZone(QFrame):
         bold.setObjectName("drop_label_bold")
         rest = QLabel("or drag & drop a file / folder here")
         rest.setObjectName("drop_label")
+        # Ensure labels that rely on stylesheet tokens update when the font changes
+        try:
+            from ..theme import get_font, notifier
+            fam, fsz = get_font()
+            bold.setStyleSheet(f"font-size:{int(fsz)}px; background:transparent;")
+            rest.setStyleSheet(f"font-size:{int(fsz)}px; background:transparent;")
+            def _on_font_changed(_fam, sz):
+                try:
+                    bold.setStyleSheet(f"font-size:{int(sz)}px; background:transparent;")
+                    rest.setStyleSheet(f"font-size:{int(sz)}px; background:transparent;")
+                except Exception:
+                    pass
+            notifier().font_changed.connect(_on_font_changed)
+        except Exception:
+            pass
         row.addWidget(bold)
         row.addWidget(rest)
 
         self.file_label = QLabel("")
         self.file_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         from ..theme import get_accent
+        try:
+            from ..theme import get_font
+            fsz = int(get_font()[1])
+        except Exception:
+            fsz = 12
         self.file_label.setStyleSheet(
-            f"color: {get_accent()}; font-size: 12px; font-weight:600; background:transparent;"
+            f"color: {get_accent()}; font-size: {fsz}px; font-weight:600; background:transparent;"
         )
+        try:
+            from ..theme import notifier
+            def _on_font_changed(_fam, sz):
+                try:
+                    self.file_label.setStyleSheet(
+                        f"color: {get_accent()}; font-size: {int(sz)}px; font-weight:600; background:transparent;"
+                    )
+                except Exception:
+                    pass
+            notifier().font_changed.connect(_on_font_changed)
+        except Exception:
+            pass
         try:
             from ..theme import notifier
             def _on_accent_changed(_old, _new):
@@ -214,6 +246,11 @@ class FullWidthTabWidget(QWidget):
         try:
             from ..theme import notifier
             notifier().accent_changed.connect(lambda _old, _new: self._refresh_tab_styles())
+            try:
+                # also refresh tab styles when the font size/family changes
+                notifier().font_changed.connect(lambda _fam, _sz: self._refresh_tab_styles())
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -272,24 +309,26 @@ class FullWidthTabWidget(QWidget):
         # Build tab button CSS dynamically from current accent so the tab
         # bar updates immediately when the accent changes.
         try:
-            from ..theme import get_accent
+            from ..theme import get_accent, get_font
             from ..styles import compute_accent_variants
             acc, hov, _ = compute_accent_variants(get_accent())
+            fam, fsz = get_font()
         except Exception:
-            from ..theme import DEFAULT_ACCENT
+            from ..theme import DEFAULT_ACCENT, DEFAULT_FONT_SIZE
             from ..styles import compute_accent_variants
             acc, hov, _ = compute_accent_variants(DEFAULT_ACCENT)
+            fsz = DEFAULT_FONT_SIZE
 
         if active:
             return (
                 f"QPushButton {{ background:transparent; color:{acc}; border:none;"
                 f" border-bottom:2px solid {acc}; padding:11px 22px 9px 22px;"
-                " font-size:12px; font-weight:600; letter-spacing:0.2px; border-radius:0px; }"
+                f" font-size:{int(fsz)}px; font-weight:600; letter-spacing:0.2px; border-radius:0px; }}"
             )
         return (
             f"QPushButton {{ background:transparent; color:#5a5650; border:none;"
             f" border-bottom:2px solid transparent; padding:11px 22px 9px 22px;"
-            " font-size:12px; font-weight:600; letter-spacing:0.2px; border-radius:0px; }"
+            f" font-size:{int(fsz)}px; font-weight:600; letter-spacing:0.2px; border-radius:0px; }}"
             f"QPushButton:hover {{ color:#9c9484; border-bottom:2px solid #3d3a35; }}"
         )
 

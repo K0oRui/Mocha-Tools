@@ -37,7 +37,7 @@ QLabel#title_app_name {{
 }}
 QLabel#title_version {{
     color: #3d3a35;
-    font-size: 11px;
+    font-size: __FONT_SIZE__px;
     font-weight: 500;
     background: transparent;
 }}
@@ -49,7 +49,7 @@ QPushButton#tb_close {{
     max-width: 32px;
     min-height: 28px;
     max-height: 28px;
-    font-size: 14px;
+    font-size: __FONT_SIZE__px;
     color: #5a5650;
     padding: 0px;
 }}
@@ -83,7 +83,7 @@ QFrame#card {{
 }}
 QLabel#section_header {{
     color: #5a5650;
-    font-size: 11px;
+    font-size: __FONT_SIZE__px;
     font-weight: 700;
     letter-spacing: 1.5px;
     text-transform: uppercase;
@@ -93,13 +93,13 @@ QLabel#section_header {{
 }}
 QLabel#field_label {{
     color: #9c9484;
-    font-size: 12px;
+    font-size: __FONT_SIZE__px;
     min-width: 90px;
     background: transparent;
 }}
 QLabel#status_label {{
     color: #f0ece6;
-    font-size: 12px;
+    font-size: __FONT_SIZE__px;
     background: transparent;
 }}
 QLineEdit {{
@@ -192,7 +192,7 @@ QPushButton#upload_btn {{
     border: none;
     border-radius: 8px;
     padding: 10px 24px;
-    font-size: 13px;
+    font-size: __FONT_SIZE__px;
     font-weight: 700;
     letter-spacing: 0.3px;
 }}
@@ -205,14 +205,14 @@ QPushButton#browse_btn {{
     border: 1px solid #c8a96e;
     border-radius: 8px;
     padding: 0px 14px;
-    font-size: 12px;
+    font-size: __FONT_SIZE__px;
     min-height: 34px;
     max-height: 34px;
 }}
 QPushButton#browse_btn:hover {{ background-color: #252320; border-color: __ACCENT_HOVER__; }}
 QCheckBox {{
     color: #9c9484;
-    font-size: 12px;
+    font-size: __FONT_SIZE__px;
     spacing: 6px;
     background: transparent;
 }}
@@ -243,8 +243,8 @@ QPlainTextEdit#log_console {{
     border: 1px solid #2e2b27;
     border-radius: 8px;
     color: #c8a96e;
-    font-family: "Consolas", "Fira Code", "Courier New", monospace;
-    font-size: 11px;
+    font-family: __FONT_FAMILY__;
+    font-size: __FONT_SIZE__px;
     padding: 8px 10px;
     min-height: 46px;
 }}
@@ -256,7 +256,7 @@ QLabel#status_badge {{
     border: 1px solid #2e2b27;
     border-radius: 10px;
     color: #9c9484;
-    font-size: 11px;
+    font-size: __FONT_SIZE__px;
     font-weight: 600;
     padding: 2px 10px;
 }}
@@ -283,9 +283,9 @@ QFrame#drop_zone[drag_active="true"] QFrame#drop_zone_inner {{
     border-color: __ACCENT__;
     background: transparent;
 }}
-QLabel#drop_label      {{ color: #5a5650; font-size: 13px; background: transparent; }}
-QLabel#drop_label_bold {{ color: __ACCENT__; font-size: 13px; font-weight: 700; background: transparent; }}
-QLabel#drop_file_label {{ color: __ACCENT__; font-size: 12px; font-weight: 600; background: transparent; }}
+QLabel#drop_label      {{ color: #5a5650; font-size: __FONT_SIZE__px; background: transparent; }}
+QLabel#drop_label_bold {{ color: __ACCENT__; font-size: __FONT_SIZE__px; font-weight: 700; background: transparent; }}
+QLabel#drop_file_label {{ color: __ACCENT__; font-size: __FONT_SIZE__px; font-weight: 600; background: transparent; }}
 QFrame#divider {{ background-color: #2e2b27; max-height: 1px; border: none; }}
 QScrollBar:vertical {{ background: transparent; width: 6px; }}
 QScrollBar::handle:vertical {{ background: #3d3a35; border-radius: 3px; min-height: 20px; }}
@@ -321,8 +321,8 @@ QTabBar::tab {{
     color: #5a5650;
     border: none;
     border-bottom: 2px solid transparent;
-    padding: 10px 18px 8px 18px;
-    font-size: 12px;
+    padding: 8px 16px 6px 16px;
+    font-size: __FONT_SIZE__px;
     font-weight: 600;
     letter-spacing: 0.2px;
     margin-right: 0px;
@@ -346,7 +346,7 @@ QTreeWidget {{
     border: 1px solid #2e2b27;
     border-radius: 8px;
     color: #f0ece6;
-    font-size: 12px;
+    font-size: __FONT_SIZE__px;
     outline: none;
     show-decoration-selected: 1;
 }}
@@ -360,7 +360,7 @@ QHeaderView::section {{
     border-right: 1px solid #2e2b27;
     border-bottom: 1px solid #2e2b27;
     padding: 5px 8px;
-    font-size: 11px;
+    font-size: __FONT_SIZE__px;
     font-weight: 700;
     letter-spacing: 0.5px;
 }}
@@ -370,7 +370,7 @@ QPushButton#tb_btn {{
     border: 1px solid #2e2b27;
     border-radius: 7px;
     padding: 5px 12px;
-    font-size: 11px;
+    font-size: __FONT_SIZE__px;
     font-weight: 600;
     min-height: 28px;
 }}
@@ -383,7 +383,7 @@ QPushButton#tb_btn_danger {{
     border: 1px solid #2e2b27;
     border-radius: 7px;
     padding: 5px 12px;
-    font-size: 11px;
+    font-size: __FONT_SIZE__px;
     font-weight: 600;
     min-height: 28px;
 }}
@@ -394,7 +394,7 @@ QMenu {{
     border: 1px solid #3d3a35;
     border-radius: 8px;
     color: #f0ece6;
-    font-size: 12px;
+    font-size: __FONT_SIZE__px;
 }}
 QMenu::item {{ padding: 6px 24px; border-radius: 4px; }}
 QMenu::item:selected {{ background: __ACCENT_PRESSED__; }}
@@ -404,7 +404,7 @@ QDialogButtonBox QPushButton {{
     min-width: 72px;
     min-height: 30px;
     border-radius: 7px;
-    font-size: 12px;
+    font-size: __FONT_SIZE__px;
     font-weight: 600;
     padding: 4px 16px;
     background: #1e1c19;
@@ -423,7 +423,7 @@ QListWidget {{
     border: 1px solid #2e2b27;
     border-radius: 8px;
     color: #f0ece6;
-    font-size: 13px;
+    font-size: __FONT_SIZE__px;
 }}
 QListWidget::item {{ padding: 6px 10px; }}
 QListWidget::item:selected {{ background: __ACCENT_PRESSED__; color: #f0ece6; }}

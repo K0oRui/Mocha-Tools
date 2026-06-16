@@ -52,18 +52,25 @@ class MochaDialog(QDialog):
         tb_lay.setSpacing(6)
 
         try:
-            from .theme import get_accent
+            from .theme import get_accent, get_font
             _dot_color = get_accent()
+            _fs = int(get_font()[1])
         except Exception:
             _dot_color = "#c8a96e"
+            _fs = 13
         dot = QLabel("◆")
-        dot.setStyleSheet(f"color:{_dot_color}; font-size:10px; background:transparent;")
+        dot.setStyleSheet(f"color:{_dot_color}; font-size:{max(8, _fs-3)}px; background:transparent;")
         tb_lay.addWidget(dot)
 
         title_lbl = QLabel(title)
         title_lbl.setObjectName("title_app_name")
+        try:
+            from .theme import get_accent, get_font
+            tf = int(get_font()[1])
+        except Exception:
+            tf = 13
         title_lbl.setStyleSheet(
-            f"color:{get_accent()}; font-size:13px; font-weight:700;"
+            f"color:{get_accent()}; font-size:{tf}px; font-weight:700;"
             "letter-spacing:0.5px; background:transparent;"
         )
         tb_lay.addWidget(title_lbl)
@@ -128,8 +135,13 @@ def _gold_btn(text: str, width=160) -> QPushButton:
     except Exception:
         from .theme import DEFAULT_ACCENT
         acc = DEFAULT_ACCENT
+    try:
+        from .theme import get_font
+        fsz = int(get_font()[1])
+    except Exception:
+        fsz = 13
     btn.setStyleSheet(
-        f"min-height:0px; padding:0px 16px; font-size:13px; font-weight:700;"
+        f"min-height:0px; padding:0px 16px; font-size:{fsz}px; font-weight:700;"
         f"background:{acc}; color:#111010; border:none; border-radius:7px;"
     )
     return btn
@@ -138,8 +150,13 @@ def _gold_btn(text: str, width=160) -> QPushButton:
 def _grey_btn(text: str, width=160) -> QPushButton:
     btn = QPushButton(text)
     btn.setFixedSize(width, 36)
+    try:
+        from .theme import get_font
+        fsz = int(get_font()[1])
+    except Exception:
+        fsz = 13
     btn.setStyleSheet(
-        "min-height:0px; padding:0px 16px; font-size:13px; font-weight:600;"
+        f"min-height:0px; padding:0px 16px; font-size:{fsz}px; font-weight:600;"
         "background:#1e1c19; color:#f0ece6; border:1px solid #3d3a35; border-radius:7px;"
     )
     return btn
@@ -230,7 +247,12 @@ class FolderBrowserDialog(MochaDialog):
         path_row.setSpacing(6)
 
         path_icon = QLabel("📂")
-        path_icon.setStyleSheet("background:transparent; font-size:14px;")
+        try:
+            from .theme import get_font
+            pfs = int(get_font()[1])
+        except Exception:
+            pfs = 14
+        path_icon.setStyleSheet(f"background:transparent; font-size:{pfs}px;")
         path_row.addWidget(path_icon)
 
         self.path_edit = QLineEdit(self.current)
@@ -496,8 +518,9 @@ class ShareLinkDialog(MochaDialog):
 
         header = QLabel("✓  Share link ready")
         try:
-            from .theme import get_accent
-            header.setStyleSheet(f"color:{get_accent()}; font-size:14px; font-weight:700; background:transparent;")
+            from .theme import get_accent, get_font
+            fam, fsz = get_font()
+            header.setStyleSheet(f"color:{get_accent()}; font-size:{int(fsz)}px; font-weight:700; background:transparent;")
         except Exception:
             header.setStyleSheet("color:#4ade80; font-size:14px; font-weight:700; background:transparent;")
         lay.addWidget(header)
@@ -509,10 +532,15 @@ class ShareLinkDialog(MochaDialog):
             _url_col = get_accent()
         except Exception:
             _url_col = "#c8a96e"
+        try:
+            from .theme import get_font
+            fsz = int(get_font()[1])
+        except Exception:
+            fsz = 12
         self.url_edit.setStyleSheet(
             f"background:#08090b; border:1px solid #35101a; border-radius:8px;"
             f"padding:8px 10px; color:{_url_col};"
-            "font-family:'Consolas','Fira Code','Courier New',monospace; font-size:12px;"
+            f"font-family:'Consolas','Fira Code','Courier New',monospace; font-size:{fsz}px;"
         )
         lay.addWidget(self.url_edit)
 

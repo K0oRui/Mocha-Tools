@@ -33,7 +33,7 @@ from ..dialogs import FolderBrowserDialog, ShareLinkDialog
 from ..logging_utils import write_debug_log
 from ..workers import FilesWorker, UploadWorker
 from ..ui.icons import lucide_icon
-from ..theme import get_accent, accent_qcolor
+from ..theme import get_accent, accent_qcolor, get_font
 from ..remote_cache import cache, registry
 
 
@@ -148,7 +148,7 @@ class FilesBrowserTab(QWidget):
 
         from ..theme import accent_qcolor
         self.status_lbl = QLabel("")
-        self.status_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:11px; background:transparent;")
+        self.status_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;")
         tb.addWidget(self.status_lbl)
         parent_lay.addLayout(tb)
         # Update toolbar icons and status label when accent changes at runtime

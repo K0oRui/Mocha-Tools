@@ -39,7 +39,7 @@ from .tabs import (
     FilesBrowserTab, RemoteTab, SharesTab, SyncTab,
     build_settings_tab, load_settings, save_settings,
 )
-from .theme import get_accent, accent_qcolor
+from .theme import get_accent, accent_qcolor, get_font
 
 # --- Mass upload section (inlined from tabs/mass_upload_tab.py) -----------------
 class MassUploadSection(QWidget):
@@ -184,7 +184,7 @@ class MassUploadSection(QWidget):
 
         qtb.addStretch()
         self._queue_lbl = QLabel("0 items")
-        self._queue_lbl.setStyleSheet(f"color: {accent_qcolor().name()}; font-size:11px; background:transparent;")
+        self._queue_lbl.setStyleSheet(f"color: {accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;")
         qtb.addWidget(self._queue_lbl)
         parent_lay.addLayout(qtb)
         try:
@@ -195,7 +195,7 @@ class MassUploadSection(QWidget):
     def _on_accent_changed(self, old, new):
         try:
             from .theme import accent_qcolor
-            self._queue_lbl.setStyleSheet(f"color: {accent_qcolor().name()}; font-size:11px; background:transparent;")
+            self._queue_lbl.setStyleSheet(f"color: {accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;")
         except Exception:
             pass
 
@@ -217,12 +217,12 @@ class MassUploadSection(QWidget):
         self._speed_lbl = QLabel("")
         self._speed_lbl.setObjectName("status_label")
         from .theme import accent_qcolor
-        self._speed_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:11px; background:transparent;")
+        self._speed_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;")
         speed_row.addWidget(speed_lbl)
         speed_row.addWidget(self._speed_lbl)
         speed_row.addStretch()
         self._transferred_lbl = QLabel("")
-        self._transferred_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:11px; background:transparent;")
+        self._transferred_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;")
         speed_row.addWidget(self._transferred_lbl)
         prog_lay.addLayout(speed_row)
 
