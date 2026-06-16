@@ -30,7 +30,7 @@ QFrame#titlebar {{
 }}
 QLabel#title_app_name {{
     color: #c8a96e;
-    font-size: 13px;
+    font-size: __FONT_SIZE__px;
     font-weight: 700;
     letter-spacing: 0.5px;
     background: transparent;
@@ -63,7 +63,7 @@ QPushButton#tb_minmax {{
     max-width: 32px;
     min-height: 28px;
     max-height: 28px;
-    font-size: 13px;
+    font-size: __FONT_SIZE__px;
     color: #5a5650;
     padding: 0px;
 }}
@@ -72,8 +72,8 @@ QPushButton#tb_minmax:pressed {{ background: #1a1816; }}
 QWidget {{
     background-color: transparent;
     color: #f0ece6;
-    font-family: "Segoe UI", "SF Pro Display", "Inter", "Helvetica Neue", sans-serif;
-    font-size: 13px;
+    font-family: __FONT_FAMILY__;
+    font-size: __FONT_SIZE__px;
 }}
 QFrame#card {{
     background-color: #181614;
@@ -108,7 +108,7 @@ QLineEdit {{
     border-radius: 8px;
     padding: 0px 10px;
     color: #f0ece6;
-    font-size: 13px;
+    font-size: __FONT_SIZE__px;
     selection-background-color: #c8a96e;
     min-height: 34px;
     max-height: 34px;
@@ -126,7 +126,7 @@ QSpinBox {{
     border-radius: 8px;
     padding: 6px 8px;
     color: #f0ece6;
-    font-size: 13px;
+    font-size: __FONT_SIZE__px;
 }}
 QSpinBox:focus {{ border-color: #c8a96e; }}
 QSpinBox::up-button {{
@@ -162,7 +162,7 @@ QComboBox {{
     border-radius: 8px;
     padding: 6px 10px;
     color: #f0ece6;
-    font-size: 13px;
+    font-size: __FONT_SIZE__px;
 }}
 QComboBox:focus {{ border-color: #c8a96e; }}
 QComboBox::drop-down {{
@@ -209,7 +209,7 @@ QPushButton#browse_btn {{
     min-height: 34px;
     max-height: 34px;
 }}
-QPushButton#browse_btn:hover {{ background-color: #252320; border-color: #7a6035; }}
+QPushButton#browse_btn:hover {{ background-color: #252320; border-color: __ACCENT_HOVER__; }}
 QCheckBox {{
     color: #9c9484;
     font-size: 12px;
@@ -351,7 +351,7 @@ QTreeWidget {{
     show-decoration-selected: 1;
 }}
 QTreeWidget::item {{ padding: 5px 4px; border-bottom: 1px solid #1a1816; }}
-QTreeWidget::item:selected {{ background: #332b1a; color: #f0ece6; }}
+QTreeWidget::item:selected {{ background: __ACCENT_PRESSED__; color: #f0ece6; }}
 QTreeWidget::item:hover:!selected {{ background: #1e1c19; }}
 QHeaderView::section {{
     background: #1e1c19;
@@ -397,7 +397,7 @@ QMenu {{
     font-size: 12px;
 }}
 QMenu::item {{ padding: 6px 24px; border-radius: 4px; }}
-QMenu::item:selected {{ background: #332b1a; }}
+QMenu::item:selected {{ background: __ACCENT_PRESSED__; }}
 QMenu::separator {{ height: 1px; background: #2e2b27; margin: 4px 8px; }}
 QDialog {{ background-color: #181614; }}
 QDialogButtonBox QPushButton {{
@@ -426,7 +426,7 @@ QListWidget {{
     font-size: 13px;
 }}
 QListWidget::item {{ padding: 6px 10px; }}
-QListWidget::item:selected {{ background: #332b1a; color: #f0ece6; }}
+QListWidget::item:selected {{ background: __ACCENT_PRESSED__; color: #f0ece6; }}
 QListWidget::item:hover {{ background: #1e1c19; }}
 QMessageBox {{ background-color: #181614; }}
 QMessageBox QLabel {{ color: #f0ece6; background: transparent; }}
@@ -468,12 +468,31 @@ def build_stylesheet(accent_hex: str | None) -> str:
     canonical accent (#c8a96e) and its hover/pressed variants with computed
     values derived from accent_hex.
     """
+    # start with template
+    s = STYLESHEET
+    # Always substitute font tokens from saved settings/runtime cache so
+    # QSS-driven fonts track the user's selected family/size even when
+    # only the font was changed (and accent_hex may be None).
+    try:
+        from .theme import get_font
+        fam, fsz = get_font()
+        # ensure family is quoted for QSS and provide a sensible fallback
+        fam_q = f'"{fam}"'
+        s = s.replace('__FONT_FAMILY__', fam_q)
+        s = s.replace('__FONT_SIZE__', str(int(fsz)))
+    except Exception:
+        # fallback to defaults
+        try:
+            from .theme import DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE
+            s = s.replace('__FONT_FAMILY__', f'"{DEFAULT_FONT_FAMILY}"')
+            s = s.replace('__FONT_SIZE__', str(int(DEFAULT_FONT_SIZE)))
+        except Exception:
+            pass
     if not accent_hex:
-        return STYLESHEET
+        return s
     # compute hover (lighter) and pressed (darker) variants
     hover = _mix(accent_hex, "#ffffff", 0.12)
     pressed = _mix(accent_hex, "#000000", 0.22)
-    s = STYLESHEET
     from .theme import DEFAULT_ACCENT
     # compute semi-transparent variant and replace its placeholder first
     # NOTE: Qt's QSS parser does not support 8-digit #rrggbbaa hex colors,

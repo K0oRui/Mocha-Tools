@@ -1528,6 +1528,16 @@ def main():
     except Exception:
         app.setStyleSheet(STYLESHEET)
 
+    # Apply saved font
+    try:
+        from .theme import get_font
+        from PyQt6.QtGui import QFont
+        fam, sz = get_font()
+        if fam:
+            app.setFont(QFont(fam, int(sz)))
+    except Exception:
+        pass
+
     palette = QPalette()
     palette.setColor(QPalette.ColorRole.Window,          QColor("#111010"))
     palette.setColor(QPalette.ColorRole.WindowText,      QColor("#f0ece6"))
@@ -1629,6 +1639,17 @@ def main():
                             win._refresh_accented_icons()
                     except Exception:
                         pass
+                    # Ensure titlebar and other widgets update for font changes too
+                    try:
+                        from .theme import get_font
+                        fam, sz = get_font()
+                        if fam:
+                            from PyQt6.QtGui import QFont
+                            a = QApplication.instance()
+                            if a:
+                                a.setFont(QFont(fam, int(sz)))
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -1637,6 +1658,44 @@ def main():
         # was connected get the same treatment as pressing Apply in Settings.
         try:
             _on_accent_changed(None, get_accent())
+        except Exception:
+            pass
+        # Listen for font changes and apply them globally
+        try:
+            from .theme import notifier as _notifier
+            def _on_font_change(fam, sz):
+                try:
+                    from PyQt6.QtGui import QFont
+                    a = QApplication.instance()
+                    if a:
+                        a.setFont(QFont(fam, int(sz)))
+                        a.processEvents()
+                        # re-polish top-level windows so QSS-applied fonts update
+                        widgets = a.topLevelWidgets()
+                        for w in widgets:
+                            try:
+                                a.style().unpolish(w)
+                            except Exception:
+                                pass
+                            try:
+                                a.style().polish(w)
+                            except Exception:
+                                pass
+                        # Reapply global stylesheet so any QSS tokens referencing
+                        # the font family/size are regenerated from the current
+                        # theme.get_font() values.
+                        try:
+                            a.setStyleSheet(build_stylesheet(get_accent()))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            _notifier().font_changed.connect(_on_font_change)
+            try:
+                f, s = get_font()
+                _on_font_change(f, s)
+            except Exception:
+                pass
         except Exception:
             pass
     except Exception:

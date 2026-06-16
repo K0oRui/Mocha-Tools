@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QProgressBar, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
     QSizePolicy,
+    QFontComboBox,
 )
 
 from ..constants import (
@@ -121,6 +122,137 @@ def build_settings_tab(win) -> QWidget:
         btn_row = QHBoxLayout(); btn_row.setSpacing(12)
         apply_btn = QPushButton("Apply")
         reset_btn = QPushButton("Reset")
+        # Font selection
+        font_row = QHBoxLayout(); font_row.setSpacing(8)
+        font_lbl = QLabel("Font")
+        font_lbl.setObjectName("field_label")
+        win.font_combo = QFontComboBox()
+        win.font_size = QSpinBox()
+        win.font_size.setRange(8, 24)
+        # initialize font controls from persisted/runtime values
+        try:
+            from ..theme import get_font
+            from PyQt6.QtGui import QFont
+            fam, fsz = get_font()
+            try:
+                win.font_combo.setCurrentFont(QFont(fam))
+            except Exception:
+                pass
+            try:
+                win.font_size.setValue(int(fsz))
+            except Exception:
+                win.font_size.setValue(13)
+        except Exception:
+            win.font_size.setValue(13)
+        # make font combo visually compact to match other controls
+        try:
+            from PyQt6.QtGui import QFont
+            win.font_combo.setFixedHeight(34)
+            # enforce a compact, uniform rendering for the popup list so items
+            # don't render using their own family at large sizes
+            try:
+                v = win.font_combo.view()
+                try:
+                    # Prevent the popup from rendering each item using its own
+                    # font by installing a delegate that forces a uniform
+                    # preview font and item height.
+                    from PyQt6.QtWidgets import QStyledItemDelegate
+
+                    class _FixedFontDelegate(QStyledItemDelegate):
+                        def initStyleOption(self, option, index):
+                            try:
+                                super().initStyleOption(option, index)
+                            except Exception:
+                                pass
+                            try:
+                                option.font = QFont(DEFAULT_FONT_FAMILY, 12)
+                            except Exception:
+                                pass
+
+                    v.setItemDelegate(_FixedFontDelegate(v))
+                except Exception:
+                    try:
+                        v.setFont(QFont(v.font().family(), 12))
+                    except Exception:
+                        pass
+                # tighten item height and font size via stylesheet as a fallback
+                try:
+                    v.setStyleSheet("QListView { font-size: 12px; } QListView::item { height: 26px; }")
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # also ensure the combo itself uses a normal UI font for the current
+            # selection display (prevents the selected name rendering in huge
+            # sample sizes for its own font)
+            try:
+                win.font_combo.setStyleSheet("QComboBox { font-size: 13px; }")
+            except Exception:
+                pass
+        except Exception:
+            pass
+        # add a chevron overlay on the right to mimic the spinbox arrows
+        try:
+            from ..ui.icons import lucide_icon
+            from PyQt6.QtCore import QEvent, QSize, QObject
+            from PyQt6.QtWidgets import QToolButton
+            class _ComboOverlay(QObject):
+                def __init__(self, cmb: QFontComboBox):
+                    super().__init__(cmb)
+                    self.cmb = cmb
+                    ico = lucide_icon('chevron-down', '#f0ece6', 12)
+                    btn = QToolButton(cmb)
+                    btn.setIcon(ico)
+                    btn.setIconSize(QSize(12, 12))
+                    btn.setStyleSheet('background: transparent; border: none;')
+                    btn.setCursor(cmb.cursor())
+                    btn.setFixedSize(26, 26)
+                    btn.clicked.connect(lambda: cmb.showPopup())
+                    cmb._overlay_btn = btn
+                    cmb.installEventFilter(self)
+                    try:
+                        btn.show(); btn.raise_()
+                    except Exception:
+                        pass
+
+                def eventFilter(self, obj, ev):
+                    try:
+                        if ev.type() in (QEvent.Type.Resize, QEvent.Type.Show):
+                            self._reposition()
+                    except Exception:
+                        pass
+                    return False
+
+                def _reposition(self):
+                    try:
+                        cmb = self.cmb
+                        btn = getattr(cmb, '_overlay_btn', None)
+                        if not btn:
+                            return
+                        w = cmb.width(); h = cmb.height()
+                        x = w - btn.width() - 6
+                        y = max(0, (h - btn.height()) // 2)
+                        btn.move(x, y)
+                    except Exception:
+                        pass
+
+            try:
+                _ComboOverlay(win.font_combo)
+            except Exception:
+                pass
+            # ensure overlay positioned after initial layout
+            try:
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(40, lambda: getattr(win.font_combo, '_overlay_btn', None) and getattr(win.font_combo, '_overlay_btn').raise_())
+            except Exception:
+                pass
+        except Exception:
+            pass
+        font_row.addWidget(font_lbl)
+        font_row.addWidget(win.font_combo)
+        font_row.addWidget(win.font_size)
+        font_row.addStretch()
+        card_lay.addLayout(font_row)
         btn_row.addWidget(apply_btn); btn_row.addWidget(reset_btn); btn_row.addStretch()
         card_lay.addLayout(btn_row)
 
@@ -131,70 +263,83 @@ def build_settings_tab(win) -> QWidget:
             win.acc_swatch.setStyleSheet(f"border:1px solid #2e2b27; background:{hx};")
 
         def _apply():
+            # Apply accent and font selections to the running app and persist
             hx = win.acc_hex.text() or DEFAULT_ACCENT
-            # persist + notify via theme helper so listeners can refresh
+            if not hx.startswith("#"):
+                hx = "#" + hx
+            hx = hx.lower()
+
+            # Persist accent via theme helper when available, fallback to QSettings
             try:
                 from ..theme import set_accent
-                # Only persist accent to QSettings when 'Remember settings' is checked
                 set_accent(hx, persist=bool(win.remember_cb.isChecked()))
-                # Also attempt to refresh main window icons immediately
                 try:
                     if hasattr(win, '_refresh_accented_icons'):
                         win._refresh_accented_icons()
                 except Exception:
                     pass
             except Exception:
-                s = QSettings(ORG_NAME, APP_NAME)
-                # read previous value for notifier emission
                 try:
+                    s = QSettings(ORG_NAME, APP_NAME)
                     old = s.value("accent", DEFAULT_ACCENT) or DEFAULT_ACCENT
-                except Exception:
-                    old = DEFAULT_ACCENT
-                # normalize new value
-                nh = hx
-                if not nh.startswith("#"):
-                    nh = "#" + nh
-                nh = nh.lower()
-                s.setValue("accent", nh)
-                try:
-                    s.sync()
-                except Exception:
-                    pass
-                # Emit notifier so UI listeners refresh immediately
-                try:
-                    from ..theme import notifier
-                    notifier().accent_changed.emit(str(old), nh)
-                except Exception:
-                    pass
-                # refresh window-level icons if available
-                try:
-                    if hasattr(win, '_refresh_accented_icons'):
-                        win._refresh_accented_icons()
-                except Exception:
-                    pass
-            # update application palette highlight immediately
-            try:
-                from PyQt6.QtWidgets import QApplication
-                a = QApplication.instance()
-                if a:
-                    pal = a.palette()
-                    pal.setColor(QPalette.ColorRole.Highlight, QColor(hx))
-                    a.setPalette(pal)
-                    # Reapply the global stylesheet as a short compatibility fallback.
-                    # Primary update should happen via theme.set_accent() notifier.
+                    s.setValue("accent", hx)
                     try:
-                        from ..styles import build_stylesheet
-                        a.setStyleSheet(build_stylesheet(hx))
+                        s.sync()
                     except Exception:
                         pass
-                    # attempt to refresh window-level icons if main window
                     try:
-                        mw = a.activeWindow()
-                        if mw is None and hasattr(a, 'topLevelWidgets'):
-                            widgets = a.topLevelWidgets()
-                            mw = widgets[0] if widgets else None
-                        if mw and hasattr(mw, '_refresh_accented_icons'):
-                            mw._refresh_accented_icons()
+                        from ..theme import notifier
+                        notifier().accent_changed.emit(str(old), hx)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            # Update palette and global stylesheet
+            try:
+                from PyQt6.QtWidgets import QApplication
+                from ..styles import build_stylesheet
+                from ..theme import get_accent
+                a = QApplication.instance()
+                if a:
+                    try:
+                        pal = a.palette()
+                        pal.setColor(QPalette.ColorRole.Highlight, QColor(hx))
+                        a.setPalette(pal)
+                    except Exception:
+                        pass
+                    try:
+                        a.setStyleSheet(build_stylesheet(get_accent()))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # Apply font selection
+            try:
+                from ..theme import set_font, notifier
+                from PyQt6.QtGui import QFont
+                from PyQt6.QtWidgets import QApplication
+                fam = win.font_combo.currentFont().family()
+                sz = int(win.font_size.value())
+                set_font(fam, sz, persist=bool(win.remember_cb.isChecked()))
+                try:
+                    notifier().font_changed.emit(fam, int(sz))
+                except Exception:
+                    pass
+                a = QApplication.instance()
+                if a:
+                    try:
+                        a.setFont(QFont(fam, int(sz)))
+                    except Exception:
+                        pass
+                    try:
+                        qf = QFont(fam, int(sz))
+                        for w in a.allWidgets():
+                            try:
+                                w.setFont(qf)
+                            except Exception:
+                                pass
                     except Exception:
                         pass
             except Exception:
@@ -204,6 +349,41 @@ def build_settings_tab(win) -> QWidget:
             r = int(DEFAULT_ACCENT[1:3], 16); g = int(DEFAULT_ACCENT[3:5], 16); b = int(DEFAULT_ACCENT[5:7], 16)
             win.acc_r.setValue(r); win.acc_g.setValue(g); win.acc_b.setValue(b)
             _update_from_spins()
+            # reset font to defaults
+            try:
+                from ..theme import DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE
+                from PyQt6.QtGui import QFont
+                # Try several methods to ensure the combo actually selects the family
+                try:
+                    win.font_combo.setCurrentFont(QFont(DEFAULT_FONT_FAMILY))
+                except Exception:
+                    pass
+                try:
+                    win.font_combo.setCurrentText(DEFAULT_FONT_FAMILY)
+                except Exception:
+                    pass
+                # Try selecting by iterating items (some QFontComboBox implementations)
+                try:
+                    for i in range(win.font_combo.count()):
+                        try:
+                            if win.font_combo.itemText(i).lower() == DEFAULT_FONT_FAMILY.lower():
+                                win.font_combo.setCurrentIndex(i)
+                                break
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                try:
+                    win.font_size.setValue(DEFAULT_FONT_SIZE)
+                except Exception:
+                    pass
+                # apply the reset values immediately
+                try:
+                    _apply()
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
         win.acc_r.valueChanged.connect(_update_from_spins)
         win.acc_g.valueChanged.connect(_update_from_spins)
@@ -271,7 +451,7 @@ def build_settings_tab(win) -> QWidget:
             # ensure initial positioning/show immediately after creation
             def _ensure():
                 try:
-                    for sb in (win.acc_r, win.acc_g, win.acc_b):
+                    for sb in (win.acc_r, win.acc_g, win.acc_b, win.font_size):
                         ov = getattr(sb, '_overlay_up_btn', None)
                         if ov:
                             try:
@@ -290,7 +470,7 @@ def build_settings_tab(win) -> QWidget:
 
             def _install_overlays():
                 try:
-                    for sb in (win.acc_r, win.acc_g, win.acc_b):
+                    for sb in (win.acc_r, win.acc_g, win.acc_b, win.font_size):
                         try:
                             _Overlay(sb)
                         except Exception:
@@ -307,7 +487,7 @@ def build_settings_tab(win) -> QWidget:
 
             def _inject_css_icons():
                 try:
-                    for sb in (win.acc_r, win.acc_g, win.acc_b):
+                    for sb in (win.acc_r, win.acc_g, win.acc_b, win.font_size):
                         try:
                             ico_up = lucide_icon("chevron-up", "#f0ece6", 16)
                             ico_dn = lucide_icon("chevron-down", "#f0ece6", 16)
@@ -456,7 +636,7 @@ def build_settings_tab(win) -> QWidget:
                 except Exception:
                     pass
 
-            for sb in (win.acc_r, win.acc_g, win.acc_b):
+            for sb in (win.acc_r, win.acc_g, win.acc_b, win.font_size):
                 try:
                     _for(sb)
                 except Exception:
@@ -470,6 +650,63 @@ def build_settings_tab(win) -> QWidget:
         pass
     from PyQt6.QtCore import QTimer
     QTimer.singleShot(120, lambda: _ensure_accent_spin_arrows(None))
+
+    # Additional safety: ensure the font_size spinbox gets arrows injected
+    # even on platforms that defer widget internals creation.
+    def _ensure_font_size_arrows():
+        try:
+            from ..ui.icons import lucide_icon
+            from PyQt6.QtWidgets import QToolButton
+            from PyQt6.QtCore import QBuffer, QIODevice
+            from PyQt6.QtGui import QPixmap
+            sb = getattr(win, 'font_size', None)
+            if sb is None:
+                return
+            # inject CSS images
+            try:
+                ico_up = lucide_icon('chevron-up', '#f0ece6', 16)
+                ico_dn = lucide_icon('chevron-down', '#f0ece6', 16)
+                pm_up = ico_up.pixmap(12, 12); pm_dn = ico_dn.pixmap(12, 12)
+                buf = QBuffer(); buf.open(QIODevice.OpenModeFlag.WriteOnly); pm_up.save(buf, 'PNG')
+                b64_up = bytes(buf.data().toBase64()).decode(); buf.close()
+                buf = QBuffer(); buf.open(QIODevice.OpenModeFlag.WriteOnly); pm_dn.save(buf, 'PNG')
+                b64_dn = bytes(buf.data().toBase64()).decode(); buf.close()
+                css = (
+                    f"QSpinBox::up-arrow {{ image: url(data:image/png;base64,{b64_up}); width:10px; height:6px; }} "
+                    f"QSpinBox::down-arrow {{ image: url(data:image/png;base64,{b64_dn}); width:10px; height:6px; }}"
+                )
+                sb.setStyleSheet(sb.styleSheet() + "\n" + css)
+            except Exception:
+                pass
+            # create overlay buttons if not present
+            try:
+                if not getattr(sb, '_overlay_up_btn', None):
+                    up = QToolButton(sb); dn = QToolButton(sb)
+                    up.setIcon(lucide_icon('chevron-up', '#f0ece6', 16))
+                    dn.setIcon(lucide_icon('chevron-down', '#f0ece6', 16))
+                    try:
+                        up.setIconSize(QSize(12,12)); dn.setIconSize(QSize(12,12))
+                    except Exception:
+                        pass
+                    up.setStyleSheet('background: transparent; border: none;')
+                    dn.setStyleSheet('background: transparent; border: none;')
+                    up.setCursor(sb.cursor()); dn.setCursor(sb.cursor())
+                    up.setFixedSize(22, 17); dn.setFixedSize(22, 17)
+                    up.clicked.connect(sb.stepUp); dn.clicked.connect(sb.stepDown)
+                    sb._overlay_up_btn = up; sb._overlay_dn_btn = dn
+                    try:
+                        up.show(); dn.show(); up.raise_(); dn.raise_()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    try:
+        QTimer.singleShot(200, _ensure_font_size_arrows)
+    except Exception:
+        pass
 
     center_row.addWidget(tabs, 1)
     center_row.addStretch()
