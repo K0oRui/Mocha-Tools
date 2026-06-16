@@ -111,10 +111,11 @@ class RemoteTab(QWidget):
         dest_row.addWidget(browse_btn)
         lay.addLayout(dest_row)
 
-        from ..theme import get_accent, notifier
+        from ..theme import notifier
         self.ingest_btn = QPushButton("  Remote ingest")
         self.ingest_btn.setObjectName("upload_btn")
-        self.ingest_btn.setIcon(lucide_icon("download-cloud", get_accent(), 15))
+        # Icon should be dark (match button text) so it remains visible on the accent background
+        self.ingest_btn.setIcon(lucide_icon("download-cloud", "#111010", 15))
         self.ingest_btn.setIconSize(QSize(15, 15))
         self.ingest_btn.setMinimumHeight(40)
         self.ingest_btn.clicked.connect(self._start_ingest)
@@ -165,8 +166,9 @@ class RemoteTab(QWidget):
 
     def _on_accent_changed(self, old, new):
         try:
-            from ..theme import get_accent, accent_qcolor
-            self.ingest_btn.setIcon(lucide_icon("download-cloud", get_accent(), 15))
+            from ..theme import accent_qcolor
+            # Keep ingest icon dark to match the button text color
+            self.ingest_btn.setIcon(lucide_icon("download-cloud", "#111010", 15))
             self.refresh_btn.setIcon(lucide_icon("refresh-cw", get_accent(), 13))
             self.status_lbl.setStyleSheet(f"color: {accent_qcolor().name()}; font-size:11px; background:transparent;")
         except Exception:

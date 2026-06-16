@@ -52,7 +52,7 @@
 ## Preview
 
 <p align="center"> 
-  <img src=".github/resources/massupload.gif" alt="Managing shares in Mocha Tools" width="420">
+  <img src=".github/resources/massupload.gif" alt="Mass uploading files in Mocha Tools" width="420">
 </p>
 <p align="center"> 
   <img src=".github/resources/remoteingest.gif" alt="Uploading files with drag and drop" width="400">
@@ -67,10 +67,10 @@
 ## Potential? Ideas
 | Idea | Complete? |
 | :---- | :----: |
-| Merge mass upload, and upload | ❌ |
-| Add custom colors support | ❌ |
-| Add custom font support | ❌ |
-| Add folder sync support | ❌ |
+| Merge mass upload, and upload | ✅ |
+| Add custom colors support | ✅ |
+| Add custom font support | ✅ |
+| Add folder sync support | ✅ |
 | Add support for file previews (images, video, audio) | ❌ |
 | Add download support for your own files | ✅ |
 | Create android version | ❌ |
