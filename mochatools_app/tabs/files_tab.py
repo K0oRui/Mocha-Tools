@@ -21,7 +21,7 @@ import os
 import requests
 
 from PyQt6.QtCore import Qt, QSize, QTimer
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QIcon
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QFileDialog, QFrame, QHBoxLayout, QHeaderView,
     QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
@@ -62,6 +62,35 @@ class FilesBrowserTab(QWidget):
         # delivers its first result; remote_cache is authoritative.
         self._shares_cache   = None
         self._build_ui()
+        # Ensure toolbar icons update if the accent changes at runtime.
+        try:
+            from ..theme import notifier, get_accent
+            def _apply_accent(_old, new):
+                try:
+                    # reuse same update logic as the notifier handler in _build_toolbar
+                    try:
+                        self.refresh_btn.setIcon(lucide_icon("refresh-cw", new, 13))
+                        self.mkdir_btn.setIcon(lucide_icon("folder", new, 13))
+                        self.rename_btn.setIcon(lucide_icon("pencil", new, 13))
+                        self.move_btn.setIcon(lucide_icon("move", new, 13))
+                        self.share_btn.setIcon(lucide_icon("share-2", new, 13))
+                        self.refresh_btn.setIconSize(QSize(13, 13))
+                    except Exception:
+                        pass
+                    try:
+                        self.status_lbl.setStyleSheet(f"color:{new}; font-size:11px; background:transparent;")
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            notifier().accent_changed.connect(_apply_accent)
+            # Apply current accent immediately so Apply in Settings mirrors startup
+            try:
+                _apply_accent(None, get_accent())
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
@@ -122,6 +151,57 @@ class FilesBrowserTab(QWidget):
         self.status_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:11px; background:transparent;")
         tb.addWidget(self.status_lbl)
         parent_lay.addLayout(tb)
+        # Update toolbar icons and status label when accent changes at runtime
+        try:
+            from ..theme import notifier
+            def _on_accent_changed(_old, _new):
+                try:
+                    for btn, name in (
+                        (self.refresh_btn, "refresh-cw"),
+                        (self.mkdir_btn, "folder"),
+                        (self.rename_btn, "pencil"),
+                        (self.move_btn, "move"),
+                        (self.share_btn, "share-2"),
+                    ):
+                        try:
+                            btn.setIcon(lucide_icon(name, _new, 13))
+                            btn.setIconSize(QSize(13, 13))
+                            try:
+                                # force the style to re-polish the widget so the
+                                # new icon is picked up immediately on some
+                                # platforms where icon pixmaps are cached.
+                                app = QApplication.instance()
+                                if app and hasattr(app, 'style'):
+                                    try:
+                                        app.style().unpolish(btn)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        app.style().polish(btn)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                            btn.update()
+                            btn.repaint()
+                        except Exception:
+                            pass
+                    self.status_lbl.setStyleSheet(f"color:{_new}; font-size:11px; background:transparent;")
+                    # Finalize visual update: repaint and process events so
+                    # icon pixmaps are refreshed immediately.
+                    try:
+                        self.update()
+                        self.repaint()
+                        app = QApplication.instance()
+                        if app:
+                            app.processEvents()
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            notifier().accent_changed.connect(_on_accent_changed)
+        except Exception:
+            pass
 
     def _build_tree(self, parent_lay: QVBoxLayout):
         self.tree = QTreeWidget()

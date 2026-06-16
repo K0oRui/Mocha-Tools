@@ -311,17 +311,17 @@ class CustomTitleBar(QFrame):
         lay.setSpacing(0)
 
         # Coffee icon (clickable) + app name — keep original QLabel appearance
-        icon_lbl = QLabel()
+        self._icon_lbl = QLabel()
         from ..theme import get_accent
-        icon_lbl.setPixmap(lucide_icon("coffee", get_accent(), 15).pixmap(QSize(15, 15)))
-        icon_lbl.setStyleSheet("background:transparent; padding-right:6px;")
-        icon_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
-        icon_lbl.setToolTip("Open https://mocha.my")
+        self._icon_lbl.setPixmap(lucide_icon("coffee", get_accent(), 15).pixmap(QSize(15, 15)))
+        self._icon_lbl.setStyleSheet("background:transparent; padding-right:6px;")
+        self._icon_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._icon_lbl.setToolTip("Open https://mocha.my")
         def _icon_clicked(event):
             if event.button() == Qt.MouseButton.LeftButton:
                 QDesktopServices.openUrl(QUrl("https://mocha.my"))
-        icon_lbl.mousePressEvent = _icon_clicked
-        lay.addWidget(icon_lbl)
+        self._icon_lbl.mousePressEvent = _icon_clicked
+        lay.addWidget(self._icon_lbl)
 
         name_lbl = QLabel(app_name)
         name_lbl.setObjectName("title_app_name")
@@ -371,6 +371,31 @@ class CustomTitleBar(QFrame):
         else:
             self._max_btn.setToolTip("Maximise")
             self._max_btn.setIcon(lucide_icon("square", "#5a5650", 11))
+
+    def _refresh_icons(self):
+        """Called by app to refresh titlebar icons when the accent changes."""
+        try:
+            from ..theme import get_accent
+            acc = get_accent()
+            # update coffee icon (keep it tinted with accent)
+            try:
+                self._icon_lbl.setPixmap(lucide_icon("coffee", acc, 15).pixmap(QSize(15, 15)))
+            except Exception:
+                pass
+            # refresh min/max/close icons as well
+            try:
+                self._min_btn.setIcon(lucide_icon("minus", "#5a5650", 13))
+                self._max_btn.setIcon(lucide_icon("square", "#5a5650", 11))
+                self._cls_btn.setIcon(lucide_icon("x", "#5a5650", 13))
+            except Exception:
+                pass
+            try:
+                self.update()
+                self.repaint()
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     # ── Drag-to-move ──────────────────────────────────────────────────────────
 
