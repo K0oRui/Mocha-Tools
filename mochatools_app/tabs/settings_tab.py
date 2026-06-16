@@ -20,14 +20,17 @@ _KR_SERVICE = "MochaTools"
 _KR_USER    = "api_key"
 
 from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QProgressBar, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
+    QSizePolicy,
 )
 
 from ..constants import (
     APP_NAME, APP_VERSION, DEFAULT_CHUNK_SIZE_MB, DEFAULT_MAX_CHUNKS, ORG_NAME,
 )
+from ..theme import DEFAULT_ACCENT
 
 
 # ── Settings tab UI ───────────────────────────────────────────────────────────
@@ -39,35 +42,440 @@ def build_settings_tab(win) -> QWidget:
     _start_upload, _load_settings, _save_settings, etc. can reach them.
     """
     tab    = QWidget()
-    scroll = QScrollArea()
-    scroll.setWidgetResizable(True)
-    scroll.setFrameShape(QFrame.Shape.NoFrame)
-    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    scroll.setMaximumWidth(680)
-
-    inner = QWidget()
-    lay   = QVBoxLayout(inner)
-    lay.setContentsMargins(16, 16, 16, 16)
-    lay.setSpacing(14)
-    scroll.setWidget(inner)
-
     tab_lay = QVBoxLayout(tab)
     tab_lay.setContentsMargins(0, 0, 0, 0)
     center_row = QHBoxLayout()
     center_row.setContentsMargins(0, 0, 0, 0)
     center_row.addStretch()
-    center_row.addWidget(scroll, 1)
+
+    # We'll show the tab bar fixed at the top and make each tab page a
+    # scrollable area. This prevents the tab bar and its pages from
+    # "floating" inside a single scroll area which caused the large gap.
+
+    # Split settings into tabs for easier maintenance
+    from .settings_sections import build_basic_tab, build_upload_tab, build_updates_tab
+    # Use the app's FullWidthTabWidget so sub-tabs match the main upper tabs
+    from ..ui.widgets import FullWidthTabWidget
+
+    tabs = FullWidthTabWidget()
+    tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    # Each tab page uses a scroll area with slightly larger top padding so
+    # section headers don't overlap the tab underline.
+    from PyQt6.QtWidgets import QScrollArea
+    basic_page = QWidget(); basic_l = QVBoxLayout(basic_page); basic_l.setContentsMargins(8, 12, 8, 8); basic_l.setSpacing(12)
+    upload_page = QWidget(); upload_l = QVBoxLayout(upload_page); upload_l.setContentsMargins(8, 12, 8, 8); upload_l.setSpacing(12)
+    updates_page = QWidget(); updates_l = QVBoxLayout(updates_page); updates_l.setContentsMargins(8, 12, 8, 8); updates_l.setSpacing(12)
+    for p in (basic_page, upload_page, updates_page):
+        try:
+            p.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        except Exception:
+            pass
+
+    build_basic_tab(win, basic_l)
+    build_upload_tab(win, upload_l)
+    build_updates_tab(win, updates_l)
+
+    # Appearance / Accent tab
+    def _build_appearance_tab(win, lay: QVBoxLayout):
+        # rename tab label to UI and use a simpler header
+        lay.addWidget(_sh("UI"))
+        card = _card(); card_lay = QVBoxLayout(card); card_lay.setSpacing(10); card_lay.setContentsMargins(12,8,12,12)
+
+        # Use the shared settings_sections._spinbox implementation so the
+        # accent RGB controls get the exact same lucide arrow treatment as
+        # the Upload tab on Windows.
+        try:
+            from .settings_sections import _spinbox as _shared_spinbox
+        except Exception:
+            _shared_spinbox = _spinbox
+        win.acc_r = _shared_spinbox(0, 255, int(DEFAULT_ACCENT[1:3], 16), "", "Red component (0–255)")
+        win.acc_r.setFixedWidth(80)
+        win.acc_g = _shared_spinbox(0, 255, int(DEFAULT_ACCENT[3:5], 16), "", "Green component (0–255)")
+        win.acc_g.setFixedWidth(80)
+        win.acc_b = _shared_spinbox(0, 255, int(DEFAULT_ACCENT[5:7], 16), "", "Blue component (0–255)")
+        win.acc_b.setFixedWidth(80)
+
+        _add_spin_row(card_lay, "Red", win.acc_r)
+        _add_spin_row(card_lay, "Green", win.acc_g)
+        _add_spin_row(card_lay, "Blue", win.acc_b)
+
+        # Hex preview + swatch on one compact row
+        hex_row = QHBoxLayout(); hex_row.setContentsMargins(0, 0, 0, 0); hex_row.setSpacing(8)
+        hex_lbl = QLabel("Hex"); hex_lbl.setObjectName("field_label")
+        try:
+            from PyQt6.QtWidgets import QSizePolicy as _SP
+            hex_lbl.setSizePolicy(_SP.Policy.Fixed, _SP.Policy.Fixed)
+        except Exception:
+            pass
+        win.acc_hex = QLineEdit(); win.acc_hex.setReadOnly(True); win.acc_hex.setFixedWidth(100)
+        win.acc_hex.setFixedHeight(34)
+        win.acc_swatch = QLabel(); win.acc_swatch.setFixedSize(36, 34)
+        win.acc_swatch.setStyleSheet(f"border:1px solid #2e2b27; background:{DEFAULT_ACCENT};")
+        hex_row.addWidget(hex_lbl)
+        hex_row.addWidget(win.acc_hex)
+        hex_row.addWidget(win.acc_swatch)
+        hex_row.addStretch()
+        card_lay.addLayout(hex_row)
+
+        btn_row = QHBoxLayout(); btn_row.setSpacing(12)
+        apply_btn = QPushButton("Apply")
+        reset_btn = QPushButton("Reset")
+        btn_row.addWidget(apply_btn); btn_row.addWidget(reset_btn); btn_row.addStretch()
+        card_lay.addLayout(btn_row)
+
+        def _update_from_spins():
+            r = win.acc_r.value(); g = win.acc_g.value(); b = win.acc_b.value()
+            hx = f"#{r:02x}{g:02x}{b:02x}"
+            win.acc_hex.setText(hx)
+            win.acc_swatch.setStyleSheet(f"border:1px solid #2e2b27; background:{hx};")
+
+        def _apply():
+            hx = win.acc_hex.text() or DEFAULT_ACCENT
+            # persist + notify via theme helper so listeners can refresh
+            try:
+                from ..theme import set_accent
+                # Only persist accent to QSettings when 'Remember settings' is checked
+                set_accent(hx, persist=bool(win.remember_cb.isChecked()))
+                # Also attempt to refresh main window icons immediately
+                try:
+                    if hasattr(win, '_refresh_accented_icons'):
+                        win._refresh_accented_icons()
+                except Exception:
+                    pass
+            except Exception:
+                s = QSettings(ORG_NAME, APP_NAME)
+                # read previous value for notifier emission
+                try:
+                    old = s.value("accent", DEFAULT_ACCENT) or DEFAULT_ACCENT
+                except Exception:
+                    old = DEFAULT_ACCENT
+                # normalize new value
+                nh = hx
+                if not nh.startswith("#"):
+                    nh = "#" + nh
+                nh = nh.lower()
+                s.setValue("accent", nh)
+                try:
+                    s.sync()
+                except Exception:
+                    pass
+                # Emit notifier so UI listeners refresh immediately
+                try:
+                    from ..theme import notifier
+                    notifier().accent_changed.emit(str(old), nh)
+                except Exception:
+                    pass
+                # refresh window-level icons if available
+                try:
+                    if hasattr(win, '_refresh_accented_icons'):
+                        win._refresh_accented_icons()
+                except Exception:
+                    pass
+            # update application palette highlight immediately
+            try:
+                from PyQt6.QtWidgets import QApplication
+                a = QApplication.instance()
+                if a:
+                    pal = a.palette()
+                    pal.setColor(QPalette.ColorRole.Highlight, QColor(hx))
+                    a.setPalette(pal)
+                    # Reapply the global stylesheet as a short compatibility fallback.
+                    # Primary update should happen via theme.set_accent() notifier.
+                    try:
+                        from ..styles import build_stylesheet
+                        a.setStyleSheet(build_stylesheet(hx))
+                    except Exception:
+                        pass
+                    # attempt to refresh window-level icons if main window
+                    try:
+                        mw = a.activeWindow()
+                        if mw is None and hasattr(a, 'topLevelWidgets'):
+                            widgets = a.topLevelWidgets()
+                            mw = widgets[0] if widgets else None
+                        if mw and hasattr(mw, '_refresh_accented_icons'):
+                            mw._refresh_accented_icons()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        def _reset():
+            r = int(DEFAULT_ACCENT[1:3], 16); g = int(DEFAULT_ACCENT[3:5], 16); b = int(DEFAULT_ACCENT[5:7], 16)
+            win.acc_r.setValue(r); win.acc_g.setValue(g); win.acc_b.setValue(b)
+            _update_from_spins()
+
+        win.acc_r.valueChanged.connect(_update_from_spins)
+        win.acc_g.valueChanged.connect(_update_from_spins)
+        win.acc_b.valueChanged.connect(_update_from_spins)
+        apply_btn.clicked.connect(_apply)
+        reset_btn.clicked.connect(_reset)
+
+        # Ensure the accent spinboxes get lucide arrow images in their
+        # native arrow areas. Try immediate injection and a short delayed
+        # retry so Windows native controls render the icons reliably.
+        try:
+            from ..ui.icons import lucide_icon
+            from PyQt6.QtCore import QTimer, QSize, QEvent, QObject
+            from PyQt6.QtWidgets import QToolButton
+
+            class _Overlay(QObject):
+                def __init__(self, sb: QSpinBox):
+                    super().__init__(sb)
+                    self.sb = sb
+                    try:
+                        ico_up = lucide_icon('chevron-up', '#f0ece6', 16)
+                        ico_dn = lucide_icon('chevron-down', '#f0ece6', 16)
+                        up = QToolButton(self.sb)
+                        dn = QToolButton(self.sb)
+                        up.setIcon(ico_up); dn.setIcon(ico_dn)
+                        sz = QSize(12, 12)
+                        up.setIconSize(sz); dn.setIconSize(sz)
+                        up.setStyleSheet('background: transparent; border: none;')
+                        dn.setStyleSheet('background: transparent; border: none;')
+                        up.setCursor(self.sb.cursor()); dn.setCursor(self.sb.cursor())
+                        up.setFixedSize(22, 17); dn.setFixedSize(22, 17)
+                        up.clicked.connect(self.sb.stepUp); dn.clicked.connect(self.sb.stepDown)
+                        self.sb._overlay_up_btn = up; self.sb._overlay_dn_btn = dn
+                        self.sb.installEventFilter(self)
+                        try:
+                            up.show(); dn.show()
+                            up.raise_(); dn.raise_()
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+
+                def eventFilter(self, obj, ev):
+                    try:
+                        if ev.type() in (QEvent.Type.Resize, QEvent.Type.Show):
+                            self._reposition()
+                    except Exception:
+                        pass
+                    return False
+
+                def _reposition(self):
+                    try:
+                        sb = self.sb
+                        up = getattr(sb, '_overlay_up_btn', None)
+                        dn = getattr(sb, '_overlay_dn_btn', None)
+                        if not up or not dn:
+                            return
+                        w = sb.width(); h = sb.height(); button_w = 22
+                        x = w - button_w
+                        up.move(x, max(0, (h//4) - (up.height()//2)))
+                        dn.move(x, max(0, (3*h//4) - (dn.height()//2)))
+                    except Exception:
+                        pass
+
+            # ensure initial positioning/show immediately after creation
+            def _ensure():
+                try:
+                    for sb in (win.acc_r, win.acc_g, win.acc_b):
+                        ov = getattr(sb, '_overlay_up_btn', None)
+                        if ov:
+                            try:
+                                ov.show(); ov.raise_()
+                            except Exception:
+                                pass
+                        dn = getattr(sb, '_overlay_dn_btn', None)
+                        if dn:
+                            try:
+                                dn.show(); dn.raise_()
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+            QTimer.singleShot(40, _ensure)
+
+            def _install_overlays():
+                try:
+                    for sb in (win.acc_r, win.acc_g, win.acc_b):
+                        try:
+                            _Overlay(sb)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            QTimer.singleShot(0, _install_overlays)
+
+            # Additionally inject QSpinBox::up-arrow/down-arrow PNG CSS directly
+            # into the widget stylesheet as a fallback (some platforms ignore
+            # QAbstractButton children until later). Run now and shortly after.
+            from PyQt6.QtCore import QBuffer, QIODevice
+            from PyQt6.QtGui import QPixmap
+
+            def _inject_css_icons():
+                try:
+                    for sb in (win.acc_r, win.acc_g, win.acc_b):
+                        try:
+                            ico_up = lucide_icon("chevron-up", "#f0ece6", 16)
+                            ico_dn = lucide_icon("chevron-down", "#f0ece6", 16)
+                            pm_up = ico_up.pixmap(12, 12)
+                            pm_dn = ico_dn.pixmap(12, 12)
+                            buf = QBuffer()
+                            buf.open(QIODevice.OpenModeFlag.WriteOnly)
+                            pm_up.save(buf, "PNG")
+                            b64_up = bytes(buf.data().toBase64()).decode()
+                            buf.close()
+                            buf = QBuffer()
+                            buf.open(QIODevice.OpenModeFlag.WriteOnly)
+                            pm_dn.save(buf, "PNG")
+                            b64_dn = bytes(buf.data().toBase64()).decode()
+                            buf.close()
+                            css = (
+                                f"QSpinBox::up-arrow {{ image: url(data:image/png;base64,{b64_up}); width:10px; height:6px; }} "
+                                f"QSpinBox::down-arrow {{ image: url(data:image/png;base64,{b64_dn}); width:10px; height:6px; }}"
+                            )
+                            sb.setStyleSheet(sb.styleSheet() + "\n" + css)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            QTimer.singleShot(0, _inject_css_icons)
+            QTimer.singleShot(120, _inject_css_icons)
+        except Exception:
+            pass
+
+        lay.addWidget(card)
+
+    appearance_page = QWidget(); appearance_l = QVBoxLayout(appearance_page); appearance_l.setContentsMargins(8,12,8,8); appearance_l.setSpacing(12)
+    _build_appearance_tab(win, appearance_l)
+
+    # Wrap pages in QScrollArea so pages are scrollable but scrollbar
+    # widgets are hidden for a cleaner look.
+    basic_scroll = QScrollArea()
+    basic_scroll.setWidgetResizable(True)
+    basic_scroll.setFrameShape(QFrame.Shape.NoFrame)
+    basic_scroll.setWidget(basic_page)
+    basic_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    basic_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    # Use overlay scrollbars via stylesheet so scrolling still works with mouse/trackpad
+    basic_scroll.setStyleSheet("QScrollBar:vertical {width:0px;} QScrollBar:horizontal{height:0px;}")
+
+    upload_scroll = QScrollArea()
+    upload_scroll.setWidgetResizable(True)
+    upload_scroll.setFrameShape(QFrame.Shape.NoFrame)
+    upload_scroll.setWidget(upload_page)
+    upload_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    upload_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    upload_scroll.setStyleSheet("QScrollBar:vertical {width:0px;} QScrollBar:horizontal{height:0px;}")
+
+    updates_scroll = QScrollArea()
+    updates_scroll.setWidgetResizable(True)
+    updates_scroll.setFrameShape(QFrame.Shape.NoFrame)
+    updates_scroll.setWidget(updates_page)
+    updates_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    updates_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    updates_scroll.setStyleSheet("QScrollBar:vertical {width:0px;} QScrollBar:horizontal{height:0px;}")
+
+    appearance_scroll = QScrollArea()
+    appearance_scroll.setWidgetResizable(True)
+    appearance_scroll.setFrameShape(QFrame.Shape.NoFrame)
+    appearance_scroll.setWidget(appearance_page)
+    appearance_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    appearance_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    appearance_scroll.setStyleSheet("QScrollBar:vertical {width:0px;} QScrollBar:horizontal{height:0px;}")
+
+    tabs.addTab(basic_scroll, "Basic")
+    tabs.addTab(upload_scroll, "Upload")
+    tabs.addTab(updates_scroll, "Updates")
+    tabs.addTab(appearance_scroll, "UI")
+
+    # Ensure lucide arrow overlays/icons are installed for the accent spinboxes
+    # when the UI (appearance) tab becomes visible — some platforms defer
+    # creation of internal controls until a widget is shown inside a tab.
+    def _ensure_accent_spin_arrows(idx=None):
+        # only act when appearance tab selected (index 3) or when called
+        if idx is not None and idx != 3:
+            return
+        try:
+            from ..ui.icons import lucide_icon
+            from PyQt6.QtCore import QTimer, QBuffer, QIODevice
+            from PyQt6.QtGui import QPixmap
+            from PyQt6.QtWidgets import QToolButton, QAbstractButton
+            from PyQt6.QtCore import QSize, QEvent, QObject
+
+            class _Reposer(QObject):
+                def __init__(self, sb: QSpinBox, up: QToolButton, dn: QToolButton):
+                    super().__init__(sb)
+                    self.sb = sb; self.up = up; self.dn = dn
+
+                def eventFilter(self, obj, ev):
+                    try:
+                        if ev.type() in (QEvent.Type.Resize, QEvent.Type.Show):
+                            w = self.sb.width(); h = self.sb.height(); button_w = 22
+                            x = w - button_w
+                            self.up.move(x, max(0, (h//4) - (self.up.height()//2)))
+                            self.dn.move(x, max(0, (3*h//4) - (self.dn.height()//2)))
+                    except Exception:
+                        pass
+                    return False
+
+            def _for(sb: QSpinBox):
+                try:
+                    # inject CSS arrow images first (idempotent)
+                    ico_up = lucide_icon('chevron-up', '#f0ece6', 16)
+                    ico_dn = lucide_icon('chevron-down', '#f0ece6', 16)
+                    pm_up = ico_up.pixmap(12, 12); pm_dn = ico_dn.pixmap(12, 12)
+                    buf = QBuffer(); buf.open(QIODevice.OpenModeFlag.WriteOnly); pm_up.save(buf, 'PNG')
+                    b64_up = bytes(buf.data().toBase64()).decode(); buf.close()
+                    buf = QBuffer(); buf.open(QIODevice.OpenModeFlag.WriteOnly); pm_dn.save(buf, 'PNG')
+                    b64_dn = bytes(buf.data().toBase64()).decode(); buf.close()
+                    css = (
+                        f"QSpinBox::up-arrow {{ image: url(data:image/png;base64,{b64_up}); width:10px; height:6px; }} "
+                        f"QSpinBox::down-arrow {{ image: url(data:image/png;base64,{b64_dn}); width:10px; height:6px; }}"
+                    )
+                    sb.setStyleSheet(sb.styleSheet() + "\n" + css)
+                except Exception:
+                    pass
+
+                try:
+                    # create overlay buttons if not present
+                    if not getattr(sb, '_overlay_up_btn', None):
+                        up = QToolButton(sb); dn = QToolButton(sb)
+                        up.setIcon(lucide_icon('chevron-up', '#f0ece6', 16))
+                        dn.setIcon(lucide_icon('chevron-down', '#f0ece6', 16))
+                        try:
+                            up.setIconSize(QSize(12,12)); dn.setIconSize(QSize(12,12))
+                        except Exception:
+                            pass
+                        up.setStyleSheet('background: transparent; border: none;')
+                        dn.setStyleSheet('background: transparent; border: none;')
+                        up.setCursor(sb.cursor()); dn.setCursor(sb.cursor())
+                        up.setFixedSize(22, 17); dn.setFixedSize(22, 17)
+                        up.clicked.connect(sb.stepUp); dn.clicked.connect(sb.stepDown)
+                        sb._overlay_up_btn = up; sb._overlay_dn_btn = dn
+                        reposer = _Reposer(sb, up, dn)
+                        sb.installEventFilter(reposer)
+                        try:
+                            up.show(); dn.show(); up.raise_(); dn.raise_()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            for sb in (win.acc_r, win.acc_g, win.acc_b):
+                try:
+                    _for(sb)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    try:
+        tabs.currentChanged.connect(_ensure_accent_spin_arrows)
+    except Exception:
+        pass
+    from PyQt6.QtCore import QTimer
+    QTimer.singleShot(120, lambda: _ensure_accent_spin_arrows(None))
+
+    center_row.addWidget(tabs, 1)
     center_row.addStretch()
     tab_lay.addLayout(center_row)
-
-    _build_api_section(win, lay)
-    _build_logging_section(win, lay)
-    _build_mass_upload_section(win, lay)
-    _build_sync_section(win, lay)
-    _build_multipart_section(win, lay)
-    _build_updates_section(win, lay)
-    lay.addStretch()
-
+    tab_lay.addStretch()  # keep bottom spacing for visual layout
+    lay = tab_lay  # keep variable for callers if needed
     return tab
 
 
@@ -228,9 +636,14 @@ def _build_updates_section(win, lay: QVBoxLayout):
     win.install_update_btn = QPushButton("↓  Install update")
     win.install_update_btn.setObjectName("upload_btn")
     win.install_update_btn.setFixedHeight(36)
+    try:
+        from ..theme import get_accent
+        _inst_acc = get_accent()
+    except Exception:
+        _inst_acc = "#c8a96e"
     win.install_update_btn.setStyleSheet(
-        "min-height:0px; padding:0px 16px; font-size:13px; font-weight:700;"
-        "background:#c8a96e; color:#111010; border:none; border-radius:7px;"
+        f"min-height:0px; padding:0px 16px; font-size:13px; font-weight:700;"
+        f"background:{_inst_acc}; color:#111010; border:none; border-radius:7px;"
     )
     win.install_update_btn.clicked.connect(win._install_update)
     win.install_update_btn.hide()
@@ -276,6 +689,7 @@ def load_settings(win):
     win.api_key_edit.setText(key)
     win.upload_path_edit.setText(s.value("upload_path", "/"))
     win.remote_tab.path_edit.setText(s.value("remote_path", "/"))
+
     win.remember_cb.setChecked(s.value("remember", False, type=bool))
     win.debug_cb.setChecked(s.value("debug", False, type=bool))
     win.chunk_size_spin.setValue(s.value("chunk_size_mb", DEFAULT_CHUNK_SIZE_MB, type=int))
@@ -293,6 +707,19 @@ def load_settings(win):
     win.auto_restart_cb.setChecked(
         s.value("auto_restart_after_update", False, type=bool)
     )
+    # Accent color — update appearance tab controls if present
+    try:
+        accent = s.value("accent", None)
+        if accent and getattr(win, 'acc_hex', None) is not None:
+            win.acc_hex.setText(accent)
+            r = int(accent[1:3], 16); g = int(accent[3:5], 16); b = int(accent[5:7], 16)
+            win.acc_r.setValue(r); win.acc_g.setValue(g); win.acc_b.setValue(b)
+            win.acc_swatch.setStyleSheet(f"border:1px solid #2e2b27; background:{accent};")
+        # legacy swatch used earlier
+        if accent and getattr(win, 'accent_swatch', None) is not None:
+            win.accent_swatch.setStyleSheet(f"border:1px solid #2e2b27; border-radius:3px; background:{accent};")
+    except Exception:
+        pass
 
     # Pre-populate shares cache so both tabs render before the first network fetch
     raw = s.value("shares_cache", None)
@@ -302,7 +729,7 @@ def load_settings(win):
             # Seed the shared remote_cache store so both tabs get instant render
             from ..remote_cache import cache as _rc, registry as _reg
             _rc.set("shares", cached)
-            # Also seed the tab-level caches for immediate rendering before
+            # Also seed t tab-level caches for immediate rendering before
             # the poller's first callback fires
             win.shares_tab._cache = cached
             win.shares_tab._render(cached)
@@ -354,12 +781,36 @@ def save_settings(win):
         s.remove("remote_path")
         s.setValue("remember", False)
 
-
+    # Persist accent only when 'Remember settings' is checked (consistent)
+    try:
+        from ..theme import get_accent
+        if win.remember_cb.isChecked():
+            s.setValue("accent", get_accent())
+        else:
+            # remove persisted accent so next launch uses DEFAULT or runtime value
+            try:
+                s.remove("accent")
+            except Exception:
+                pass
+        try:
+            s.sync()
+        except Exception:
+            pass
+    except Exception:
+        pass
+    # Make sure values are flushed to the system store
+    try:
+        s.sync()
+    except Exception:
+        pass
 # ── Private helpers ───────────────────────────────────────────────────────────
 
 def _sh(text: str) -> QLabel:
     lbl = QLabel(text.upper())
     lbl.setObjectName("section_header")
+    lbl.setContentsMargins(0, 0, 0, 0)
+    lbl.setFixedHeight(18)
+    lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
     return lbl
 
 
@@ -371,13 +822,22 @@ def _card() -> QFrame:
 
 def _spinbox(min_val: int, max_val: int, default: int,
              suffix: str, tooltip: str) -> QSpinBox:
-    sb = QSpinBox()
-    sb.setRange(min_val, max_val)
-    sb.setValue(default)
-    sb.setSuffix(suffix)
-    sb.setToolTip(tooltip)
-    sb.setMaximumWidth(200)
-    return sb
+    try:
+        from .settings_sections import _spinbox as _shared_spinbox
+        return _shared_spinbox(min_val, max_val, default, suffix, tooltip)
+    except Exception:
+        # Fallback: simple QSpinBox with basic sizing
+        sb = QSpinBox()
+        sb.setRange(min_val, max_val)
+        sb.setValue(default)
+        sb.setSuffix(suffix)
+        sb.setToolTip(tooltip)
+        sb.setMaximumWidth(200)
+        try:
+            sb.setFixedHeight(34)
+        except Exception:
+            pass
+        return sb
 
 
 def _add_spin_row(card_lay: QVBoxLayout, label: str, spinbox: QSpinBox):

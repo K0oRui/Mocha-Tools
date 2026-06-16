@@ -53,9 +53,10 @@ class SharesTab(QWidget):
         tb = QHBoxLayout()
         tb.setSpacing(4)
 
-        self.refresh_btn = self._tb("  Refresh",      "refresh-cw", "#9c9484", self.refresh)
-        self.copy_btn    = self._tb("  Copy Link",    "copy",       "#9c9484", self._copy_selected)
-        self.toggle_btn  = self._tb("  Toggle Active","link",       "#9c9484", self._toggle_selected)
+        from ..theme import get_accent, notifier, accent_qcolor
+        self.refresh_btn = self._tb("  Refresh",      "refresh-cw", get_accent(), self.refresh)
+        self.copy_btn    = self._tb("  Copy Link",    "copy",       get_accent(), self._copy_selected)
+        self.toggle_btn  = self._tb("  Toggle Active","link",       get_accent(), self._toggle_selected)
         self.delete_btn  = self._tb("  Delete",       "trash-2",    "#f87171", self._delete_selected,
                                     danger=True)
 
@@ -68,9 +69,23 @@ class SharesTab(QWidget):
         tb.addStretch()
 
         self.status_lbl = QLabel("")
-        self.status_lbl.setStyleSheet("color:#9ca3af; font-size:11px; background:transparent;")
+        self.status_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:11px; background:transparent;")
         tb.addWidget(self.status_lbl)
         parent_lay.addLayout(tb)
+        try:
+            notifier().accent_changed.connect(lambda _old, _new: self._on_accent_changed(_old, _new))
+        except Exception:
+            pass
+
+    def _on_accent_changed(self, old, new):
+        try:
+            from ..theme import get_accent, accent_qcolor
+            self.refresh_btn.setIcon(lucide_icon("refresh-cw", get_accent(), 13))
+            self.copy_btn.setIcon(lucide_icon("copy", get_accent(), 13))
+            self.toggle_btn.setIcon(lucide_icon("link", get_accent(), 13))
+            self.status_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:11px; background:transparent;")
+        except Exception:
+            pass
 
     def _build_tree(self, parent_lay: QVBoxLayout):
         self.tree = QTreeWidget()
@@ -354,16 +369,26 @@ class SharesTab(QWidget):
         if not item:
             return
         menu = QMenu(self)
+        menu.setStyleSheet(
+            "QMenu { background:#1f1f1f; border:1px solid #3a3a3a; border-radius:8px; color:#f0f0f0; font-size:12px; }"
+            "QMenu::item { padding:6px 8px; }"
+            "QMenu::item:selected { background:#332b1a; }"
+            "QMenu::icon { padding:0 8px 0 6px; width:12px; height:12px; }"
+        )
         menu.setStyleSheet("""
             QMenu { background:#1f1f1f; border:1px solid #3a3a3a; border-radius:8px;
                     color:#f0f0f0; font-size:12px; }
             QMenu::item { padding:6px 24px; }
             QMenu::item:selected { background:#332b1a; }
         """)
-        menu.addAction("⧉  Copy Link",     self._copy_selected)
-        menu.addAction("◎  Toggle Active", self._toggle_selected)
+        from ..theme import get_accent
+        a = menu.addAction(lucide_icon("copy", get_accent(), 12), "Copy Link")
+        a.triggered.connect(self._copy_selected)
+        a = menu.addAction(lucide_icon("share-2", get_accent(), 12), "Toggle Active")
+        a.triggered.connect(self._toggle_selected)
         menu.addSeparator()
-        menu.addAction("✕  Delete",        self._delete_selected)
+        a = menu.addAction(lucide_icon("trash-2", "#f87171", 12), "Delete")
+        a.triggered.connect(self._delete_selected)
         menu.exec(self.tree.viewport().mapToGlobal(pos))
 
     # ── Helpers ───────────────────────────────────────────────────────────────

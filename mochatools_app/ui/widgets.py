@@ -8,8 +8,8 @@ ui/widgets.py — Reusable custom Qt widgets for MochaTools.
 
 import os
 
-from PyQt6.QtCore import Qt, QSize, pyqtSignal
-from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QUrl
+from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent, QDesktopServices
 from PyQt6.QtWidgets import (
     QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow,
     QMenu, QPushButton, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
@@ -59,9 +59,31 @@ class DropZone(QFrame):
 
         self.file_label = QLabel("")
         self.file_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        from ..theme import get_accent
         self.file_label.setStyleSheet(
-            "color: #c8a96e; font-size: 12px; font-weight:600; background:transparent;"
+            f"color: {get_accent()}; font-size: 12px; font-weight:600; background:transparent;"
         )
+        try:
+            from ..theme import notifier
+            def _on_accent_changed(_old, _new):
+                try:
+                    # Re-polish outer drop zone so stylesheet rules targeting #drop_zone update
+                    self.style().unpolish(self)
+                    self.style().polish(self)
+                except Exception:
+                    pass
+                try:
+                    # Refresh the file label color as it uses the accent in its stylesheet
+                    self.file_label.style().unpolish(self.file_label)
+                    self.file_label.style().polish(self.file_label)
+                except Exception:
+                    try:
+                        self.file_label.update()
+                    except Exception:
+                        pass
+            notifier().accent_changed.connect(_on_accent_changed)
+        except Exception:
+            pass
 
         layout.addWidget(icon)
         layout.addLayout(row)
@@ -98,8 +120,9 @@ class DropZone(QFrame):
 
     def _browse(self):
         menu = QMenu(self)
-        act_file   = menu.addAction("📄  Select files…")
-        act_folder = menu.addAction("📁  Select folder…")
+        from ..theme import get_accent
+        act_file   = menu.addAction(lucide_icon("copy", get_accent(), 12), "Select files…")
+        act_folder = menu.addAction(lucide_icon("folder", get_accent(), 12), "Select folder…")
         chosen = menu.exec(self.mapToGlobal(self.rect().center()))
         if chosen == act_file:
             paths, _ = QFileDialog.getOpenFileNames(self, "Select files")
@@ -185,7 +208,14 @@ class FullWidthTabWidget(QWidget):
 
         self._stack = QStackedWidget()
         self._stack.setStyleSheet("QStackedWidget { background: #181614; }")
+        # stacked widget uses default margins so the original tab appearance is preserved
         outer.addWidget(self._stack, 1)
+        # update tab styles when accent changes
+        try:
+            from ..theme import notifier
+            notifier().accent_changed.connect(lambda _old, _new: self._refresh_tab_styles())
+        except Exception:
+            pass
 
     def addTab(self, widget: QWidget, label: str) -> int:
         idx = len(self._tabs)
@@ -229,20 +259,38 @@ class FullWidthTabWidget(QWidget):
         self._stack.setCurrentIndex(index)
         if old != index:
             self.currentChanged.emit(index)
+        # ensure button styles reflect any possible accent change
+        self._refresh_tab_styles()
+
+    def _refresh_tab_styles(self):
+        for i, (btn, _) in enumerate(self._tabs):
+            active = (i == self._current)
+            btn.setStyleSheet(self._btn_style(active))
 
     @staticmethod
     def _btn_style(active: bool) -> str:
+        # Build tab button CSS dynamically from current accent so the tab
+        # bar updates immediately when the accent changes.
+        try:
+            from ..theme import get_accent
+            from ..styles import compute_accent_variants
+            acc, hov, _ = compute_accent_variants(get_accent())
+        except Exception:
+            from ..theme import DEFAULT_ACCENT
+            from ..styles import compute_accent_variants
+            acc, hov, _ = compute_accent_variants(DEFAULT_ACCENT)
+
         if active:
             return (
-                "QPushButton { background:transparent; color:#c8a96e; border:none;"
-                " border-bottom:2px solid #c8a96e; padding:11px 22px 9px 22px;"
+                f"QPushButton {{ background:transparent; color:{acc}; border:none;"
+                f" border-bottom:2px solid {acc}; padding:11px 22px 9px 22px;"
                 " font-size:12px; font-weight:600; letter-spacing:0.2px; border-radius:0px; }"
             )
         return (
-            "QPushButton { background:transparent; color:#5a5650; border:none;"
-            " border-bottom:2px solid transparent; padding:11px 22px 9px 22px;"
+            f"QPushButton {{ background:transparent; color:#5a5650; border:none;"
+            f" border-bottom:2px solid transparent; padding:11px 22px 9px 22px;"
             " font-size:12px; font-weight:600; letter-spacing:0.2px; border-radius:0px; }"
-            "QPushButton:hover { color:#9c9484; border-bottom:2px solid #3d3a35; }"
+            f"QPushButton:hover {{ color:#9c9484; border-bottom:2px solid #3d3a35; }}"
         )
 
 
@@ -262,10 +310,17 @@ class CustomTitleBar(QFrame):
         lay.setContentsMargins(14, 0, 8, 0)
         lay.setSpacing(0)
 
-        # Coffee icon + app name
+        # Coffee icon (clickable) + app name — keep original QLabel appearance
         icon_lbl = QLabel()
-        icon_lbl.setPixmap(lucide_icon("coffee", "#c8a96e", 15).pixmap(QSize(15, 15)))
+        from ..theme import get_accent
+        icon_lbl.setPixmap(lucide_icon("coffee", get_accent(), 15).pixmap(QSize(15, 15)))
         icon_lbl.setStyleSheet("background:transparent; padding-right:6px;")
+        icon_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        icon_lbl.setToolTip("Open https://mocha.my")
+        def _icon_clicked(event):
+            if event.button() == Qt.MouseButton.LeftButton:
+                QDesktopServices.openUrl(QUrl("https://mocha.my"))
+        icon_lbl.mousePressEvent = _icon_clicked
         lay.addWidget(icon_lbl)
 
         name_lbl = QLabel(app_name)

@@ -17,6 +17,8 @@ from PyQt6.QtWidgets import (
     QSizeGrip,
 )
 
+from .ui import lucide_icon
+
 
 # ── Shared: Mocha-styled frameless dialog base ────────────────────────────────
 class MochaDialog(QDialog):
@@ -49,20 +51,31 @@ class MochaDialog(QDialog):
         tb_lay.setContentsMargins(12, 0, 8, 0)
         tb_lay.setSpacing(6)
 
+        try:
+            from .theme import get_accent
+            _dot_color = get_accent()
+        except Exception:
+            _dot_color = "#c8a96e"
         dot = QLabel("◆")
-        dot.setStyleSheet("color:#c8a96e; font-size:10px; background:transparent;")
+        dot.setStyleSheet(f"color:{_dot_color}; font-size:10px; background:transparent;")
         tb_lay.addWidget(dot)
 
         title_lbl = QLabel(title)
         title_lbl.setObjectName("title_app_name")
         title_lbl.setStyleSheet(
-            "color:#c8a96e; font-size:13px; font-weight:700;"
+            f"color:{get_accent()}; font-size:13px; font-weight:700;"
             "letter-spacing:0.5px; background:transparent;"
         )
         tb_lay.addWidget(title_lbl)
         tb_lay.addStretch()
 
-        close_btn = QPushButton("✕")
+        close_btn = QPushButton()
+        try:
+            from .theme import get_accent
+            _xcol = get_accent()
+        except Exception:
+            _xcol = "#c8a96e"
+        close_btn.setIcon(lucide_icon("x", _xcol, 12))
         close_btn.setObjectName("tb_close")
         close_btn.setFixedSize(32, 28)
         close_btn.clicked.connect(self.reject)
@@ -110,9 +123,14 @@ def _gold_btn(text: str, width=160) -> QPushButton:
     btn = QPushButton(text)
     btn.setObjectName("upload_btn")
     btn.setFixedSize(width, 36)
+    try:
+        acc = get_accent()
+    except Exception:
+        from .theme import DEFAULT_ACCENT
+        acc = DEFAULT_ACCENT
     btn.setStyleSheet(
-        "min-height:0px; padding:0px 16px; font-size:13px; font-weight:700;"
-        "background:#c8a96e; color:#111010; border:none; border-radius:7px;"
+        f"min-height:0px; padding:0px 16px; font-size:13px; font-weight:700;"
+        f"background:{acc}; color:#111010; border:none; border-radius:7px;"
     )
     return btn
 
@@ -222,9 +240,16 @@ class FolderBrowserDialog(MochaDialog):
 
         go_btn = QPushButton("Go")
         go_btn.setFixedSize(48, 34)
+        try:
+            acc = get_accent()
+            from .styles import compute_accent_variants
+            _, acc_hov, _ = compute_accent_variants(acc)
+        except Exception:
+            acc = "#c8a96e"
+            acc_hov = "#d4b87a"
         go_btn.setStyleSheet(
-            "background:#252320; color:#c8a96e; border:1px solid #4a3f2a;"
-            "border-radius:7px; font-size:12px; font-weight:700; min-height:0px;"
+            f"background:#252320; color:{acc}; border:1px solid #4a3f2a;"
+            f"border-radius:7px; font-size:12px; font-weight:700; min-height:0px;"
         )
         go_btn.clicked.connect(self._on_path_typed)
         path_row.addWidget(go_btn)
@@ -233,20 +258,47 @@ class FolderBrowserDialog(MochaDialog):
 
         # ── Folder list ───────────────────────────────────────────────────────
         self.list = QListWidget()
-        self.list.setStyleSheet("""
-            QListWidget { background:#141210; border:1px solid #2e2b27;
-                          border-radius:8px; color:#f0ece6; font-size:13px; }
-            QListWidget::item { padding:6px 10px; }
-            QListWidget::item:selected { background:#c8a96e33; color:#f0ece6; }
-            QListWidget::item:hover { background:#1e1c19; }
+        try:
+            acc = get_accent()
+            acc_hov = acc + "33"
+        except Exception:
+            from .theme import DEFAULT_ACCENT
+            acc = DEFAULT_ACCENT
+            acc_hov = DEFAULT_ACCENT + "33"
+        self.list.setStyleSheet(f"""
+            QListWidget {{ background:#141210; border:1px solid #2e2b27;
+                          border-radius:8px; color:#f0ece6; font-size:13px; }}
+            QListWidget::item {{ padding:6px 10px; }}
+            QListWidget::item:selected {{ background:{acc_hov}; color:#f0ece6; }}
+            QListWidget::item:hover {{ background:#1e1c19; }}
         """)
         self.list.itemDoubleClicked.connect(self._on_double_click)
         self.list.currentItemChanged.connect(self._on_selection_changed)
         lay.addWidget(self.list)
 
+        # Ensure folder icons update if the accent changes at runtime
+        try:
+            from .theme import notifier
+            def _refresh_list(old, new):
+                for i in range(self.list.count()):
+                    it = self.list.item(i)
+                    try:
+                        data = it.data(Qt.ItemDataRole.UserRole)
+                    except Exception:
+                        data = None
+                    if data and isinstance(data, tuple) and data[0] == "dir":
+                        try:
+                            it.setIcon(lucide_icon("folder", new, 12))
+                        except Exception:
+                            pass
+            notifier().accent_changed.connect(_refresh_list)
+        except Exception:
+            pass
+
         # ── Status ────────────────────────────────────────────────────────────
         self.status_lbl = QLabel("")
-        self.status_lbl.setStyleSheet("color:#9c9484; font-size:11px; background:transparent;")
+        from .theme import accent_qcolor, notifier
+        self.status_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:11px; background:transparent;")
         lay.addWidget(self.status_lbl)
 
         # ── Buttons ───────────────────────────────────────────────────────────
@@ -347,9 +399,14 @@ class FolderBrowserDialog(MochaDialog):
         if path and path != "/":
             parent = "/" + "/".join(path.strip("/").split("/")[:-1])
             parent = parent if parent != "/" else "/"
-            item = QListWidgetItem("▲  .. (go up)")
+            item = QListWidgetItem(".. (go up)")
             item.setData(Qt.ItemDataRole.UserRole, ("dir", parent))
-            item.setForeground(QColor("#9c9484"))
+            from .theme import accent_qcolor
+            item.setForeground(accent_qcolor())
+            try:
+                item.setIcon(lucide_icon("folder", get_accent(), 12))
+            except Exception:
+                pass
             self.list.addItem(item)
 
         folders = []
@@ -378,8 +435,12 @@ class FolderBrowserDialog(MochaDialog):
 
         folders.sort(key=lambda x: x[0].lower())
         for name, fullpath in folders:
-            item = QListWidgetItem(f"▶  {name}")
+            item = QListWidgetItem(f"{name}")
             item.setData(Qt.ItemDataRole.UserRole, ("dir", fullpath))
+            try:
+                item.setIcon(lucide_icon("folder", get_accent(), 12))
+            except Exception:
+                pass
             self.list.addItem(item)
 
         self.list.blockSignals(False)
@@ -434,14 +495,23 @@ class ShareLinkDialog(MochaDialog):
         grip_item = lay.takeAt(lay.count() - 1)
 
         header = QLabel("✓  Share link ready")
-        header.setStyleSheet("color:#4ade80; font-size:14px; font-weight:700; background:transparent;")
+        try:
+            from .theme import get_accent
+            header.setStyleSheet(f"color:{get_accent()}; font-size:14px; font-weight:700; background:transparent;")
+        except Exception:
+            header.setStyleSheet("color:#4ade80; font-size:14px; font-weight:700; background:transparent;")
         lay.addWidget(header)
 
         self.url_edit = QLineEdit(url)
         self.url_edit.setReadOnly(True)
+        try:
+            from .theme import get_accent
+            _url_col = get_accent()
+        except Exception:
+            _url_col = "#c8a96e"
         self.url_edit.setStyleSheet(
-            "background:#08090b; border:1px solid #35101a; border-radius:8px;"
-            "padding:8px 10px; color:#c8a96e;"
+            f"background:#08090b; border:1px solid #35101a; border-radius:8px;"
+            f"padding:8px 10px; color:{_url_col};"
             "font-family:'Consolas','Fira Code','Courier New',monospace; font-size:12px;"
         )
         lay.addWidget(self.url_edit)
@@ -488,7 +558,11 @@ class LocalPathDialog(MochaDialog):
         grip_item = lay.takeAt(lay.count() - 1)
 
         hint = QLabel("Type the destination folder path:")
-        hint.setStyleSheet("color:#9c9484; font-size:12px; background:transparent;")
+        try:
+            from .theme import accent_qcolor
+            hint.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:12px; background:transparent;")
+        except Exception:
+            hint.setStyleSheet("color:#9c9484; font-size:12px; background:transparent;")
         lay.addWidget(hint)
 
         self.path_edit = QLineEdit(initial_path)
@@ -497,7 +571,11 @@ class LocalPathDialog(MochaDialog):
         lay.addWidget(self.path_edit)
 
         self.status_lbl = QLabel("")
-        self.status_lbl.setStyleSheet("color:#f87171; font-size:11px; background:transparent;")
+        try:
+            from .theme import accent_qcolor
+            self.status_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:11px; background:transparent;")
+        except Exception:
+            self.status_lbl.setStyleSheet("color:#f87171; font-size:11px; background:transparent;")
         lay.addWidget(self.status_lbl)
 
         btn_row = QHBoxLayout()

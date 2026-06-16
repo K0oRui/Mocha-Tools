@@ -79,15 +79,16 @@ QFrame#card {{
     background-color: #181614;
     border: 1px solid #2e2b27;
     border-radius: 10px;
-    padding: 4px;
+    padding: 12px;
 }}
 QLabel#section_header {{
     color: #5a5650;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 700;
     letter-spacing: 1.5px;
     text-transform: uppercase;
-    padding: 0px;
+    padding: 8px 2px 8px 0px; /* add top/bottom padding so header sits clear of tab bar */
+    margin: 0px 0px 8px 0px;
     background: transparent;
 }}
 QLabel#field_label {{
@@ -201,7 +202,7 @@ QPushButton#upload_btn:disabled {{ background: #2e2b27; color: #5a5650; }}
 QPushButton#browse_btn {{
     background-color: #1e1c19;
     color: #c8a96e;
-    border: 1px solid #4a3f2a;
+    border: 1px solid #c8a96e;
     border-radius: 8px;
     padding: 0px 14px;
     font-size: 12px;
@@ -261,20 +262,54 @@ QLabel#status_badge {{
 }}
 QFrame#drop_zone {{
     background-color: #141210;
-    border: 2px dashed #2e2b27;
+    /* use the accent (with subtle alpha) so the outer dashed border follows the selected accent */
+    border: 2px dashed __ACCENT__33;
     border-radius: 12px;
     min-height: 110px;
 }}
 QFrame#drop_zone[drag_active="true"] {{
-    border-color: #c8a96e;
+    /* active state uses full accent color */
+    border-color: __ACCENT__;
     background-color: #1a1710;
 }}
+QFrame#drop_zone QFrame#drop_zone_inner {{
+    /* inner dashed rectangle (smaller) — match accent with subtle alpha */
+    border: 1px dashed __ACCENT__33;
+    border-radius: 10px;
+    padding: 8px 16px;
+    background: transparent;
+}}
+QFrame#drop_zone[drag_active="true"] QFrame#drop_zone_inner {{
+    border-color: __ACCENT__;
+    background: transparent;
+}}
 QLabel#drop_label      {{ color: #5a5650; font-size: 13px; background: transparent; }}
-QLabel#drop_label_bold {{ color: #c8a96e; font-size: 13px; font-weight: 700; background: transparent; }}
+QLabel#drop_label_bold {{ color: __ACCENT__; font-size: 13px; font-weight: 700; background: transparent; }}
+QLabel#drop_file_label {{ color: __ACCENT__; font-size: 12px; font-weight: 600; background: transparent; }}
 QFrame#divider {{ background-color: #2e2b27; max-height: 1px; border: none; }}
 QScrollBar:vertical {{ background: transparent; width: 6px; }}
 QScrollBar::handle:vertical {{ background: #3d3a35; border-radius: 3px; min-height: 20px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+/* Horizontal scrollbar: slim, rounded, modern style */
+/* Horizontal scrollbar: slim, rounded, modern style */
+QScrollBar:horizontal {{
+    background: transparent;
+    height: 8px;
+    margin: 0px 6px 0px 6px; /* give space for rounded handle */
+}}
+QScrollBar::handle:horizontal {{
+    background: rgba(61,58,53,0.75);
+    border-radius: 4px;
+    min-width: 24px;
+    border: 1px solid rgba(0,0,0,0.15);
+}}
+QScrollBar::handle:horizontal:hover {{ background: rgba(61,58,53,0.95); }}
+QScrollBar::handle:horizontal:pressed {{ background: #3d3a35; }}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
+
+/* Make scrollbars overlay-ish and subtle on desktop: rounded translucent handle */
+QScrollBar {{ background: transparent; }}
 QTabWidget::pane {{ border: none; background: transparent; }}
 QTabWidget::tab-bar {{ left: 0px; }}
 QTabBar {{
@@ -286,7 +321,7 @@ QTabBar::tab {{
     color: #5a5650;
     border: none;
     border-bottom: 2px solid transparent;
-    padding: 11px 22px 10px 22px;
+    padding: 10px 18px 8px 18px;
     font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.2px;
@@ -406,3 +441,69 @@ QPushButton {{
 QPushButton:hover  {{ background: #252320; }}
 QPushButton:pressed {{ background: #141210; }}
 """
+
+
+def _hex_to_rgb(h: str) -> tuple[int, int, int]:
+    h = h.lstrip('#')
+    return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+
+
+def _rgb_to_hex(r: int, g: int, b: int) -> str:
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _mix(hex1: str, hex2: str, t: float) -> str:
+    r1, g1, b1 = _hex_to_rgb(hex1)
+    r2, g2, b2 = _hex_to_rgb(hex2)
+    r = int(r1 + (r2 - r1) * t)
+    g = int(g1 + (g2 - g1) * t)
+    b = int(b1 + (b2 - b1) * t)
+    return _rgb_to_hex(r, g, b)
+
+
+def build_stylesheet(accent_hex: str | None) -> str:
+    """Return a stylesheet string with accent colors substituted.
+
+    This function takes the existing STYLESHEET template and replaces the
+    canonical accent (#c8a96e) and its hover/pressed variants with computed
+    values derived from accent_hex.
+    """
+    if not accent_hex:
+        return STYLESHEET
+    # compute hover (lighter) and pressed (darker) variants
+    hover = _mix(accent_hex, "#ffffff", 0.12)
+    pressed = _mix(accent_hex, "#000000", 0.22)
+    s = STYLESHEET
+    from .theme import DEFAULT_ACCENT
+    # compute semi-transparent variant and replace its placeholder first
+    # NOTE: Qt's QSS parser does not support 8-digit #rrggbbaa hex colors,
+    # so we must use rgba(r, g, b, a) instead or the border silently falls
+    # back to its default and never tracks the accent.
+    try:
+        r, g, b = _hex_to_rgb(accent_hex)
+        hover_alpha = f"rgba({r}, {g}, {b}, 51)"  # 0x33 == 51 (~20% opacity)
+        s = s.replace('__ACCENT__33', hover_alpha)
+    except Exception:
+        pass
+    # replace canonical/default accent token
+    s = s.replace(DEFAULT_ACCENT, accent_hex)
+    # also support legacy/plain placeholders used in some templates
+    s = s.replace('__ACCENT__', accent_hex)
+    # replace hover/pressed canonical placeholders and their token equivalents
+    s = s.replace('#d4b87a', hover)
+    s = s.replace('__ACCENT_HOVER__', hover)
+    s = s.replace('#a88950', pressed)
+    s = s.replace('__ACCENT_PRESSED__', pressed)
+    return s
+
+
+def compute_accent_variants(accent_hex: str | None) -> tuple[str, str, str]:
+    """Return (accent, hover, pressed) hex strings for a given accent.
+
+    Useful for sweeping inline styleSheet replacements.
+    """
+    if not accent_hex:
+        return ("#c8a96e", "#d4b87a", "#a88950")
+    hover = _mix(accent_hex, "#ffffff", 0.12)
+    pressed = _mix(accent_hex, "#000000", 0.22)
+    return (accent_hex, hover, pressed)

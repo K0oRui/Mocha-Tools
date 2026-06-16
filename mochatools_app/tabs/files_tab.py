@@ -33,6 +33,7 @@ from ..dialogs import FolderBrowserDialog, ShareLinkDialog
 from ..logging_utils import write_debug_log
 from ..workers import FilesWorker, UploadWorker
 from ..ui.icons import lucide_icon
+from ..theme import get_accent, accent_qcolor
 from ..remote_cache import cache, registry
 
 
@@ -116,8 +117,9 @@ class FilesBrowserTab(QWidget):
             tb.addWidget(btn)
         tb.addStretch()
 
+        from ..theme import accent_qcolor
         self.status_lbl = QLabel("")
-        self.status_lbl.setStyleSheet("color:#9ca3af; font-size:11px; background:transparent;")
+        self.status_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:11px; background:transparent;")
         tb.addWidget(self.status_lbl)
         parent_lay.addLayout(tb)
 
@@ -157,13 +159,32 @@ class FilesBrowserTab(QWidget):
 
         self.copy_share_btn = QPushButton("Copy link")
         self.copy_share_btn.setFixedHeight(36)
+        # Use the user's accent as the button background, keep text and icon dark
+        acc = get_accent()
         self.copy_share_btn.setStyleSheet(
-            "min-height:0px; padding:0px 16px; font-size:13px; font-weight:600;"
-            "background:#1e1c19; color:#f0ece6; border:1px solid #3d3a35; border-radius:7px;"
+            f"min-height:0px; padding:0px 16px; font-size:13px; font-weight:600;"
+            f"background:{acc}; color:#111010; border:1px solid rgba(0,0,0,0.12); border-radius:7px;"
         )
-        self.copy_share_btn.setIcon(lucide_icon("copy", "#9c9484", 13))
+        # Icon stays dark/black so it contrasts with the accent background
+        self.copy_share_btn.setIcon(lucide_icon("copy", "#111010", 13))
         self.copy_share_btn.setIconSize(QSize(13, 13))
         self.copy_share_btn.clicked.connect(self._copy_share_url)
+
+        try:
+            from ..theme import notifier
+            def _on_accent_change(_old, _new):
+                # refresh stylesheet background to new accent and keep text/icon dark
+                try:
+                    self.copy_share_btn.setStyleSheet(
+                        f"min-height:0px; padding:0px 16px; font-size:13px; font-weight:600;"
+                        f"background:{get_accent()}; color:#111010; border:1px solid rgba(0,0,0,0.12); border-radius:7px;"
+                    )
+                    self.copy_share_btn.setIcon(lucide_icon("copy", "#111010", 13))
+                except Exception:
+                    pass
+            notifier().accent_changed.connect(_on_accent_change)
+        except Exception:
+            pass
 
         self._share_bar_row.addWidget(self.share_bar, 1)
         self._share_bar_row.addWidget(self.copy_share_btn)
@@ -182,7 +203,7 @@ class FilesBrowserTab(QWidget):
     def _tb(self, label: str, icon_name: str, slot, danger: bool = False) -> QPushButton:
         btn = QPushButton(f"  {label}")
         btn.setObjectName("tb_btn_danger" if danger else "tb_btn")
-        btn.setIcon(lucide_icon(icon_name, "#f87171" if danger else "#9c9484", 13))
+        btn.setIcon(lucide_icon(icon_name, "#f87171" if danger else get_accent(), 13))
         btn.setIconSize(QSize(13, 13))
         btn.clicked.connect(slot)
         return btn
@@ -398,16 +419,25 @@ class FilesBrowserTab(QWidget):
         folders, files = self._parse_listing(path, data)
 
         if path and path != "/":
-            up_item = QTreeWidgetItem(["↑  ..", "", "folder", "", ""])
+            up_item = QTreeWidgetItem(["..", "", "folder", "", ""])
             up_item.setData(0, Qt.ItemDataRole.UserRole,
                             {"_type": "up", "path": self._parent_path(path)})
             up_item.setForeground(0, QColor("#9ca3af"))
+            try:
+                up_item.setIcon(0, lucide_icon("folder", get_accent(), 14))
+            except Exception:
+                pass
             self.tree.addTopLevelItem(up_item)
 
         for f in sorted(folders, key=lambda x: x["name"].lower()):
-            item = QTreeWidgetItem([f"📁  {f['name']}", "", "folder", "", ""])
+            item = QTreeWidgetItem([f"{f['name']}", "", "folder", "", ""])
             item.setData(0, Qt.ItemDataRole.UserRole, {"_type": "folder", **f})
-            item.setForeground(0, QColor("#c8a96e"))
+            from ..theme import accent_qcolor
+            item.setForeground(0, accent_qcolor())
+            try:
+                item.setIcon(0, lucide_icon("folder", get_accent(), 14))
+            except Exception:
+                pass
             self.tree.addTopLevelItem(item)
 
         for f in sorted(files, key=lambda x: (
@@ -431,6 +461,24 @@ class FilesBrowserTab(QWidget):
                 "path": f.get("path") or f"{path.rstrip('/')}/{stored_name or name}",
             })
             self.tree.addTopLevelItem(item)
+
+        # ensure accent-aware items update if the accent changes
+        try:
+            from ..theme import notifier
+            def _refresh_items(old, new):
+                for i in range(self.tree.topLevelItemCount()):
+                    it = self.tree.topLevelItem(i)
+                    meta = it.data(0, Qt.ItemDataRole.UserRole) or {}
+                    if meta.get('_type') == 'folder':
+                        from ..theme import accent_qcolor
+                        it.setForeground(0, accent_qcolor())
+                        try:
+                            it.setIcon(0, lucide_icon("folder", new, 14))
+                        except Exception:
+                            pass
+            notifier().accent_changed.connect(_refresh_items)
+        except Exception:
+            pass
 
         self.tree.setSortingEnabled(True)
         self.tree.blockSignals(False)
@@ -718,8 +766,13 @@ class FilesBrowserTab(QWidget):
             )
             if ans == QMessageBox.StandardButton.No:
                 self._current_share_url = existing_url
+                try:
+                    from ..theme import get_accent
+                    color = get_accent()
+                except Exception:
+                    color = "#c8a96e"
                 self.share_bar.setText(
-                    f'Share link: <a href="{existing_url}" style="color:#c8a96e;">'
+                    f'Share link: <a href="{existing_url}" style="color:{color};">'
                     f'{existing_url}</a>'
                 )
                 self._share_bar_widget.show()
@@ -813,20 +866,27 @@ class FilesBrowserTab(QWidget):
         if meta.get("_type") not in ("file", "folder"):
             return
         menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu { background:#1f1f1f; border:1px solid #3a3a3a; border-radius:8px;
-                    color:#f0f0f0; font-size:12px; }
-            QMenu::item { padding:6px 24px; }
-            QMenu::item:selected { background:#332b1a; }
-        """)
+        menu.setStyleSheet(
+            "QMenu { background:#1f1f1f; border:1px solid #3a3a3a; border-radius:8px; color:#f0f0f0; font-size:12px; }"
+            "QMenu::item { padding:6px 8px; }"
+            "QMenu::item:selected { background:#332b1a; }"
+            "QMenu::icon { padding:0 8px 0 6px; width:12px; height:12px; }"
+        )
         if meta.get("_type") == "file":
-            menu.addAction("⬇  Download", self._download_selected)
-            menu.addAction("⤴  Share",    self._share_selected)
+            from ..theme import get_accent
+            act = menu.addAction(lucide_icon("download-cloud", get_accent(), 12), "Download")
+            act.triggered.connect(self._download_selected)
+            act = menu.addAction(lucide_icon("share-2", get_accent(), 12), "Share")
+            act.triggered.connect(self._share_selected)
         if meta.get("_type") == "folder":
-            menu.addAction("✎  Rename", self._rename_selected)
-        menu.addAction("↦  Move",   self._move_selected)
+            act = menu.addAction(lucide_icon("pencil", get_accent(), 12), "Rename")
+            act.triggered.connect(self._rename_selected)
+        from ..theme import get_accent
+        act = menu.addAction(lucide_icon("move", get_accent(), 12), "Move")
+        act.triggered.connect(self._move_selected)
         menu.addSeparator()
-        menu.addAction("✕  Delete", self._delete_selected)
+        act = menu.addAction(lucide_icon("trash-2", "#f87171", 12), "Delete")
+        act.triggered.connect(self._delete_selected)
         menu.exec(self.tree.viewport().mapToGlobal(pos))
 
     # ── Helpers ───────────────────────────────────────────────────────────────

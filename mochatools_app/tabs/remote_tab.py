@@ -111,9 +111,10 @@ class RemoteTab(QWidget):
         dest_row.addWidget(browse_btn)
         lay.addLayout(dest_row)
 
+        from ..theme import get_accent, notifier
         self.ingest_btn = QPushButton("  Remote ingest")
         self.ingest_btn.setObjectName("upload_btn")
-        self.ingest_btn.setIcon(lucide_icon("download-cloud", "#111010", 15))
+        self.ingest_btn.setIcon(lucide_icon("download-cloud", get_accent(), 15))
         self.ingest_btn.setIconSize(QSize(15, 15))
         self.ingest_btn.setMinimumHeight(40)
         self.ingest_btn.clicked.connect(self._start_ingest)
@@ -130,9 +131,10 @@ class RemoteTab(QWidget):
         tb = QHBoxLayout()
         tb.setSpacing(4)
 
+        from ..theme import get_accent, notifier
         self.refresh_btn = QPushButton("  Refresh Jobs")
         self.refresh_btn.setObjectName("tb_btn")
-        self.refresh_btn.setIcon(lucide_icon("refresh-cw", "#9c9484", 13))
+        self.refresh_btn.setIcon(lucide_icon("refresh-cw", get_accent(), 13))
         self.refresh_btn.setIconSize(QSize(13, 13))
         self.refresh_btn.clicked.connect(self.refresh_jobs)
         tb.addWidget(self.refresh_btn)
@@ -151,10 +153,24 @@ class RemoteTab(QWidget):
         tb.addWidget(self.active_only_cb)
         tb.addStretch()
 
+        from ..theme import accent_qcolor
         self.status_lbl = QLabel("")
-        self.status_lbl.setStyleSheet("color:#9ca3af; font-size:11px; background:transparent;")
+        self.status_lbl.setStyleSheet(f"color: {accent_qcolor().name()}; font-size:11px; background:transparent;")
         tb.addWidget(self.status_lbl)
         parent_lay.addLayout(tb)
+        try:
+            notifier().accent_changed.connect(lambda _old, _new: self._on_accent_changed(_old, _new))
+        except Exception:
+            pass
+
+    def _on_accent_changed(self, old, new):
+        try:
+            from ..theme import get_accent, accent_qcolor
+            self.ingest_btn.setIcon(lucide_icon("download-cloud", get_accent(), 15))
+            self.refresh_btn.setIcon(lucide_icon("refresh-cw", get_accent(), 13))
+            self.status_lbl.setStyleSheet(f"color: {accent_qcolor().name()}; font-size:11px; background:transparent;")
+        except Exception:
+            pass
 
     def _build_jobs_tree(self, parent_lay: QVBoxLayout):
         self.tree = QTreeWidget()

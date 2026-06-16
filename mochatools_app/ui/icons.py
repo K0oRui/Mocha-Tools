@@ -25,11 +25,44 @@ _LUCIDE_PATHS: dict[str, str] = {
     "link":           'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71 M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71',
     "coffee":         'M17 8h1a4 4 0 1 1 0 8h-1M3 8h14v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V8zM6 1v3M10 1v3M14 1v3',
     "pencil":         'M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z M15 5l4 4',
+    "pause":          'M6 4h4v16H6zM14 4h4v16h-4z',
+    "play":           'M5 3v18l15-9z',
+    "chevron-up":     'M6 15l6-6 6 6',
+    "chevron-down":   'M6 9l6 6 6-6',
 }
 
 
-def lucide_icon(name: str, color: str = "#c8a96e", size: int = 16) -> QIcon:
-    """Return a QIcon rendered from a Lucide SVG path string."""
+def lucide_icon(name: str, color: str | None = None, size: int = 16) -> QIcon:
+    """Return a QIcon rendered from a Lucide SVG path string.
+
+    This helper always creates and returns a fresh QIcon (no caching) so
+    callers can request a new pixmap when needed. To support legacy code
+    that used a special literal for the theme accent, if color is None
+    or equals the legacy accent literal the current accent color is
+    resolved from theme.get_accent().
+
+    Note: callers that need icons to automatically update when the
+    application's accent changes should recreate the icon on demand (for
+    example by connecting to the theme notifier). A module-level cache is
+    intentionally not used here; if one is introduced in future, a
+    connection to the theme notifier should be used to clear it on
+    updates.
+    """
+    # Resolve dynamic accent if caller passed None or the original default
+    try:
+        if color is None:
+            from ..theme import get_accent
+            color = get_accent()
+        else:
+            from ..theme import DEFAULT_ACCENT, get_accent
+            if color == DEFAULT_ACCENT:
+                color = get_accent()
+    except Exception:
+        # fall back to provided color or the module default
+        if not color:
+            from ..theme import DEFAULT_ACCENT
+            color = DEFAULT_ACCENT
+
     path_d = _LUCIDE_PATHS.get(name, "")
 
     svg_paths = ""
