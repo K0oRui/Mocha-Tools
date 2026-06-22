@@ -65,19 +65,6 @@ class MochaDialog(QDialog):
         dot = QLabel("◆")
         dot.setStyleSheet(f"color:{_dot_color}; font-size:{max(8, _fs-3)}px; background:transparent;")
         tb_lay.addWidget(dot)
-
-        title_lbl = QLabel(title)
-        title_lbl.setObjectName("title_app_name")
-        try:
-            from .theme import get_accent, get_font
-            tf = int(get_font()[1])
-        except Exception:
-            tf = 13
-        title_lbl.setStyleSheet(
-            f"color:{get_accent()}; font-size:{tf}px; font-weight:700;"
-            "letter-spacing:0.5px; background:transparent;"
-        )
-        tb_lay.addWidget(title_lbl)
         tb_lay.addStretch()
 
         close_btn = QPushButton()
