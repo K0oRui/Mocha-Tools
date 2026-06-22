@@ -226,12 +226,6 @@ class FullWidthTabWidget(QWidget):
 
         self._bar = QWidget()
         self._bar.setObjectName("tabbar_row")
-        self._bar.setStyleSheet(
-            "QWidget#tabbar_row {"
-            "  background: #181614;"
-            "  border-bottom: 1px solid #2e2b27;"
-            "}"
-        )
         self._bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._bar_lay = QHBoxLayout(self._bar)
         self._bar_lay.setContentsMargins(0, 0, 0, 0)
@@ -239,9 +233,13 @@ class FullWidthTabWidget(QWidget):
         outer.addWidget(self._bar)
 
         self._stack = QStackedWidget()
-        self._stack.setStyleSheet("QStackedWidget { background: #181614; }")
         # stacked widget uses default margins so the original tab appearance is preserved
         outer.addWidget(self._stack, 1)
+
+        # background (bar + stack) tracks the active background theme; set
+        # the initial colors now, then refresh whenever theme/accent/font change
+        self._refresh_bar_background()
+
         # update tab styles when accent changes
         try:
             from ..theme import notifier
@@ -251,6 +249,40 @@ class FullWidthTabWidget(QWidget):
                 notifier().font_changed.connect(lambda _fam, _sz: self._refresh_tab_styles())
             except Exception:
                 pass
+            try:
+                # background theme switches (Mocha/White/Black) need both the
+                # bar/stack backgrounds AND the tab text colors recomputed —
+                # these were previously hardcoded to mocha hex values and
+                # never refreshed, which is why the tab bar stayed stuck on
+                # the old theme even after the rest of the app switched.
+                notifier().background_changed.connect(lambda _old, _new: self._refresh_bar_background())
+                notifier().background_changed.connect(lambda _old, _new: self._refresh_tab_styles())
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _refresh_bar_background(self):
+        """Rebuild the tab-bar-row and stacked-widget background/border from
+        the active background theme palette instead of a hardcoded mocha hex."""
+        try:
+            from ..theme import get_background_palette
+            pal = get_background_palette()
+            bg1 = pal["bg1"]
+            border = pal["border"]
+        except Exception:
+            bg1, border = "#181614", "#2e2b27"
+        try:
+            self._bar.setStyleSheet(
+                "QWidget#tabbar_row {"
+                f"  background: {bg1};"
+                f"  border-bottom: 1px solid {border};"
+                "}"
+            )
+        except Exception:
+            pass
+        try:
+            self._stack.setStyleSheet(f"QStackedWidget {{ background: {bg1}; }}")
         except Exception:
             pass
 
@@ -306,8 +338,8 @@ class FullWidthTabWidget(QWidget):
 
     @staticmethod
     def _btn_style(active: bool) -> str:
-        # Build tab button CSS dynamically from current accent so the tab
-        # bar updates immediately when the accent changes.
+        # Build tab button CSS dynamically from current accent + background
+        # theme so the tab bar updates immediately when either changes.
         try:
             from ..theme import get_accent, get_font
             from ..styles import compute_accent_variants
@@ -319,6 +351,15 @@ class FullWidthTabWidget(QWidget):
             acc, hov, _ = compute_accent_variants(DEFAULT_ACCENT)
             fsz = DEFAULT_FONT_SIZE
 
+        try:
+            from ..theme import get_background_palette
+            pal = get_background_palette()
+            text_dim = pal["text_dim"]
+            text_muted = pal["text_muted"]
+            border2 = pal["border2"]
+        except Exception:
+            text_dim, text_muted, border2 = "#5a5650", "#9c9484", "#3d3a35"
+
         if active:
             return (
                 f"QPushButton {{ background:transparent; color:{acc}; border:none;"
@@ -326,10 +367,10 @@ class FullWidthTabWidget(QWidget):
                 f" font-size:{int(fsz)}px; font-weight:600; letter-spacing:0.2px; border-radius:0px; }}"
             )
         return (
-            f"QPushButton {{ background:transparent; color:#5a5650; border:none;"
+            f"QPushButton {{ background:transparent; color:{text_dim}; border:none;"
             f" border-bottom:2px solid transparent; padding:11px 22px 9px 22px;"
             f" font-size:{int(fsz)}px; font-weight:600; letter-spacing:0.2px; border-radius:0px; }}"
-            f"QPushButton:hover {{ color:#9c9484; border-bottom:2px solid #3d3a35; }}"
+            f"QPushButton:hover {{ color:{text_muted}; border-bottom:2px solid {border2}; }}"
         )
 
 

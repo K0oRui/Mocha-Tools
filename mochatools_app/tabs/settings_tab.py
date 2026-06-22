@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
 from ..constants import (
     APP_NAME, APP_VERSION, DEFAULT_CHUNK_SIZE_MB, DEFAULT_MAX_CHUNKS, ORG_NAME,
 )
-from ..theme import DEFAULT_ACCENT
+from ..theme import DEFAULT_ACCENT, BACKGROUND_THEMES, BACKGROUND_LABELS, DEFAULT_BACKGROUND
 
 
 # ── Settings tab UI ───────────────────────────────────────────────────────────
@@ -118,6 +118,30 @@ def build_settings_tab(win) -> QWidget:
         hex_row.addWidget(win.acc_swatch)
         hex_row.addStretch()
         card_lay.addLayout(hex_row)
+
+        # Background theme selector (Mocha / White / Black)
+        bg_row = QHBoxLayout(); bg_row.setContentsMargins(0, 0, 0, 0); bg_row.setSpacing(8)
+        bg_lbl = QLabel("Background"); bg_lbl.setObjectName("field_label")
+        try:
+            from PyQt6.QtWidgets import QSizePolicy as _SP
+            bg_lbl.setSizePolicy(_SP.Policy.Fixed, _SP.Policy.Fixed)
+        except Exception:
+            pass
+        win.bg_combo = QComboBox(); win.bg_combo.setFixedHeight(34); win.bg_combo.setMinimumWidth(140)
+        for key in ("mocha", "white", "black"):
+            win.bg_combo.addItem(BACKGROUND_LABELS.get(key, key.title()), key)
+        try:
+            from ..theme import get_background
+            current_bg = get_background()
+        except Exception:
+            current_bg = DEFAULT_BACKGROUND
+        idx = win.bg_combo.findData(current_bg)
+        if idx >= 0:
+            win.bg_combo.setCurrentIndex(idx)
+        bg_row.addWidget(bg_lbl)
+        bg_row.addWidget(win.bg_combo)
+        bg_row.addStretch()
+        card_lay.addLayout(bg_row)
 
         btn_row = QHBoxLayout(); btn_row.setSpacing(12)
         apply_btn = QPushButton("Apply")
@@ -300,11 +324,19 @@ def build_settings_tab(win) -> QWidget:
                 except Exception:
                     pass
 
+            # Persist/apply background theme selection
+            try:
+                from ..theme import set_background
+                bg_key = win.bg_combo.currentData() or DEFAULT_BACKGROUND
+                set_background(bg_key, persist=bool(win.remember_cb.isChecked()))
+            except Exception:
+                pass
+
             # Update palette and global stylesheet
             try:
                 from PyQt6.QtWidgets import QApplication
                 from ..styles import build_stylesheet
-                from ..theme import get_accent
+                from ..theme import get_accent, get_background
                 a = QApplication.instance()
                 if a:
                     try:
@@ -314,7 +346,7 @@ def build_settings_tab(win) -> QWidget:
                     except Exception:
                         pass
                     try:
-                        a.setStyleSheet(build_stylesheet(get_accent()))
+                        a.setStyleSheet(build_stylesheet(get_accent(), background_key=get_background()))
                     except Exception:
                         pass
             except Exception:
@@ -354,6 +386,13 @@ def build_settings_tab(win) -> QWidget:
             r = int(DEFAULT_ACCENT[1:3], 16); g = int(DEFAULT_ACCENT[3:5], 16); b = int(DEFAULT_ACCENT[5:7], 16)
             win.acc_r.setValue(r); win.acc_g.setValue(g); win.acc_b.setValue(b)
             _update_from_spins()
+            # reset background theme to default (mocha)
+            try:
+                idx = win.bg_combo.findData(DEFAULT_BACKGROUND)
+                if idx >= 0:
+                    win.bg_combo.setCurrentIndex(idx)
+            except Exception:
+                pass
             # reset font to defaults
             try:
                 from ..theme import DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE
@@ -393,6 +432,7 @@ def build_settings_tab(win) -> QWidget:
         win.acc_r.valueChanged.connect(_update_from_spins)
         win.acc_g.valueChanged.connect(_update_from_spins)
         win.acc_b.valueChanged.connect(_update_from_spins)
+        win.bg_combo.currentIndexChanged.connect(_apply)
         apply_btn.clicked.connect(_apply)
         reset_btn.clicked.connect(_reset)
 
@@ -963,6 +1003,16 @@ def load_settings(win):
     except Exception:
         pass
 
+    # Background theme — update the UI tab's dropdown if present
+    try:
+        bg_key = s.value("background", None)
+        if bg_key and getattr(win, 'bg_combo', None) is not None:
+            idx = win.bg_combo.findData(str(bg_key).lower())
+            if idx >= 0:
+                win.bg_combo.setCurrentIndex(idx)
+    except Exception:
+        pass
+
     # Pre-populate shares cache so both tabs render before the first network fetch
     raw = s.value("shares_cache", None)
     if raw:
@@ -1032,6 +1082,23 @@ def save_settings(win):
             # remove persisted accent so next launch uses DEFAULT or runtime value
             try:
                 s.remove("accent")
+            except Exception:
+                pass
+        try:
+            s.sync()
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    # Persist background theme only when 'Remember settings' is checked
+    try:
+        from ..theme import get_background
+        if win.remember_cb.isChecked():
+            s.setValue("background", get_background())
+        else:
+            try:
+                s.remove("background")
             except Exception:
                 pass
         try:

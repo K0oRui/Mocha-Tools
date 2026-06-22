@@ -35,7 +35,7 @@ from .tabs import (
     FilesBrowserTab, MassUploadSection, RemoteTab, SharesTab, SyncTab,
     build_settings_tab, load_settings, save_settings,
 )
-from .theme import get_accent, accent_qcolor, get_font
+from .theme import get_accent, accent_qcolor, get_font, get_background, get_background_palette
 
 
 class MochaTools(QMainWindow):
@@ -268,10 +268,7 @@ class MochaTools(QMainWindow):
         self.share_result.setOpenExternalLinks(True)
         self.copy_share_result_btn = QPushButton("Copy link")
         self.copy_share_result_btn.setFixedHeight(36)
-        self.copy_share_result_btn.setStyleSheet(
-            "min-height:0px; padding:0px 16px; font-size:13px; font-weight:600;"
-            "background:#1e1c19; color:#f0ece6; border:1px solid #3d3a35; border-radius:7px;"
-        )
+        self._style_copy_share_btn()
         self.copy_share_result_btn.clicked.connect(self._copy_share_result)
         share_result_row.addWidget(self.share_result, 1)
         share_result_row.addWidget(self.copy_share_result_btn)
@@ -576,20 +573,38 @@ class MochaTools(QMainWindow):
             write_debug_log(msg)
 
     def _badge(self, text: str, color: str):
-        from .theme import get_accent, DEFAULT_ACCENT
+        from .theme import get_accent, DEFAULT_ACCENT, get_background_palette
+        self._last_badge_args = (text, color)
         self.status_badge.setText(f"● {text}")
         if color == DEFAULT_ACCENT:
             color = get_accent()
+        try:
+            pal = get_background_palette()
+            neutral_bg, neutral_border = pal["bg3"], pal["border"]
+        except Exception:
+            neutral_bg, neutral_border = "#1e1c19", "#2e2b27"
         bg_map = {"#c8a96e": "#2a2215", "#4ade80": "#0f2318",
-                  "#f87171": "#2a0f0f", "#9ca3af": "#1e1c19"}
+                  "#f87171": "#2a0f0f", "#9ca3af": neutral_bg}
         bd_map = {"#c8a96e": "#4a3b1e", "#4ade80": "#1e4a30",
-                  "#f87171": "#4a1e1e", "#9caaf": "#2e2b27"}
-        bg = bg_map.get(color, "#1e1c19")
-        bd = bd_map.get(color, "#2e2b27")
+                  "#f87171": "#4a1e1e", "#9caaf": neutral_border}
+        bg = bg_map.get(color, neutral_bg)
+        bd = bd_map.get(color, neutral_border)
         self.status_badge.setStyleSheet(
             f"background-color: {bg}; border: 1px solid {bd}; "
             f"border-radius: 10px; color: {color}; font-size: 11px; "
             f"font-weight: 600; padding: 2px 10px;"
+        )
+
+    def _style_copy_share_btn(self):
+        from .theme import get_background_palette
+        try:
+            pal = get_background_palette()
+            bg3, text, border2 = pal["bg3"], pal["text"], pal["border2"]
+        except Exception:
+            bg3, text, border2 = "#1e1c19", "#f0ece6", "#3d3a35"
+        self.copy_share_result_btn.setStyleSheet(
+            "min-height:0px; padding:0px 16px; font-size:13px; font-weight:600;"
+            f"background:{bg3}; color:{text}; border:1px solid {border2}; border-radius:7px;"
         )
 
     @staticmethod
@@ -804,6 +819,28 @@ class MochaTools(QMainWindow):
         super().closeEvent(event)
 
 
+def _build_app_palette() -> QPalette:
+    """Build a QPalette from the active background theme + accent.
+
+    Centralized so startup and background-theme switches stay in sync —
+    previously this was hardcoded to the mocha hex values and never
+    refreshed when the background theme changed, which is why switching
+    to White/Black left the titlebar, tab bar, and other palette-driven
+    chrome stuck on the old mocha colors even though the QSS had updated.
+    """
+    pal_colors = get_background_palette()
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window,          QColor(pal_colors["bg0"]))
+    palette.setColor(QPalette.ColorRole.WindowText,      QColor(pal_colors["text"]))
+    palette.setColor(QPalette.ColorRole.Base,            QColor(pal_colors["bg7"]))
+    palette.setColor(QPalette.ColorRole.Text,            QColor(pal_colors["text"]))
+    palette.setColor(QPalette.ColorRole.Button,          QColor(pal_colors["bg3"]))
+    palette.setColor(QPalette.ColorRole.ButtonText,      QColor(pal_colors["text"]))
+    palette.setColor(QPalette.ColorRole.Highlight,       accent_qcolor())
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#111010"))
+    return palette
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
@@ -812,7 +849,7 @@ def main():
     app.setOrganizationName(ORG_NAME)
     app.setStyle("Fusion")
     try:
-        app.setStyleSheet(build_stylesheet(get_accent()))
+        app.setStyleSheet(build_stylesheet(get_accent(), background_key=get_background()))
     except Exception:
         app.setStyleSheet(STYLESHEET)
 
@@ -825,16 +862,7 @@ def main():
     except Exception:
         pass
 
-    palette = QPalette()
-    palette.setColor(QPalette.ColorRole.Window,          QColor("#111010"))
-    palette.setColor(QPalette.ColorRole.WindowText,      QColor("#f0ece6"))
-    palette.setColor(QPalette.ColorRole.Base,            QColor("#141210"))
-    palette.setColor(QPalette.ColorRole.Text,            QColor("#f0ece6"))
-    palette.setColor(QPalette.ColorRole.Button,          QColor("#1e1c19"))
-    palette.setColor(QPalette.ColorRole.ButtonText,      QColor("#f0ece6"))
-    palette.setColor(QPalette.ColorRole.Highlight,       accent_qcolor())
-    palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#111010"))
-    app.setPalette(palette)
+    app.setPalette(_build_app_palette())
 
     test_update = "--test-update" in sys.argv
 
@@ -894,14 +922,14 @@ def main():
     win._refresh_accented_icons = _refresh_accented_icons
 
     try:
-        from .theme import notifier, get_accent
+        from .theme import notifier, get_accent, get_background
         from .styles import build_stylesheet
 
         def _on_accent_changed(old_hx: str, hx: str):
             try:
                 a = QApplication.instance()
                 if a:
-                    a.setStyleSheet(build_stylesheet(hx))
+                    a.setStyleSheet(build_stylesheet(hx, background_key=get_background()))
                     pal = a.palette()
                     from .theme import accent_qcolor
                     pal.setColor(QPalette.ColorRole.Highlight, accent_qcolor())
@@ -930,6 +958,44 @@ def main():
         except Exception:
             pass
 
+        def _on_background_changed(old_key: str, new_key: str):
+            # Switching background themes needs both the QSS (cards, tabs,
+            # inputs, etc — handled by build_stylesheet tokens) AND the
+            # QPalette (titlebar/tab-bar chrome and any unstyled native
+            # widgets that fall back to palette roles) rebuilt together,
+            # or the palette-driven chrome stays stuck on the old theme.
+            try:
+                a = QApplication.instance()
+                if a:
+                    a.setStyleSheet(build_stylesheet(get_accent(), background_key=new_key))
+                    a.setPalette(_build_app_palette())
+                    try:
+                        if hasattr(win, '_refresh_accented_icons'):
+                            win._refresh_accented_icons()
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(win, 'titlebar') and hasattr(win.titlebar, '_refresh_icons'):
+                            win.titlebar._refresh_icons()
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(win, '_style_copy_share_btn'):
+                            win._style_copy_share_btn()
+                    except Exception:
+                        pass
+                    try:
+                        # re-apply whatever status text/color is currently shown so
+                        # the badge's tinted background tracks the new theme too
+                        if hasattr(win, 'status_badge') and hasattr(win, '_last_badge_args'):
+                            win._badge(*win._last_badge_args)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        notifier().background_changed.connect(_on_background_changed)
+
         try:
             from .theme import notifier as _notifier
             def _on_font_change(fam, sz):
@@ -946,7 +1012,7 @@ def main():
                             try:    a.style().polish(w)
                             except Exception: pass
                         try:
-                            a.setStyleSheet(build_stylesheet(get_accent()))
+                            a.setStyleSheet(build_stylesheet(get_accent(), background_key=get_background()))
                         except Exception:
                             pass
                 except Exception:
