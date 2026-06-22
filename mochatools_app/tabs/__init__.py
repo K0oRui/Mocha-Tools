@@ -1,6 +1,6 @@
 """tabs — per-tab widgets for MochaTools."""
 from .files_tab import FilesBrowserTab
-# mass upload moved into app.py as MassUploadSection; remove import
+from .mass_upload import MassUploadSection
 from .remote_tab import RemoteTab
 from .shares_tab import SharesTab
 from .sync_tab import SyncTab
