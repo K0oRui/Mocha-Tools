@@ -1081,6 +1081,31 @@ class RemoteWorker(QThread):
         resp.raise_for_status()
         self.done.emit({"op": "cancel", "job_id": job_id, "data": resp.json()})
 
+# ── Storage Capacity Worker ───────────────────────────────────────────────────
+class StorageWorker(QThread):
+    """Fetches remote storage capacity for the titlebar indicator."""
+    done  = pyqtSignal(object)   # dict: usedBytes, availableBytes, maxStorageBytes, storagePercent
+    error = pyqtSignal(str)
+    _TIMEOUT = (5, 60)  # (connect, read)
+
+    def __init__(self, api_key, base_url):
+        super().__init__()
+        self.api_key  = api_key
+        self.base_url = base_url.rstrip("/")
+
+    def run(self):
+        try:
+            resp = requests.get(
+                f"{self.base_url}/api/storage/available",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=self._TIMEOUT,
+            )
+            resp.raise_for_status()
+            self.done.emit(resp.json())
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 # ── Direct Download Worker ────────────────────────────────────────────────────
 class DownloadWorker(QThread):
     """Downloads a file from a presigned URL directly to a local path."""

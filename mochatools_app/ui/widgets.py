@@ -417,6 +417,12 @@ class CustomTitleBar(QFrame):
 
         lay.addStretch()
 
+        self._storage_lbl = QLabel("")
+        self._storage_lbl.setObjectName("title_storage")
+        self._storage_lbl.setStyleSheet("background:transparent;")
+        self._storage_lbl.hide()
+        lay.addWidget(self._storage_lbl)
+
         self._min_btn = self._make_btn("tb_minmax", "minus",  "#5a5650", 13, "Minimise",        window.showMinimized)
         self._max_btn = self._make_btn("tb_minmax", "square", "#5a5650", 11, "Maximise",        self._toggle_maximise)
         self._cls_btn = self._make_btn("tb_close",  "x",      "#5a5650", 13, "Close",           window.close)
@@ -432,6 +438,13 @@ class CustomTitleBar(QFrame):
         btn.setToolTip(tooltip)
         btn.clicked.connect(slot)
         return btn
+
+    # ── Storage indicator ─────────────────────────────────────────────────────
+
+    def set_storage_text(self, text: str):
+        """Update the storage-capacity label shown before the minimise button."""
+        self._storage_lbl.setText(text)
+        self._storage_lbl.setVisible(bool(text))
 
     # ── Maximise / restore ────────────────────────────────────────────────────
 

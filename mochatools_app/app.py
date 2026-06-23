@@ -25,7 +25,7 @@ from .constants import (
 )
 from .logging_utils import write_debug_log
 from .styles import STYLESHEET, build_stylesheet
-from .workers import UploadWorker
+from .workers import UploadWorker, StorageWorker
 from .dialogs import FolderBrowserDialog
 from .updater import UpdateCheckWorker, UpdateDownloadWorker, launch_update_batch
 from .remote_cache import cache, registry, CachePoller
@@ -56,6 +56,10 @@ class MochaTools(QMainWindow):
         self._update_tag:       str                      = ""
         self._update_url:       str                      = ""
         self._update_dl_worker: UpdateDownloadWorker | None = None
+
+        # Storage capacity indicator state
+        self._storage_worker: StorageWorker | None = None
+        self._storage_timer:  QTimer | None         = None
 
         self._build_ui()
         load_settings(self)
@@ -140,6 +144,13 @@ class MochaTools(QMainWindow):
                          HARDCODED_BASE_URL, path="/")
         self.files_tab.attach_cache_poller(self._poller)
         self.shares_tab.attach_cache_poller(self._poller)
+
+        # ── Storage capacity indicator ──────────────────────────────────────────
+        self._storage_timer = QTimer(self)
+        self._storage_timer.setInterval(30_000)
+        self._storage_timer.timeout.connect(self._refresh_storage)
+        self._storage_timer.start()
+        QTimer.singleShot(300, self._refresh_storage)
 
         _tab_icons = [
             ("upload",         get_accent()),
@@ -614,6 +625,34 @@ class MochaTools(QMainWindow):
         if n < 1024**3:   return f"{n/1024**2:.3f} MB"
         return f"{n/1024**3:.3f} GB"
 
+    # ── Storage capacity indicator ──────────────────────────────────────────────
+
+    def _refresh_storage(self):
+        api_key = self.api_key_edit.text().strip()
+        if not api_key:
+            return
+        if self._storage_worker and self._storage_worker.isRunning():
+            return
+        w = StorageWorker(api_key, HARDCODED_BASE_URL)
+        w.done.connect(self._on_storage_done)
+        w.error.connect(self._on_storage_error)
+        w.finished.connect(lambda: setattr(self, "_storage_worker", None))
+        self._storage_worker = w
+        w.start()
+
+    def _on_storage_done(self, data: dict):
+        available = data.get("availableBytes")
+        if available is None:
+            text = "Unlimited"
+        else:
+            text = f"{self._fmt(available)} free"
+        self.titlebar.set_storage_text(text)
+
+    def _on_storage_error(self, msg: str):
+        # Leave whatever was last shown (or nothing) rather than showing an error
+        # in the titlebar — the next poll will recover once the API is reachable.
+        pass
+
     # ── Tab switching ─────────────────────────────────────────────────────────
 
     def _on_tab_changed(self, index: int):
@@ -810,6 +849,10 @@ class MochaTools(QMainWindow):
         self.sync_tab.closeEvent(event)
         if self._poller:
             self._poller.stop()
+        if self._storage_timer:
+            self._storage_timer.stop()
+        if self._storage_worker:
+            self._storage_worker.quit()
         for w in list(self.remote_tab._workers):
             w.quit()
         for w in list(self.files_tab._workers):
