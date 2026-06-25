@@ -419,7 +419,7 @@ class CustomTitleBar(QFrame):
 
         self._storage_lbl = QLabel("")
         self._storage_lbl.setObjectName("title_storage")
-        self._storage_lbl.setStyleSheet("background:transparent;")
+        self._storage_lbl.setStyleSheet("background:transparent; margin-bottom:3px;")
         self._storage_lbl.hide()
         lay.addWidget(self._storage_lbl)
 

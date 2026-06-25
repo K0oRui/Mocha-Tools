@@ -151,8 +151,9 @@ def build_settings_tab(win) -> QWidget:
         font_lbl = QLabel("Font")
         font_lbl.setObjectName("field_label")
         win.font_combo = QFontComboBox()
-        win.font_size = QSpinBox()
-        win.font_size.setRange(8, 24)
+        win.font_size = _spinbox(8, 24, 13, "", "Font size in points")
+        win.font_size.setFixedWidth(80)   # must be set before overlay timers fire
+        win.font_size.setRange(8, 24)  # re-apply after _spinbox (no-op, just safe)
         # initialize font controls from persisted/runtime values
         try:
             from ..theme import get_font
@@ -224,15 +225,17 @@ def build_settings_tab(win) -> QWidget:
         try:
             from ..ui.icons import lucide_icon
             from PyQt6.QtCore import QEvent, QSize, QObject
+            from PyQt6.QtCore import Qt
             from PyQt6.QtWidgets import QToolButton
             class _ComboOverlay(QObject):
-                def __init__(self, cmb: QFontComboBox):
+                def __init__(self, cmb):
                     super().__init__(cmb)
                     self.cmb = cmb
                     ico = lucide_icon('chevron-down', '#f0ece6', 12)
                     btn = QToolButton(cmb)
                     btn.setIcon(ico)
                     btn.setIconSize(QSize(12, 12))
+                    btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
                     btn.setStyleSheet('background: transparent; border: none;')
                     btn.setCursor(cmb.cursor())
                     btn.setFixedSize(26, 26)
@@ -269,6 +272,10 @@ def build_settings_tab(win) -> QWidget:
                 _ComboOverlay(win.font_combo)
             except Exception:
                 pass
+            try:
+                _ComboOverlay(win.bg_combo)
+            except Exception:
+                pass
             # ensure overlay positioned after initial layout
             try:
                 from PyQt6.QtCore import QTimer
@@ -277,11 +284,14 @@ def build_settings_tab(win) -> QWidget:
                 pass
         except Exception:
             pass
+        # Font family row
         font_row.addWidget(font_lbl)
         font_row.addWidget(win.font_combo)
-        font_row.addWidget(win.font_size)
         font_row.addStretch()
         card_lay.addLayout(font_row)
+        # Font size on its own row so the spinbox has a clean fixed width
+        # and _add_spin_row can install the lucide arrow overlay correctly.
+        _add_spin_row(card_lay, "Font size", win.font_size)
         btn_row.addWidget(apply_btn); btn_row.addWidget(reset_btn); btn_row.addStretch()
         card_lay.addLayout(btn_row)
 
@@ -370,15 +380,6 @@ def build_settings_tab(win) -> QWidget:
                         a.setFont(QFont(fam, int(sz)))
                     except Exception:
                         pass
-                    try:
-                        qf = QFont(fam, int(sz))
-                        for w in a.allWidgets():
-                            try:
-                                w.setFont(qf)
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
             except Exception:
                 pass
 
@@ -436,133 +437,6 @@ def build_settings_tab(win) -> QWidget:
         apply_btn.clicked.connect(_apply)
         reset_btn.clicked.connect(_reset)
 
-        # Ensure the accent spinboxes get lucide arrow images in their
-        # native arrow areas. Try immediate injection and a short delayed
-        # retry so Windows native controls render the icons reliably.
-        try:
-            from ..ui.icons import lucide_icon
-            from PyQt6.QtCore import QTimer, QSize, QEvent, QObject
-            from PyQt6.QtWidgets import QToolButton
-
-            class _Overlay(QObject):
-                def __init__(self, sb: QSpinBox):
-                    super().__init__(sb)
-                    self.sb = sb
-                    try:
-                        ico_up = lucide_icon('chevron-up', '#f0ece6', 16)
-                        ico_dn = lucide_icon('chevron-down', '#f0ece6', 16)
-                        up = QToolButton(self.sb)
-                        dn = QToolButton(self.sb)
-                        up.setIcon(ico_up); dn.setIcon(ico_dn)
-                        sz = QSize(12, 12)
-                        up.setIconSize(sz); dn.setIconSize(sz)
-                        up.setStyleSheet('background: transparent; border: none;')
-                        dn.setStyleSheet('background: transparent; border: none;')
-                        up.setCursor(self.sb.cursor()); dn.setCursor(self.sb.cursor())
-                        up.setFixedSize(22, 17); dn.setFixedSize(22, 17)
-                        up.clicked.connect(self.sb.stepUp); dn.clicked.connect(self.sb.stepDown)
-                        self.sb._overlay_up_btn = up; self.sb._overlay_dn_btn = dn
-                        self.sb.installEventFilter(self)
-                        try:
-                            up.show(); dn.show()
-                            up.raise_(); dn.raise_()
-                        except Exception:
-                            pass
-                    except Exception:
-                        pass
-
-                def eventFilter(self, obj, ev):
-                    try:
-                        if ev.type() in (QEvent.Type.Resize, QEvent.Type.Show):
-                            self._reposition()
-                    except Exception:
-                        pass
-                    return False
-
-                def _reposition(self):
-                    try:
-                        sb = self.sb
-                        up = getattr(sb, '_overlay_up_btn', None)
-                        dn = getattr(sb, '_overlay_dn_btn', None)
-                        if not up or not dn:
-                            return
-                        w = sb.width(); h = sb.height(); button_w = 22
-                        x = w - button_w
-                        up.move(x, max(0, (h//4) - (up.height()//2)))
-                        dn.move(x, max(0, (3*h//4) - (dn.height()//2)))
-                    except Exception:
-                        pass
-
-            # ensure initial positioning/show immediately after creation
-            def _ensure():
-                try:
-                    for sb in (win.acc_r, win.acc_g, win.acc_b, win.font_size):
-                        ov = getattr(sb, '_overlay_up_btn', None)
-                        if ov:
-                            try:
-                                ov.show(); ov.raise_()
-                            except Exception:
-                                pass
-                        dn = getattr(sb, '_overlay_dn_btn', None)
-                        if dn:
-                            try:
-                                dn.show(); dn.raise_()
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
-            QTimer.singleShot(40, _ensure)
-
-            def _install_overlays():
-                try:
-                    for sb in (win.acc_r, win.acc_g, win.acc_b, win.font_size):
-                        try:
-                            _Overlay(sb)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-            QTimer.singleShot(0, _install_overlays)
-
-            # Additionally inject QSpinBox::up-arrow/down-arrow PNG CSS directly
-            # into the widget stylesheet as a fallback (some platforms ignore
-            # QAbstractButton children until later). Run now and shortly after.
-            from PyQt6.QtCore import QBuffer, QIODevice
-            from PyQt6.QtGui import QPixmap
-
-            def _inject_css_icons():
-                try:
-                    for sb in (win.acc_r, win.acc_g, win.acc_b, win.font_size):
-                        try:
-                            ico_up = lucide_icon("chevron-up", "#f0ece6", 16)
-                            ico_dn = lucide_icon("chevron-down", "#f0ece6", 16)
-                            pm_up = ico_up.pixmap(12, 12)
-                            pm_dn = ico_dn.pixmap(12, 12)
-                            buf = QBuffer()
-                            buf.open(QIODevice.OpenModeFlag.WriteOnly)
-                            pm_up.save(buf, "PNG")
-                            b64_up = bytes(buf.data().toBase64()).decode()
-                            buf.close()
-                            buf = QBuffer()
-                            buf.open(QIODevice.OpenModeFlag.WriteOnly)
-                            pm_dn.save(buf, "PNG")
-                            b64_dn = bytes(buf.data().toBase64()).decode()
-                            buf.close()
-                            css = (
-                                f"QSpinBox::up-arrow {{ image: url(data:image/png;base64,{b64_up}); width:10px; height:6px; }} "
-                                f"QSpinBox::down-arrow {{ image: url(data:image/png;base64,{b64_dn}); width:10px; height:6px; }}"
-                            )
-                            sb.setStyleSheet(sb.styleSheet() + "\n" + css)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-
-            QTimer.singleShot(0, _inject_css_icons)
-            QTimer.singleShot(120, _inject_css_icons)
-        except Exception:
-            pass
-
         lay.addWidget(card)
 
     appearance_page = QWidget(); appearance_l = QVBoxLayout(appearance_page); appearance_l.setContentsMargins(8,12,8,8); appearance_l.setSpacing(12)
@@ -608,82 +482,20 @@ def build_settings_tab(win) -> QWidget:
     tabs.addTab(updates_scroll, "Updates")
     tabs.addTab(appearance_scroll, "UI")
 
-    # Ensure lucide arrow overlays/icons are installed for the accent spinboxes
-    # when the UI (appearance) tab becomes visible — some platforms defer
-    # creation of internal controls until a widget is shown inside a tab.
+    # When the UI tab becomes visible, raise any overlay buttons that may have
+    # been obscured by the tab widget's own paint pass.
     def _ensure_accent_spin_arrows(idx=None):
-        # only act when appearance tab selected (index 3) or when called
         if idx is not None and idx != 3:
             return
         try:
-            from ..ui.icons import lucide_icon
-            from PyQt6.QtCore import QTimer, QBuffer, QIODevice
-            from PyQt6.QtGui import QPixmap
-            from PyQt6.QtWidgets import QToolButton, QAbstractButton
-            from PyQt6.QtCore import QSize, QEvent, QObject
-
-            class _Reposer(QObject):
-                def __init__(self, sb: QSpinBox, up: QToolButton, dn: QToolButton):
-                    super().__init__(sb)
-                    self.sb = sb; self.up = up; self.dn = dn
-
-                def eventFilter(self, obj, ev):
-                    try:
-                        if ev.type() in (QEvent.Type.Resize, QEvent.Type.Show):
-                            w = self.sb.width(); h = self.sb.height(); button_w = 22
-                            x = w - button_w
-                            self.up.move(x, max(0, (h//4) - (self.up.height()//2)))
-                            self.dn.move(x, max(0, (3*h//4) - (self.dn.height()//2)))
-                    except Exception:
-                        pass
-                    return False
-
-            def _for(sb: QSpinBox):
-                try:
-                    # inject CSS arrow images first (idempotent)
-                    ico_up = lucide_icon('chevron-up', '#f0ece6', 16)
-                    ico_dn = lucide_icon('chevron-down', '#f0ece6', 16)
-                    pm_up = ico_up.pixmap(12, 12); pm_dn = ico_dn.pixmap(12, 12)
-                    buf = QBuffer(); buf.open(QIODevice.OpenModeFlag.WriteOnly); pm_up.save(buf, 'PNG')
-                    b64_up = bytes(buf.data().toBase64()).decode(); buf.close()
-                    buf = QBuffer(); buf.open(QIODevice.OpenModeFlag.WriteOnly); pm_dn.save(buf, 'PNG')
-                    b64_dn = bytes(buf.data().toBase64()).decode(); buf.close()
-                    css = (
-                        f"QSpinBox::up-arrow {{ image: url(data:image/png;base64,{b64_up}); width:10px; height:6px; }} "
-                        f"QSpinBox::down-arrow {{ image: url(data:image/png;base64,{b64_dn}); width:10px; height:6px; }}"
-                    )
-                    sb.setStyleSheet(sb.styleSheet() + "\n" + css)
-                except Exception:
-                    pass
-
-                try:
-                    # create overlay buttons if not present
-                    if not getattr(sb, '_overlay_up_btn', None):
-                        up = QToolButton(sb); dn = QToolButton(sb)
-                        up.setIcon(lucide_icon('chevron-up', '#f0ece6', 16))
-                        dn.setIcon(lucide_icon('chevron-down', '#f0ece6', 16))
-                        try:
-                            up.setIconSize(QSize(12,12)); dn.setIconSize(QSize(12,12))
-                        except Exception:
-                            pass
-                        up.setStyleSheet('background: transparent; border: none;')
-                        dn.setStyleSheet('background: transparent; border: none;')
-                        up.setCursor(sb.cursor()); dn.setCursor(sb.cursor())
-                        up.setFixedSize(22, 17); dn.setFixedSize(22, 17)
-                        up.clicked.connect(sb.stepUp); dn.clicked.connect(sb.stepDown)
-                        sb._overlay_up_btn = up; sb._overlay_dn_btn = dn
-                        reposer = _Reposer(sb, up, dn)
-                        sb.installEventFilter(reposer)
-                        try:
-                            up.show(); dn.show(); up.raise_(); dn.raise_()
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-
             for sb in (win.acc_r, win.acc_g, win.acc_b, win.font_size):
                 try:
-                    _for(sb)
+                    up = getattr(sb, '_overlay_up_btn', None)
+                    dn = getattr(sb, '_overlay_dn_btn', None)
+                    if up:
+                        up.show(); up.raise_()
+                    if dn:
+                        dn.show(); dn.raise_()
                 except Exception:
                     pass
         except Exception:
@@ -695,63 +507,6 @@ def build_settings_tab(win) -> QWidget:
         pass
     from PyQt6.QtCore import QTimer
     QTimer.singleShot(120, lambda: _ensure_accent_spin_arrows(None))
-
-    # Additional safety: ensure the font_size spinbox gets arrows injected
-    # even on platforms that defer widget internals creation.
-    def _ensure_font_size_arrows():
-        try:
-            from ..ui.icons import lucide_icon
-            from PyQt6.QtWidgets import QToolButton
-            from PyQt6.QtCore import QBuffer, QIODevice
-            from PyQt6.QtGui import QPixmap
-            sb = getattr(win, 'font_size', None)
-            if sb is None:
-                return
-            # inject CSS images
-            try:
-                ico_up = lucide_icon('chevron-up', '#f0ece6', 16)
-                ico_dn = lucide_icon('chevron-down', '#f0ece6', 16)
-                pm_up = ico_up.pixmap(12, 12); pm_dn = ico_dn.pixmap(12, 12)
-                buf = QBuffer(); buf.open(QIODevice.OpenModeFlag.WriteOnly); pm_up.save(buf, 'PNG')
-                b64_up = bytes(buf.data().toBase64()).decode(); buf.close()
-                buf = QBuffer(); buf.open(QIODevice.OpenModeFlag.WriteOnly); pm_dn.save(buf, 'PNG')
-                b64_dn = bytes(buf.data().toBase64()).decode(); buf.close()
-                css = (
-                    f"QSpinBox::up-arrow {{ image: url(data:image/png;base64,{b64_up}); width:10px; height:6px; }} "
-                    f"QSpinBox::down-arrow {{ image: url(data:image/png;base64,{b64_dn}); width:10px; height:6px; }}"
-                )
-                sb.setStyleSheet(sb.styleSheet() + "\n" + css)
-            except Exception:
-                pass
-            # create overlay buttons if not present
-            try:
-                if not getattr(sb, '_overlay_up_btn', None):
-                    up = QToolButton(sb); dn = QToolButton(sb)
-                    up.setIcon(lucide_icon('chevron-up', '#f0ece6', 16))
-                    dn.setIcon(lucide_icon('chevron-down', '#f0ece6', 16))
-                    try:
-                        up.setIconSize(QSize(12,12)); dn.setIconSize(QSize(12,12))
-                    except Exception:
-                        pass
-                    up.setStyleSheet('background: transparent; border: none;')
-                    dn.setStyleSheet('background: transparent; border: none;')
-                    up.setCursor(sb.cursor()); dn.setCursor(sb.cursor())
-                    up.setFixedSize(22, 17); dn.setFixedSize(22, 17)
-                    up.clicked.connect(sb.stepUp); dn.clicked.connect(sb.stepDown)
-                    sb._overlay_up_btn = up; sb._overlay_dn_btn = dn
-                    try:
-                        up.show(); dn.show(); up.raise_(); dn.raise_()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-        except Exception:
-            pass
-
-    try:
-        QTimer.singleShot(200, _ensure_font_size_arrows)
-    except Exception:
-        pass
 
     center_row.addWidget(tabs, 1)
     center_row.addStretch()
@@ -1131,28 +886,124 @@ def _card() -> QFrame:
 
 def _spinbox(min_val: int, max_val: int, default: int,
              suffix: str, tooltip: str) -> QSpinBox:
+    """Create a QSpinBox with lucide chevron arrow overlays.
+
+    Delegates to settings_sections._spinbox so the Upload-tab arrow
+    treatment is used everywhere.  A full local implementation is kept
+    as the fallback so the arrows still appear even if the import fails.
+    """
     try:
         from .settings_sections import _spinbox as _shared_spinbox
         return _shared_spinbox(min_val, max_val, default, suffix, tooltip)
     except Exception:
-        # Fallback: simple QSpinBox with basic sizing
-        sb = QSpinBox()
-        sb.setRange(min_val, max_val)
-        sb.setValue(default)
-        sb.setSuffix(suffix)
-        sb.setToolTip(tooltip)
-        sb.setMaximumWidth(200)
-        try:
-            sb.setFixedHeight(34)
-        except Exception:
-            pass
-        return sb
+        pass
+
+    # ── Full local fallback (mirrors settings_sections._spinbox) ─────────────
+    sb = QSpinBox()
+    sb.setRange(min_val, max_val)
+    sb.setValue(default)
+    sb.setSuffix(suffix)
+    sb.setToolTip(tooltip)
+    sb.setMaximumWidth(200)
+    try:
+        sb.setFixedHeight(34)
+    except Exception:
+        pass
+
+    # Hide the native up/down buttons via stylesheet so the lucide overlay
+    # buttons are the only visible controls (same approach as Upload tab).
+    sb.setStyleSheet(
+        "QSpinBox::up-button { width: 0px; border: none; }"
+        "QSpinBox::down-button { width: 0px; border: none; }"
+    )
+
+    try:
+        from ..ui.icons import lucide_icon
+        from PyQt6.QtCore import QEvent, QObject, QSize, QTimer
+        from PyQt6.QtCore import Qt as _Qt
+        from PyQt6.QtWidgets import QToolButton
+
+        class _SpinOverlay(QObject):
+            def __init__(self, spinbox: QSpinBox):
+                super().__init__(spinbox)
+                self.sb = spinbox
+                try:
+                    ico_up = lucide_icon("chevron-up",   "#f0ece6", 16)
+                    ico_dn = lucide_icon("chevron-down", "#f0ece6", 16)
+                    up = QToolButton(spinbox)
+                    dn = QToolButton(spinbox)
+                    up.setIcon(ico_up);  dn.setIcon(ico_dn)
+                    up.setIconSize(QSize(12, 12)); dn.setIconSize(QSize(12, 12))
+                    up.setToolButtonStyle(_Qt.ToolButtonStyle.ToolButtonIconOnly)
+                    dn.setToolButtonStyle(_Qt.ToolButtonStyle.ToolButtonIconOnly)
+                    up.setStyleSheet("background: transparent; border: none;")
+                    dn.setStyleSheet("background: transparent; border: none;")
+                    up.setCursor(spinbox.cursor()); dn.setCursor(spinbox.cursor())
+                    up.setFixedSize(22, 17); dn.setFixedSize(22, 17)
+                    up.clicked.connect(spinbox.stepUp)
+                    dn.clicked.connect(spinbox.stepDown)
+                    spinbox._overlay_up_btn = up
+                    spinbox._overlay_dn_btn = dn
+                    spinbox.installEventFilter(self)
+                    up.show(); dn.show()
+                    up.raise_(); dn.raise_()
+                    self._reposition()
+                except Exception:
+                    pass
+
+            def eventFilter(self, obj, ev):
+                try:
+                    if ev.type() in (QEvent.Type.Resize, QEvent.Type.Show):
+                        self._reposition()
+                except Exception:
+                    pass
+                return False
+
+            def _reposition(self):
+                try:
+                    sb  = self.sb
+                    up  = getattr(sb, "_overlay_up_btn", None)
+                    dn  = getattr(sb, "_overlay_dn_btn", None)
+                    if not up or not dn:
+                        return
+                    w = sb.width(); h = sb.height(); bw = 22
+                    x = w - bw
+                    up.move(x, max(0, (h // 4)     - (up.height() // 2)))
+                    dn.move(x, max(0, (3 * h // 4) - (dn.height() // 2)))
+                except Exception:
+                    pass
+
+        ov = _SpinOverlay(sb)
+        # Reposition again after layout settles
+        QTimer.singleShot(40,  lambda: ov._reposition())
+        QTimer.singleShot(120, lambda: ov._reposition())
+    except Exception:
+        pass
+
+    return sb
 
 
 def _add_spin_row(card_lay: QVBoxLayout, label: str, spinbox: QSpinBox):
+    """Delegate to settings_sections._add_spin_row so the lucide arrow overlay
+    is created for every spinbox, including the UI-tab R/G/B and font-size
+    controls (which previously used this stripped-down local version and got
+    no overlay on Windows)."""
+    try:
+        from .settings_sections import _add_spin_row as _shared_add_spin_row
+        _shared_add_spin_row(card_lay, label, spinbox)
+        return
+    except Exception:
+        pass
+    # Fallback: plain row without overlay (should rarely be reached)
     row = QHBoxLayout()
     lbl = QLabel(label)
     lbl.setObjectName("field_label")
+    try:
+        from PyQt6.QtWidgets import QSizePolicy
+        lbl.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+    except Exception:
+        pass
     row.addWidget(lbl)
-    row.addWidget(spinbox, 1)
+    row.addWidget(spinbox)
+    row.addStretch()
     card_lay.addLayout(row)

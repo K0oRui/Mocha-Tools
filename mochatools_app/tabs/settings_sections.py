@@ -198,6 +198,9 @@ def _add_spin_row(card_lay: QVBoxLayout, label: str, spinbox: QSpinBox):
 					up.setIcon(ico_up); dn.setIcon(ico_dn)
 					sz = QSize(12, 12)
 					up.setIconSize(sz); dn.setIconSize(sz)
+					from PyQt6.QtCore import Qt
+					up.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+					dn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
 					up.setStyleSheet('background: transparent; border: none;')
 					dn.setStyleSheet('background: transparent; border: none;')
 					up.setCursor(self.sb.cursor()); dn.setCursor(self.sb.cursor())
@@ -205,6 +208,9 @@ def _add_spin_row(card_lay: QVBoxLayout, label: str, spinbox: QSpinBox):
 					up.clicked.connect(self.sb.stepUp); dn.clicked.connect(self.sb.stepDown)
 					self.sb._overlay_up_btn = up; self.sb._overlay_dn_btn = dn
 					self.sb.installEventFilter(self)
+					up.show(); up.raise_()
+					dn.show(); dn.raise_()
+					self._reposition()
 				except Exception:
 					pass
 
@@ -231,7 +237,11 @@ def _add_spin_row(card_lay: QVBoxLayout, label: str, spinbox: QSpinBox):
 					pass
 
 		# schedule creation after layout settles
-		QTimer.singleShot(0, lambda: _SpinOverlayHandler(spinbox))
+		def _make():
+			h = _SpinOverlayHandler(spinbox)
+			QTimer.singleShot(50,  h._reposition)
+			QTimer.singleShot(150, h._reposition)
+		QTimer.singleShot(0, _make)
 	except Exception:
 		pass
 
