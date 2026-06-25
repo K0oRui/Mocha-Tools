@@ -65,6 +65,21 @@ class MochaDialog(QDialog):
         dot = QLabel("◆")
         dot.setStyleSheet(f"color:{_dot_color}; font-size:{max(8, _fs-3)}px; background:transparent;")
         tb_lay.addWidget(dot)
+
+        if title:
+            title_lbl = QLabel()
+            title_lbl.setStyleSheet(
+                f"color:#dcd6cc; font-size:{max(9, _fs-2)}px; font-weight:600;"
+                f" background:transparent; margin-left:6px;"
+            )
+            metrics = title_lbl.fontMetrics()
+            title_lbl.setText(metrics.elidedText(title, Qt.TextElideMode.ElideRight, 320))
+            title_lbl.setToolTip(title)
+            tb_lay.addWidget(title_lbl)
+            self._title_lbl = title_lbl
+        else:
+            self._title_lbl = None
+
         tb_lay.addStretch()
 
         close_btn = QPushButton()

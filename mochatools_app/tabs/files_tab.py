@@ -20,21 +20,749 @@ import os
 
 import requests
 
-from PyQt6.QtCore import Qt, QSize, QTimer
-from PyQt6.QtGui import QColor, QIcon
+from PyQt6.QtCore import Qt, QSize, QTimer, QUrl, QThread, pyqtSignal
+from PyQt6.QtGui import QColor, QIcon, QPixmap, QMovie, QFont, QTextCharFormat, QSyntaxHighlighter, QPainter
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QApplication, QFileDialog, QFrame, QHBoxLayout, QHeaderView,
-    QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
-    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QDialog, QFileDialog, QFrame,
+    QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMenu,
+    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSlider,
+    QStyle, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..constants import HARDCODED_BASE_URL, SHARE_BASE_URL
-from ..dialogs import FolderBrowserDialog, ShareLinkDialog
+from ..dialogs import FolderBrowserDialog, ShareLinkDialog, MochaDialog, _gold_btn, _grey_btn
 from ..logging_utils import write_debug_log
 from ..workers import FilesWorker, UploadWorker
 from ..ui.icons import lucide_icon
 from ..theme import get_accent, accent_qcolor, get_font
 from ..remote_cache import cache, registry
+
+
+# ── File-type helpers ─────────────────────────────────────────────────────────
+
+_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".ico",
+              ".tiff", ".tif", ".svg"}
+_VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv", ".webm",
+              ".m4v", ".mpeg", ".mpg", ".3gp"}
+_AUDIO_EXT = {".mp3", ".flac", ".m4a", ".wav", ".ogg", ".aac", ".wma",
+              ".opus", ".aiff", ".aif"}
+_TEXT_EXT = {
+    ".txt", ".md", ".markdown", ".rst", ".log", ".csv", ".tsv",
+    ".py", ".pyw", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx",
+    ".html", ".htm", ".css", ".scss", ".sass", ".less",
+    ".json", ".jsonc", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg",
+    ".c", ".h", ".cpp", ".hpp", ".cc", ".cs", ".java", ".kt", ".swift",
+    ".go", ".rs", ".rb", ".php", ".lua", ".sh", ".bash", ".zsh", ".ps1",
+    ".sql", ".env", ".gitignore", ".gitattributes", ".dockerfile",
+    ".vue", ".svelte", ".graphql", ".proto", ".bat", ".r", ".pl",
+}
+
+# File size cap for text previews (bytes) — large files are read fully into
+# memory and run through a syntax highlighter, so anything bigger than this
+# would freeze the UI; we truncate instead.
+_TEXT_PREVIEW_MAX_BYTES = 2 * 1024 * 1024  # 2 MB
+
+
+def _preview_type(name: str) -> str | None:
+    """Return 'image', 'video', 'audio', 'text', or None."""
+    ext = os.path.splitext(name)[1].lower()
+    if ext in _IMAGE_EXT:
+        return "image"
+    if ext in _VIDEO_EXT:
+        return "video"
+    if ext in _AUDIO_EXT:
+        return "audio"
+    if ext in _TEXT_EXT:
+        return "text"
+    return None
+
+
+def _extract_album_art(file_path: str) -> bytes | None:
+    """
+    Best-effort extraction of embedded cover art from an audio file.
+    Supports MP3 (ID3 APIC), FLAC, and MP4/M4A (covr atom) via mutagen.
+    Returns raw image bytes (jpeg/png) or None if unavailable.
+    """
+    try:
+        import mutagen
+        from mutagen.id3 import ID3
+        from mutagen.flac import FLAC
+        from mutagen.mp4 import MP4
+    except ImportError:
+        return None
+
+    try:
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext == ".flac":
+            audio = FLAC(file_path)
+            if audio.pictures:
+                return audio.pictures[0].data
+        elif ext == ".mp4" or ext == ".m4a":
+            audio = MP4(file_path)
+            covr = audio.tags.get("covr") if audio.tags else None
+            if covr:
+                return bytes(covr[0])
+        else:
+            # MP3 and most other tagged formats use ID3
+            tags = ID3(file_path)
+            for key in tags.keys():
+                if key.startswith("APIC"):
+                    return tags[key].data
+    except Exception:
+        pass
+    return None
+
+
+# ── Syntax highlighting (optional — falls back to plain text) ────────────────
+
+def _pygments_available() -> bool:
+    try:
+        import pygments  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+class _PygmentsHighlighter(QSyntaxHighlighter):
+    """
+    Lexes the full document with Pygments and re-applies token colors on
+    every change. This re-lexes the whole text each time rather than doing
+    incremental per-block highlighting (Pygments lexers are generally not
+    block-resumable), which is fine for the read-only, size-capped preview
+    use case here but would be too slow for a real editor.
+    """
+
+    def __init__(self, document, lexer, accent: str):
+        super().__init__(document)
+        self._lexer = lexer
+        from pygments.token import (
+            Token, Keyword, Name, String, Number, Comment, Operator,
+            Literal, Punctuation, Generic,
+        )
+        # A compact, dark-theme-friendly palette keyed by Pygments token type.
+        # Falls back to the dialog accent color for anything unmatched.
+        self._palette = {
+            Keyword:      "#c586c0",
+            Name.Function:"#dcdcaa",
+            Name.Class:   "#4ec9b0",
+            Name.Builtin: "#4ec9b0",
+            Name.Decorator: "#dcdcaa",
+            String:       "#ce9178",
+            Number:       "#b5cea8",
+            Comment:      "#6a9955",
+            Operator:     "#d4d4d4",
+            Punctuation:  "#d4d4d4",
+            Literal:      "#b5cea8",
+            Generic.Deleted: "#f87171",
+            Generic.Inserted: "#4ade80",
+        }
+        self._default_color = accent
+        self._Token = Token
+        # Lexed once, up front — this preview content is read-only and never
+        # changes after being set, so caching avoids re-lexing the whole
+        # document on every block (which would be O(n^2) over n blocks).
+        self._tokens_cache = None
+
+    def _color_for(self, token_type) -> str:
+        # Walk up the token hierarchy (e.g. Token.Literal.String.Doc ->
+        # ... -> Token.Literal.String -> Token.Literal) until a palette
+        # match is found, since Pygments subtypes tokens heavily.
+        t = token_type
+        while t is not None:
+            if t in self._palette:
+                return self._palette[t]
+            t = t.parent
+        return "#d4d4d4"
+
+    def highlightBlock(self, text):
+        if self._tokens_cache is None:
+            self._build_token_buckets()
+
+        block_num = self.currentBlock().blockNumber()
+        for rel_start, rel_end, tok_type in self._tokens_cache.get(block_num, []):
+            rel_start = max(0, rel_start)
+            rel_end = min(len(text), rel_end)
+            if rel_end <= rel_start:
+                continue
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor(self._color_for(tok_type)))
+            self.setFormat(rel_start, rel_end - rel_start, fmt)
+
+    def _build_token_buckets(self):
+        """
+        Lex the full document once and bucket each token by the line(s)
+        it falls on, so highlightBlock() only looks at tokens belonging
+        to the current line instead of scanning the whole file every call.
+
+        Uses bisect against precomputed line-start offsets to map an
+        absolute character offset to a line number in O(log n), and splits
+        any token spanning multiple lines (e.g. a triple-quoted string)
+        across each line it touches.
+        """
+        import bisect
+
+        full_text = self.document().toPlainText()
+        buckets: dict[int, list[tuple[int, int, object]]] = {}
+
+        # line_starts[i] = absolute offset where line i begins
+        line_starts = [0]
+        for i, ch in enumerate(full_text):
+            if ch == "\n":
+                line_starts.append(i + 1)
+
+        def line_at(offset: int) -> int:
+            return bisect.bisect_right(line_starts, offset) - 1
+
+        try:
+            tokens = self._lexer.get_tokens_unprocessed(full_text)
+        except Exception:
+            tokens = []
+
+        for start, tok_type, value in tokens:
+            if not value:
+                continue
+            end = start + len(value)
+            start_line = line_at(start)
+            end_line = line_at(end - 1)
+
+            if start_line == end_line:
+                rel_start = start - line_starts[start_line]
+                rel_end = end - line_starts[start_line]
+                buckets.setdefault(start_line, []).append((rel_start, rel_end, tok_type))
+            else:
+                # Token spans multiple lines — split at each newline
+                for ln in range(start_line, end_line + 1):
+                    seg_start = max(start, line_starts[ln])
+                    seg_end = min(end, line_starts[ln + 1] - 1 if ln + 1 < len(line_starts) else end)
+                    rel_start = seg_start - line_starts[ln]
+                    rel_end = seg_end - line_starts[ln]
+                    if rel_end > rel_start:
+                        buckets.setdefault(ln, []).append((rel_start, rel_end, tok_type))
+
+        self._tokens_cache = buckets
+
+
+# ── Background fetch worker ───────────────────────────────────────────────────
+
+class _FetchWorker(QThread):
+    """Downloads a URL into memory on a background thread."""
+    finished = pyqtSignal(bytes)
+    error    = pyqtSignal(str)
+
+    def __init__(self, url: str, parent=None):
+        super().__init__(parent)
+        self._url = url
+
+    def run(self):
+        try:
+            resp = requests.get(self._url, timeout=30, stream=True)
+            resp.raise_for_status()
+            data = b"".join(resp.iter_content(65536))
+            self.finished.emit(data)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+# ── Seekbar that jumps to clicked position ───────────────────────────────────
+
+class _ClickableSlider(QSlider):
+    """
+    QSlider subclass that seeks directly to the clicked track position
+    instead of the default page-step increment behaviour.
+    """
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            val = QStyle.sliderValueFromPosition(
+                self.minimum(), self.maximum(),
+                event.position().toPoint().x(), self.width()
+            )
+            self.setValue(val)
+            self.sliderMoved.emit(val)
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+
+# ── Preview dialog ────────────────────────────────────────────────────────────
+
+class PreviewDialog(MochaDialog):
+    """
+    In-app preview popup for images, video, and audio.
+    Fetches the presigned URL in the background, then renders:
+      - Images  -> QLabel with scaled pixmap
+      - Video   -> QVideoWidget + transport controls (PyQt6.QtMultimediaWidgets)
+      - Audio   -> embedded album art (or a music-note placeholder) + transport
+    Falls back gracefully if QtMultimedia is not available.
+
+    Uses the same frameless titlebar chrome as the rest of the app's dialogs
+    (MochaDialog). Audio previews use a small fixed-size window since there's
+    no large visual content to show; image/video previews keep a larger,
+    resizable window.
+    """
+
+    _AUDIO_SIZE = (340, 360)
+
+    def __init__(self, name: str, presigned_url: str,
+                 media_type: str, parent=None):
+        is_audio = media_type == "audio"
+        min_size = self._AUDIO_SIZE if is_audio else (520, 400)
+
+        super().__init__(f"Preview — {name}", parent, min_size=min_size)
+        self._url          = presigned_url
+        self._name         = name
+        self._media_type   = media_type
+        self._player       = None
+        self._movie        = None
+        self._fetch_worker = None
+        self._cleaned_up   = False
+
+        if is_audio:
+            self.setFixedSize(*self._AUDIO_SIZE)
+        else:
+            self.resize(720, 520)
+
+        # content_layout already has a grip row appended by MochaDialog;
+        # pull it off so we can insert our widgets above it, then put it
+        # back at the end. Audio mode drops the grip since it's fixed-size.
+        self._lay = self.content_layout
+        self._grip_item = self._lay.takeAt(self._lay.count() - 1)
+        if is_audio and self._grip_item is not None:
+            # Discard the grip widget entirely for the fixed-size audio window
+            w = self._grip_item.widget()
+            if w:
+                w.setParent(None)
+            self._grip_item = None
+
+        self._lay.setContentsMargins(14, 10, 14, 10 if is_audio else 14)
+        self._lay.setSpacing(8)
+
+        # Loading placeholder
+        self._loading_lbl = QLabel("Loading…")
+        self._loading_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._loading_lbl.setStyleSheet("color:#9c9484; background:transparent;")
+        self._lay.addWidget(self._loading_lbl, 1)
+
+        if self._grip_item is not None:
+            self._lay.addItem(self._grip_item)
+
+        # Start fetching in background
+        self._fetch_worker = _FetchWorker(presigned_url, self)
+        self._fetch_worker.finished.connect(self._on_data)
+        self._fetch_worker.error.connect(self._on_error)
+        self._fetch_worker.start()
+
+    def _on_error(self, msg: str):
+        self._loading_lbl.setText(f"Failed to load: {msg}")
+
+    def _on_data(self, data: bytes):
+        self._loading_lbl.hide()
+        if self._media_type == "image":
+            self._show_image(data)
+        elif self._media_type == "video":
+            self._show_video(data)
+        elif self._media_type == "audio":
+            self._show_audio(data)
+        elif self._media_type == "text":
+            self._show_text(data)
+
+    # ── Image ──────────────────────────────────────────────────────────────────
+
+    def _show_image(self, data: bytes):
+        # Animated GIFs need QMovie (QPixmap only ever grabs one frame).
+        if data[:6] in (b"GIF87a", b"GIF89a"):
+            self._show_gif(data)
+            return
+
+        pm = QPixmap()
+        pm.loadFromData(data)
+        if pm.isNull():
+            self._loading_lbl.setText("Could not decode image.")
+            self._loading_lbl.show()
+            return
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("background:transparent;")
+
+        img_lbl = QLabel()
+        img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        img_lbl.setStyleSheet("background:transparent;")
+
+        target = self.size() - QSize(40, 140)
+        if pm.width() > target.width() or pm.height() > target.height():
+            pm = pm.scaled(target,
+                           Qt.AspectRatioMode.KeepAspectRatio,
+                           Qt.TransformationMode.SmoothTransformation)
+        img_lbl.setPixmap(pm)
+        scroll.setWidget(img_lbl)
+        # Insert before the close-button row
+        self._lay.insertWidget(self._lay.count() - 1, scroll, 1)
+
+    def _show_gif(self, data: bytes):
+        import tempfile as _tf
+
+        # QMovie streams frames from disk/QIODevice as it plays, so the
+        # backing file needs to outlive the dialog — keep the path around
+        # and clean it up in closeEvent alongside the audio/video temp files.
+        tmp = _tf.NamedTemporaryFile(delete=False, suffix=".gif")
+        tmp.write(data); tmp.flush(); tmp.close()
+        self._tmp_path = tmp.name
+
+        self._movie = QMovie(tmp.name)
+        if not self._movie.isValid():
+            self._loading_lbl.setText("Could not decode GIF.")
+            self._loading_lbl.show()
+            return
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("background:transparent;")
+        scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        gif_lbl = QLabel()
+        gif_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        gif_lbl.setStyleSheet("background:transparent;")
+
+        # frameRect() is invalid (0x0) until a frame has actually been
+        # decoded, so force-load frame 0 before reading native size —
+        # otherwise the "is it too big?" check below always thinks the
+        # GIF is fine and it plays back at native resolution.
+        self._movie.jumpToFrame(0)
+        native = self._movie.frameRect().size()
+        if not native.isValid() or native.isEmpty():
+            native = self._movie.currentPixmap().size()
+
+        target = self.size() - QSize(40, 140)
+        if native.isValid() and not native.isEmpty():
+            scaled = QSize(native)
+            scaled.scale(target, Qt.AspectRatioMode.KeepAspectRatio)
+            self._movie.setScaledSize(scaled)
+
+        gif_lbl.setMovie(self._movie)
+        scroll.setWidget(gif_lbl)
+        self._lay.insertWidget(self._lay.count() - 1, scroll, 1)
+        self._movie.start()
+
+    # ── Text / code ────────────────────────────────────────────────────────────
+
+    def _show_text(self, data: bytes):
+        truncated = False
+        if len(data) > _TEXT_PREVIEW_MAX_BYTES:
+            data = data[:_TEXT_PREVIEW_MAX_BYTES]
+            truncated = True
+
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                text = data.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                # Fall back to latin-1, which never fails to decode (every
+                # byte maps to a codepoint) — good enough for a preview of
+                # a file that isn't actually UTF-8 text.
+                text = data.decode("latin-1", errors="replace")
+
+        if truncated:
+            text += "\n\n… (preview truncated, file is larger than 2 MB)"
+
+        editor = QPlainTextEdit()
+        editor.setReadOnly(True)
+        editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        try:
+            acc = get_accent()
+        except Exception:
+            acc = "#c8a96e"
+        editor.setStyleSheet(
+            "QPlainTextEdit {"
+            " background:#0e0d0c; color:#d4d4d4; border:1px solid #2a2722;"
+            " border-radius:8px; padding:8px;"
+            " font-family:'Consolas','Fira Code','Courier New',monospace;"
+            " font-size:12px;"
+            "}"
+        )
+        editor.setPlainText(text)
+
+        # Syntax highlighting — best effort via Pygments, silently skipped
+        # if it's not installed or no lexer matches the extension.
+        if _pygments_available():
+            try:
+                from pygments.lexers import get_lexer_for_filename
+                from pygments.util import ClassNotFound
+                try:
+                    lexer = get_lexer_for_filename(self._name, stripnl=False)
+                    self._highlighter = _PygmentsHighlighter(editor.document(), lexer, acc)
+                except ClassNotFound:
+                    pass
+            except Exception:
+                pass
+
+        self._lay.insertWidget(self._lay.count() - 1, editor, 1)
+
+    # ── Video ──────────────────────────────────────────────────────────────────
+
+    def _show_video(self, data: bytes):
+        try:
+            import tempfile as _tf, os as _os
+            from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+            from PyQt6.QtMultimediaWidgets import QVideoWidget
+
+            suffix = _os.path.splitext(self._name)[1] or ".mp4"
+            tmp = _tf.NamedTemporaryFile(delete=False, suffix=suffix)
+            tmp.write(data); tmp.flush(); tmp.close()
+            self._tmp_path = tmp.name
+
+            video_w = QVideoWidget()
+            video_w.setMinimumHeight(280)
+
+            self._player = QMediaPlayer(self)
+            audio_out = QAudioOutput(self)
+            audio_out.setVolume(1.0)
+            self._player.setAudioOutput(audio_out)
+            self._player.setVideoOutput(video_w)
+            self._player.setSource(QUrl.fromLocalFile(tmp.name))
+
+            controls = self._make_transport(self._player)
+            self._lay.insertWidget(self._lay.count() - 1, video_w, 1)
+            self._lay.insertLayout(self._lay.count() - 1, controls)
+            self._player.play()
+
+        except ImportError:
+            self._loading_lbl.setText(
+                "Video preview requires PyQt6-Qt6-Multimedia.\n"
+                "Install with:  pip install PyQt6-Qt6-Multimedia"
+            )
+            self._loading_lbl.show()
+        except Exception as exc:
+            self._loading_lbl.setText(f"Video error: {exc}")
+            self._loading_lbl.show()
+
+    # ── Audio ──────────────────────────────────────────────────────────────────
+
+    def _show_audio(self, data: bytes):
+        try:
+            import tempfile as _tf, os as _os
+            from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+
+            suffix = _os.path.splitext(self._name)[1] or ".mp3"
+            tmp = _tf.NamedTemporaryFile(delete=False, suffix=suffix)
+            tmp.write(data); tmp.flush(); tmp.close()
+            self._tmp_path = tmp.name
+
+            art = QLabel()
+            art.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            art.setFixedSize(220, 220)
+            art.setStyleSheet("background:#0e0d0c; border-radius:10px;")
+
+            art_bytes = _extract_album_art(tmp.name)
+            art_pm = QPixmap()
+            if art_bytes and art_pm.loadFromData(art_bytes) and not art_pm.isNull():
+                art_pm = art_pm.scaled(
+                    art.size(),
+                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                art.setPixmap(art_pm)
+            else:
+                # No embedded art — fall back to a music-note glyph
+                try:
+                    acc = get_accent()
+                    note_icon = lucide_icon("music", acc, 56)
+                except Exception:
+                    note_icon = lucide_icon("music", "#c8a96e", 56)
+                art.setPixmap(note_icon.pixmap(56, 56))
+
+            art_row = QHBoxLayout()
+            art_row.addStretch()
+            art_row.addWidget(art)
+            art_row.addStretch()
+
+            self._player = QMediaPlayer(self)
+            audio_out = QAudioOutput(self)
+            audio_out.setVolume(1.0)
+            self._player.setAudioOutput(audio_out)
+            self._player.setSource(QUrl.fromLocalFile(tmp.name))
+
+            controls = self._make_transport(self._player)
+            self._lay.insertLayout(self._lay.count() - 1, art_row)
+            self._lay.insertLayout(self._lay.count() - 1, controls)
+            self._player.play()
+
+        except ImportError:
+            self._loading_lbl.setText(
+                "Audio preview requires PyQt6-Qt6-Multimedia.\n"
+                "Install with:  pip install PyQt6-Qt6-Multimedia"
+            )
+            self._loading_lbl.show()
+        except Exception as exc:
+            self._loading_lbl.setText(f"Audio error: {exc}")
+            self._loading_lbl.show()
+
+    # ── Transport controls (shared by video + audio) ───────────────────────────
+
+    @staticmethod
+    def _nudged_icon(name: str, color: str, size: int, btn_size: int, dy: int) -> QIcon:
+        """
+        Build an icon for a fixed-size button with its artwork shifted up
+        by dy pixels, without touching the button's own geometry/box model
+        (a stylesheet padding/margin approach was tried and rejected since
+        it perturbed the whole transport row's layout instead of just the
+        icon). Draws the normal lucide pixmap onto a canvas the size of the
+        button itself, offset vertically, so the QIcon already "is" the
+        nudged artwork and the button's fixed size/layout are untouched.
+        """
+        src = lucide_icon(name, color, size).pixmap(size, size)
+        canvas = QPixmap(btn_size, btn_size)
+        canvas.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(canvas)
+        x = (btn_size - size) // 2
+        y = (btn_size - size) // 2 - dy
+        painter.drawPixmap(x, y, src)
+        painter.end()
+        return QIcon(canvas)
+
+    def _make_transport(self, player) -> QHBoxLayout:
+        from PyQt6.QtMultimedia import QMediaPlayer
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+
+        try:
+            acc = get_accent()
+        except Exception:
+            acc = "#c8a96e"
+
+        play_btn = QPushButton()
+        play_btn.setFixedSize(30, 30)
+        play_btn.setIconSize(QSize(14, 14))
+        play_btn.setIcon(lucide_icon("pause", acc, 14))
+        play_btn.setStyleSheet(
+            f"QPushButton {{ background:transparent; color:{acc}; border:1px solid {acc};"
+            f" border-radius:6px; padding:0px; }}"
+            f"QPushButton:hover {{ background:rgba(200,169,110,0.12); }}"
+        )
+
+        seek = _ClickableSlider(Qt.Orientation.Horizontal)
+        seek.setRange(0, 0)
+
+        _VOL_BTN_SIZE = 28
+        _VOL_ICON_SIZE = 14
+        _VOL_NUDGE_Y = 3  # pixels to shift the icon up within the button
+
+        vol_btn = QPushButton()
+        vol_btn.setFixedSize(_VOL_BTN_SIZE, _VOL_BTN_SIZE)
+        vol_btn.setIconSize(QSize(_VOL_BTN_SIZE, _VOL_BTN_SIZE))
+        vol_btn.setIcon(self._nudged_icon(
+            "volume-2", "#9c9484", _VOL_ICON_SIZE, _VOL_BTN_SIZE, _VOL_NUDGE_Y
+        ))
+        vol_btn.setStyleSheet("QPushButton { background:transparent; border:none; }")
+        self._muted = False
+
+        time_lbl = QLabel("0:00 / 0:00")
+        time_lbl.setStyleSheet(
+            "color:#9c9484; background:transparent; font-size:11px;"
+        )
+        time_lbl.setFixedWidth(78)
+        time_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        # Grouped as [play] [seek ────] [time  volume], so time and the
+        # mute toggle sit together as a pair at the end of the row instead
+        # of volume floating alone in the middle.
+        row.addWidget(play_btn)
+        row.addWidget(seek, 1)
+        row.addWidget(time_lbl)
+        row.addWidget(vol_btn)
+
+        def _fmt(ms: int) -> str:
+            s = max(0, ms) // 1000
+            return f"{s // 60}:{s % 60:02d}"
+
+        def _on_duration(dur):
+            seek.setRange(0, dur)
+            time_lbl.setText(f"0:00 / {_fmt(dur)}")
+
+        def _on_position(pos):
+            if not seek.isSliderDown():
+                seek.setValue(pos)
+            dur = player.duration()
+            time_lbl.setText(f"{_fmt(pos)} / {_fmt(dur) if dur else '0:00'}")
+
+        def _on_state(state):
+            playing = state == QMediaPlayer.PlaybackState.PlayingState
+            play_btn.setIcon(lucide_icon("pause" if playing else "play", acc, 14))
+
+        def _toggle():
+            if player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                player.pause()
+            else:
+                player.play()
+
+        def _toggle_mute():
+            self._muted = not self._muted
+            try:
+                player.audioOutput().setMuted(self._muted)
+            except Exception:
+                pass
+            icon_name = "volume-x" if self._muted else "volume-2"
+            vol_btn.setIcon(self._nudged_icon(
+                icon_name, "#9c9484", _VOL_ICON_SIZE, _VOL_BTN_SIZE, _VOL_NUDGE_Y
+            ))
+
+        seek.sliderMoved.connect(player.setPosition)
+        player.durationChanged.connect(_on_duration)
+        player.positionChanged.connect(_on_position)
+        player.playbackStateChanged.connect(_on_state)
+        play_btn.clicked.connect(_toggle)
+        vol_btn.clicked.connect(_toggle_mute)
+
+        return row
+
+    # ── Cleanup ────────────────────────────────────────────────────────────────
+
+    def _stop_playback(self):
+        try:
+            if self._player:
+                self._player.stop()
+                self._player.setSource(QUrl())
+        except Exception:
+            pass
+        try:
+            if self._movie:
+                self._movie.stop()
+        except Exception:
+            pass
+
+    def _cleanup(self):
+        # Called from both done() (accept/reject — including the titlebar
+        # close button) and closeEvent(), since depending on platform/Qt
+        # version not every close path reliably triggers the other.
+        # Guarded so running it twice is harmless.
+        if getattr(self, "_cleaned_up", False):
+            return
+        self._cleaned_up = True
+
+        self._stop_playback()
+        try:
+            if self._fetch_worker and self._fetch_worker.isRunning():
+                self._fetch_worker.terminate()
+                self._fetch_worker.wait(500)
+        except Exception:
+            pass
+        try:
+            tmp = getattr(self, "_tmp_path", None)
+            if tmp and os.path.exists(tmp):
+                os.unlink(tmp)
+        except Exception:
+            pass
+
+    def done(self, result):
+        self._cleanup()
+        super().done(result)
+
+    def closeEvent(self, event):
+        self._cleanup()
+        super().closeEvent(event)
 
 
 class FilesBrowserTab(QWidget):
@@ -870,6 +1598,44 @@ class FilesBrowserTab(QWidget):
         self._status(f"Creating share for {name!r}…")
         self._run_worker("share", file_id=fid, expiry=expiry)
 
+    def _preview_selected(self):
+        items = self._selected_items()
+        if len(items) != 1:
+            return
+        meta  = items[0].data(0, Qt.ItemDataRole.UserRole) or {}
+        fid   = meta.get("id") or meta.get("fileId") or ""
+        name  = meta.get("name") or meta.get("file_name") or meta.get("original_name") or ""
+        ptype = _preview_type(name)
+        if not fid or not ptype:
+            QMessageBox.information(self, "Preview", "This file type cannot be previewed.")
+            return
+
+        api_key = self.get_api_key()
+        self._status(f"Loading preview for {name!r}…")
+        try:
+            resp = requests.get(
+                f"{self.base_url}/api/files/presigned",
+                headers={"Authorization": f"Bearer {api_key}"},
+                params={"fileId": fid},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            url  = (data.get("url") or data.get("presignedUrl")
+                    or data.get("downloadUrl") or "")
+            if not url:
+                QMessageBox.warning(self, "Preview", f"No URL returned: {data}")
+                self._status("")
+                return
+        except Exception as e:
+            QMessageBox.warning(self, "Preview", f"Failed to get URL: {e}")
+            self._status("")
+            return
+
+        self._status("")
+        dlg = PreviewDialog(name, url, ptype, parent=self)
+        dlg.show()
+
     def _download_selected(self):
         items = self._selected_items()
         if len(items) != 1:
@@ -953,6 +1719,14 @@ class FilesBrowserTab(QWidget):
         )
         from ..theme import get_accent
         if meta.get("_type") == "file":
+            # Preview action — only shown for previewable file types
+            _ptype = _preview_type(meta.get("name", "") or "")
+            if _ptype:
+                act = menu.addAction(
+                    lucide_icon("eye", get_accent(), 12), "Preview"
+                )
+                act.triggered.connect(self._preview_selected)
+                menu.addSeparator()
             act = menu.addAction(lucide_icon("download-cloud", get_accent(), 12), "Download")
             act.triggered.connect(self._download_selected)
             act = menu.addAction(lucide_icon("share-2", get_accent(), 12), "Share")
