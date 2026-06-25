@@ -47,7 +47,6 @@ def build_settings_tab(win) -> QWidget:
     tab_lay.setContentsMargins(0, 0, 0, 0)
     center_row = QHBoxLayout()
     center_row.setContentsMargins(0, 0, 0, 0)
-    center_row.addStretch()
 
     # We'll show the tab bar fixed at the top and make each tab page a
     # scrollable area. This prevents the tab bar and its pages from
@@ -509,9 +508,7 @@ def build_settings_tab(win) -> QWidget:
     QTimer.singleShot(120, lambda: _ensure_accent_spin_arrows(None))
 
     center_row.addWidget(tabs, 1)
-    center_row.addStretch()
-    tab_lay.addLayout(center_row)
-    tab_lay.addStretch()  # keep bottom spacing for visual layout
+    tab_lay.addLayout(center_row, 1)
     lay = tab_lay  # keep variable for callers if needed
     return tab
 

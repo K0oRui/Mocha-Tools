@@ -31,7 +31,7 @@
 
 ## HUGE THANKS TO [BINK-LAB](https://github.com/Bink-lab) FOR MOCHA, ACCESS TO IT AND THE API, AS WELL AS CONTRIBUTIONS
 ## Source Requirements
-- Python 3.10 or higher (can be downloader [here](https://www.python.org/downloads/))
+- Python 3.11 **ONLY** (can be downloader [here](https://www.python.org/downloads/))
 - PyQt6
 - requests
 - pyinstaller
@@ -45,7 +45,7 @@
 1. `git clone https://github.com/nxllvxxd/Mocha-Tools`
 2. `cd Mocha-Tools`
 3. `pip install -r requirements.txt`
-4. `python mochatools.py`
+4. `py -3.11 mochatools.py`
 
 ![Divider](https://capsule-render.vercel.app/api?type=rect&color=C8A96E&height=3)
 
