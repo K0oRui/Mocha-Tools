@@ -52,6 +52,7 @@ class MochaTools(QMainWindow):
         self.selected_root:  str       = ""
         self.worker                    = None
         self._poller: CachePoller | None = None
+        self._last_speed_bps: float = 0.0
 
         # Update worker state
         self._update_tag:       str                      = ""
@@ -65,6 +66,7 @@ class MochaTools(QMainWindow):
         # System tray state
         self._tray_icon: QSystemTrayIcon | None = None
         self._quitting: bool = False  # set True when the user really wants to quit
+        self._tray_tooltip_timer: QTimer | None = None
 
         self._build_ui()
         self._build_tray_icon()
@@ -513,6 +515,7 @@ class MochaTools(QMainWindow):
         self.transferred_label.setText(f"{self._fmt(done_bytes)} / {self._fmt(grand)}")
 
     def _on_speed(self, bps: float):
+        self._last_speed_bps = bps
         if bps < 1024:      txt = f"{bps:.3f} B/s"
         elif bps < 1024**2: txt = f"{bps/1024:.3f} KB/s"
         else:               txt = f"{bps/1024**2:.3f} MB/s"
@@ -878,6 +881,11 @@ class MochaTools(QMainWindow):
         # Hidden until the user enables "Minimize and close to tray"
         tray.hide()
 
+        self._tray_tooltip_timer = QTimer(self)
+        self._tray_tooltip_timer.setInterval(1000)
+        self._tray_tooltip_timer.timeout.connect(self._refresh_tray_tooltip)
+        self._tray_tooltip_timer.start()
+
     def _on_tray_setting_toggled(self, enabled: bool):
         """Called when the Settings > System Tray checkbox changes."""
         if not self._tray_icon:
@@ -906,6 +914,97 @@ class MochaTools(QMainWindow):
     def _tray_enabled(self) -> bool:
         cb = getattr(self, "minimize_to_tray_cb", None)
         return bool(cb and cb.isChecked() and self._tray_icon is not None)
+
+    # ── Tray tooltip: live upload status ────────────────────────────────────
+
+    @staticmethod
+    def _fmt_speed(bps: float) -> str:
+        if bps < 1024:       return f"{bps:.3f} B/s"
+        if bps < 1024 ** 2:  return f"{bps/1024:.3f} KB/s"
+        return f"{bps/1024**2:.3f} MB/s"
+
+    def _upload_tab_status(self):
+        """Return (active, pct, speed_bps) for the single-file Upload tab."""
+        active = bool(getattr(self, "cancel_btn", None) and self.cancel_btn.isVisible())
+        if not active:
+            return False, 0.0, 0.0
+        pct = 0.0
+        try:
+            pct = self.progress_bar.value() / 1000.0
+        except Exception:
+            pass
+        speed = getattr(self, "_last_speed_bps", 0.0)
+        return True, pct, speed
+
+    def _mass_upload_status(self):
+        """Return (active, pct, speed_bps) for the Mass Upload section."""
+        sec = getattr(self, "mass_upload_section", None)
+        if not sec:
+            return False, 0.0, 0.0
+        active = bool(getattr(sec, "_active_workers", None))
+        if not active:
+            return False, 0.0, 0.0
+        pct = 0.0
+        try:
+            pct = sec._prog_bar.value() / 1000.0
+        except Exception:
+            pass
+        speed = getattr(sec, "_last_speed_bps", 0.0)
+        return True, pct, speed
+
+    def _sync_tab_status(self):
+        """Return (active, pct, speed_bps) for the Sync tab.
+
+        Sync pairs run independently of one another, so there is no single
+        meaningful overall percentage the way there is for one upload or
+        one mass-upload queue. We still report `active` + summed speed;
+        pct is left at 0 and the caller treats multi-pair sync as a
+        "speed only" source, same as when several tabs run together.
+        """
+        st = getattr(self, "sync_tab", None)
+        if not st:
+            return False, 0.0, 0.0
+        pairs = getattr(st, "_pairs", {}) or {}
+        active_pairs = [p for p in pairs.values() if p.get("status") == "uploading"]
+        if not active_pairs:
+            return False, 0.0, 0.0
+        speed = sum(p.get("_speed_bps", 0.0) for p in active_pairs)
+        pct = 0.0
+        if len(active_pairs) == 1:
+            # Single active pair — approximate its progress from bytes done/total
+            # if available, otherwise leave unknown (0).
+            p = active_pairs[0]
+            done, total = p.get("_bytes_done", 0), p.get("_bytes_total", 0)
+            if total:
+                pct = (done / total) * 100.0
+        return True, pct, speed
+
+    def _refresh_tray_tooltip(self):
+        if not self._tray_icon:
+            return
+
+        sources = [
+            self._upload_tab_status(),
+            self._mass_upload_status(),
+            self._sync_tab_status(),
+        ]
+        active_sources = [s for s in sources if s[0]]
+
+        if not active_sources:
+            self._tray_icon.setToolTip(APP_NAME)
+            return
+
+        total_speed = sum(s[2] for s in active_sources)
+
+        if len(active_sources) == 1:
+            _, pct, speed = active_sources[0]
+            tooltip = f"{APP_NAME}\n{pct:.3f}% · {self._fmt_speed(speed)}"
+        else:
+            # Multiple tabs/features uploading at once — a single combined
+            # percentage isn't meaningful, so show total speed only.
+            tooltip = f"{APP_NAME}\nUploading · {self._fmt_speed(total_speed)}"
+
+        self._tray_icon.setToolTip(tooltip)
 
     def changeEvent(self, event):
         if (
@@ -940,6 +1039,8 @@ class MochaTools(QMainWindow):
             self._poller.stop()
         if self._storage_timer:
             self._storage_timer.stop()
+        if self._tray_tooltip_timer:
+            self._tray_tooltip_timer.stop()
         if self._storage_worker:
             self._storage_worker.quit()
         for w in list(self.remote_tab._workers):

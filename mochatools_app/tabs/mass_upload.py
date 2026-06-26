@@ -43,6 +43,7 @@ class MassUploadSection(QWidget):
         self._pending_iter    = iter([])
         self._cancelled       = False
         self._embedded        = embedded
+        self._last_speed_bps: float = 0.0
         self._build_ui()
 
     def _build_ui(self):
@@ -611,6 +612,7 @@ class MassUploadSection(QWidget):
     # ── Signal handlers ────────────────────────────────────────────────────
 
     def _on_speed(self, bps: float):
+        self._last_speed_bps = bps
         if bps < 1024:       txt = f"{bps:.0f} B/s"
         elif bps < 1024**2:  txt = f"{bps/1024:.1f} KB/s"
         else:                txt = f"{bps/1024**2:.2f} MB/s"
