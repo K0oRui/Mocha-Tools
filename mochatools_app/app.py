@@ -53,6 +53,7 @@ class MochaTools(QMainWindow):
         self.worker                    = None
         self._poller: CachePoller | None = None
         self._last_speed_bps: float = 0.0
+        self._is_uploading: bool = False
 
         # Update worker state
         self._update_tag:       str                      = ""
@@ -500,6 +501,7 @@ class MochaTools(QMainWindow):
         self._log("Upload cancelled by user.")
 
     def _set_uploading(self, active: bool):
+        self._is_uploading = active
         self.upload_btn.setVisible(not active)
         self.cancel_btn.setVisible(active)
         self.upload_btn.setEnabled(not active)
@@ -924,8 +926,15 @@ class MochaTools(QMainWindow):
         return f"{bps/1024**2:.3f} MB/s"
 
     def _upload_tab_status(self):
-        """Return (active, pct, speed_bps) for the single-file Upload tab."""
-        active = bool(getattr(self, "cancel_btn", None) and self.cancel_btn.isVisible())
+        """Return (active, pct, speed_bps) for the single-file Upload tab.
+
+        Uses the explicit `_is_uploading` flag rather than checking widget
+        visibility — visibility collapses to False for every child widget
+        once the main window is hidden (e.g. minimised to tray), which
+        would otherwise make the tray think nothing is uploading even
+        though the background worker is still running.
+        """
+        active = bool(getattr(self, "_is_uploading", False))
         if not active:
             return False, 0.0, 0.0
         pct = 0.0
