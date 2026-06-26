@@ -12,12 +12,13 @@ Tab index reference:
 import os
 import sys
 
-from PyQt6.QtCore import Qt, QSize, QTimer
-from PyQt6.QtGui import QColor, QPalette
+from PyQt6.QtCore import Qt, QSize, QTimer, QEvent
+from PyQt6.QtGui import QColor, QPalette, QAction
 from PyQt6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QProgressBar, QPushButton, QCheckBox, QComboBox, QScrollArea,
     QSizePolicy, QSpinBox, QVBoxLayout, QWidget, QMessageBox,
+    QSystemTrayIcon, QMenu,
 )
 
 from .constants import (
@@ -61,7 +62,12 @@ class MochaTools(QMainWindow):
         self._storage_worker: StorageWorker | None = None
         self._storage_timer:  QTimer | None         = None
 
+        # System tray state
+        self._tray_icon: QSystemTrayIcon | None = None
+        self._quitting: bool = False  # set True when the user really wants to quit
+
         self._build_ui()
+        self._build_tray_icon()
         load_settings(self)
 
     # ── UI construction ───────────────────────────────────────────────────────
@@ -841,9 +847,92 @@ class MochaTools(QMainWindow):
         self._test_fetch_thread = _FetchThread(self)
         self._test_fetch_thread.start()
 
+    # ── System tray ───────────────────────────────────────────────────────────
+
+    def _build_tray_icon(self):
+        """Create the QSystemTrayIcon (hidden until the setting is enabled)."""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self._tray_icon = None
+            return
+
+        tray = QSystemTrayIcon(self)
+        try:
+            tray.setIcon(lucide_icon("coffee", get_accent(), 32))
+        except Exception:
+            pass
+        tray.setToolTip(APP_NAME)
+
+        menu = QMenu()
+        show_action = QAction("Show Mocha Tools", self)
+        show_action.triggered.connect(self._restore_from_tray)
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(self._quit_from_tray)
+        menu.addAction(show_action)
+        menu.addSeparator()
+        menu.addAction(quit_action)
+        tray.setContextMenu(menu)
+
+        tray.activated.connect(self._on_tray_activated)
+
+        self._tray_icon = tray
+        # Hidden until the user enables "Minimize and close to tray"
+        tray.hide()
+
+    def _on_tray_setting_toggled(self, enabled: bool):
+        """Called when the Settings > System Tray checkbox changes."""
+        if not self._tray_icon:
+            return
+        if enabled:
+            self._tray_icon.show()
+        else:
+            self._tray_icon.hide()
+
+    def _on_tray_activated(self, reason):
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self._restore_from_tray()
+
+    def _restore_from_tray(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _quit_from_tray(self):
+        self._quitting = True
+        self.close()
+
+    def _tray_enabled(self) -> bool:
+        cb = getattr(self, "minimize_to_tray_cb", None)
+        return bool(cb and cb.isChecked() and self._tray_icon is not None)
+
+    def changeEvent(self, event):
+        if (
+            event.type() == QEvent.Type.WindowStateChange
+            and self.isMinimized()
+            and self._tray_enabled()
+        ):
+            # Defer to the next event loop pass so the minimise animation
+            # completes normally before we hide the window into the tray.
+            QTimer.singleShot(0, self.hide)
+        super().changeEvent(event)
+
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def closeEvent(self, event):
+        if self._tray_enabled() and not self._quitting:
+            event.ignore()
+            self.hide()
+            if self._tray_icon:
+                self._tray_icon.showMessage(
+                    APP_NAME,
+                    "Mocha Tools is still running in the system tray.",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    2000,
+                )
+            return
+
         save_settings(self)
         self.remote_tab.set_active(False)
         self.sync_tab.closeEvent(event)
@@ -859,7 +948,10 @@ class MochaTools(QMainWindow):
             w.quit()
         for w in list(self.shares_tab._workers):
             w.quit()
+        if self._tray_icon:
+            self._tray_icon.hide()
         super().closeEvent(event)
+        QApplication.instance().quit()
 
 
 def _build_app_palette() -> QPalette:
@@ -891,6 +983,10 @@ def main():
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(ORG_NAME)
     app.setStyle("Fusion")
+    # Closing/minimising to the system tray hides the window rather than
+    # closing it, but we still don't want Qt to quit the app the moment
+    # the (now hidden) main window's close event fires in other code paths.
+    app.setQuitOnLastWindowClosed(False)
     try:
         app.setStyleSheet(build_stylesheet(get_accent(), background_key=get_background()))
     except Exception:

@@ -726,6 +726,7 @@ def load_settings(win):
 
     win.remember_cb.setChecked(s.value("remember", False, type=bool))
     win.debug_cb.setChecked(s.value("debug", False, type=bool))
+    win.minimize_to_tray_cb.setChecked(s.value("minimize_to_tray", False, type=bool))
     win.chunk_size_spin.setValue(s.value("chunk_size_mb", DEFAULT_CHUNK_SIZE_MB, type=int))
     win.max_chunks_spin.setValue(s.value("max_chunks", DEFAULT_MAX_CHUNKS, type=int))
     win.mass_conc_spin.setValue(s.value("mass_conc", 2, type=int))
@@ -787,6 +788,7 @@ def save_settings(win):
     """Persist win's widget values to QSettings."""
     s = QSettings(ORG_NAME, APP_NAME)
     s.setValue("debug",                     win.debug_cb.isChecked())
+    s.setValue("minimize_to_tray",           win.minimize_to_tray_cb.isChecked())
     s.setValue("chunk_size_mb",             win.chunk_size_spin.value())
     s.setValue("max_chunks",                win.max_chunks_spin.value())
     s.setValue("mass_conc",                 win.mass_conc_spin.value())

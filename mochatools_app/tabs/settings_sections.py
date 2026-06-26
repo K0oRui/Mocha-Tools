@@ -301,6 +301,30 @@ def build_basic_tab(win, lay: QVBoxLayout):
 	card_lay.addWidget(note)
 	lay.addWidget(card)
 
+	# System tray
+	lay.addWidget(_sh("System Tray"))
+	card     = _card()
+	card_lay = QVBoxLayout(card)
+	card_lay.setSpacing(6)
+
+	win.minimize_to_tray_cb = QCheckBox("Minimize and close to tray")
+	win.minimize_to_tray_cb.setToolTip(
+		"When enabled, minimising or closing the window sends Mocha Tools\n"
+		"to the system tray instead of quitting. Use the tray icon's menu\n"
+		"to reopen the window or quit the app."
+	)
+	win.minimize_to_tray_cb.toggled.connect(win._on_tray_setting_toggled)
+	card_lay.addWidget(win.minimize_to_tray_cb)
+
+	note = QLabel(
+		"When disabled, minimising uses the normal taskbar behaviour and "
+		"closing the window quits the app."
+	)
+	note.setObjectName("field_label")
+	note.setWordWrap(True)
+	card_lay.addWidget(note)
+	lay.addWidget(card)
+
 
 # Upload tab builders
 def build_upload_tab(win, lay: QVBoxLayout):
