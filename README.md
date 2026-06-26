@@ -26,7 +26,11 @@
 - Share management, including viewing shares, toggling active or inactive, and deleting shares
 - Remote ingest support
 - Upload multiple files and folders at once with mass upload.
-- Preview various filetypes in your storage from text to video and audio.
+- Preview various filetypes in your storage from text to video and audio:
+    - Video: .mp4, .mov, .avi, .mkv, .wmv, .flv, .webm, .m4v, .mpeg, .mpg, .3gp
+    - Audio: .mp3, .flac, .m4a, .wav, .ogg, .aac, .wma, .opus, .aiff, .aif
+    - Images: .jpg, .jpeg, .png, .gif, .bmp, .webp, .ico, .tiff, .tif, .svg
+    - Text: .txt, .md, .markdown, .rst, .log, .csv, .tsv, .py, .pyw, .js, .mjs, .cjs, .ts, .tsx, .jsx, .html, .htm, .css, .scss, .sass, .less, .json, .jsonc, .xml, .yaml, .yml, .toml, .ini, .cfg, .c, .h, .cpp, .hpp, .cc, .cs, .java, .kt, .swift, .go, .rs, .rb, .php, .lua, .sh, .bash, .zsh, .ps1, .sql, .env, .gitignore, .gitattributes, .dockerfile, .vue, .svelte, .graphql, .proto, .bat, .r, .pl
 - Sync folders between Mocha and your local PC without having to manually trigger uploads, just watch the folder and let Tools do the work for you
 - Enable or disable the tray icon in settings to keep Tools open without taking up taskbar space
 
