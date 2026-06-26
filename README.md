@@ -26,6 +26,8 @@
 - Share management, including viewing shares, toggling active or inactive, and deleting shares
 - Remote ingest support
 - Upload multiple files and folders at once with mass upload.
+- Preview various filetypes in your storage from text to video and audio.
+- Sync folders between Mocha and your local PC without having to manually trigger uploads, just watch the folder and let Tools do the work for you
 
 ![Divider](https://capsule-render.vercel.app/api?type=rect&color=C8A96E&height=3)
 
