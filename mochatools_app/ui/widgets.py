@@ -417,6 +417,12 @@ class CustomTitleBar(QFrame):
 
         lay.addStretch()
 
+        self._eta_lbl = QLabel("")
+        self._eta_lbl.setObjectName("title_eta")
+        self._eta_lbl.setStyleSheet("background:transparent; margin-bottom:3px; margin-right:10px;")
+        self._eta_lbl.hide()
+        lay.addWidget(self._eta_lbl)
+
         self._storage_lbl = QLabel("")
         self._storage_lbl.setObjectName("title_storage")
         self._storage_lbl.setStyleSheet("background:transparent; margin-bottom:3px;")
@@ -438,6 +444,14 @@ class CustomTitleBar(QFrame):
         btn.setToolTip(tooltip)
         btn.clicked.connect(slot)
         return btn
+
+    # ── ETA indicator ──────────────────────────────────────────────────────────
+
+    def set_eta_text(self, text: str):
+        """Update the upload ETA label shown in the titlebar, before the
+        storage indicator. Pass an empty string to hide it."""
+        self._eta_lbl.setText(text)
+        self._eta_lbl.setVisible(bool(text))
 
     # ── Storage indicator ─────────────────────────────────────────────────────
 

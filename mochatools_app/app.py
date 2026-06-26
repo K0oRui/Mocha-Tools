@@ -54,6 +54,8 @@ class MochaTools(QMainWindow):
         self._poller: CachePoller | None = None
         self._last_speed_bps: float = 0.0
         self._is_uploading: bool = False
+        self._last_bytes_done: int = 0
+        self._last_bytes_total: int = 0
 
         # Update worker state
         self._update_tag:       str                      = ""
@@ -514,6 +516,8 @@ class MochaTools(QMainWindow):
 
     def _on_bytes_progress(self, done_bytes: int, total_bytes: int):
         grand = getattr(self, "_upload_grand_total", 0) or total_bytes
+        self._last_bytes_done  = done_bytes
+        self._last_bytes_total = grand
         self.transferred_label.setText(f"{self._fmt(done_bytes)} / {self._fmt(grand)}")
 
     def _on_speed(self, bps: float):
@@ -926,7 +930,8 @@ class MochaTools(QMainWindow):
         return f"{bps/1024**2:.3f} MB/s"
 
     def _upload_tab_status(self):
-        """Return (active, pct, speed_bps) for the single-file Upload tab.
+        """Return (active, pct, speed_bps, remaining_bytes) for the single-file
+        Upload tab.
 
         Uses the explicit `_is_uploading` flag rather than checking widget
         visibility — visibility collapses to False for every child widget
@@ -936,47 +941,61 @@ class MochaTools(QMainWindow):
         """
         active = bool(getattr(self, "_is_uploading", False))
         if not active:
-            return False, 0.0, 0.0
+            return False, 0.0, 0.0, None
         pct = 0.0
         try:
             pct = self.progress_bar.value() / 1000.0
         except Exception:
             pass
         speed = getattr(self, "_last_speed_bps", 0.0)
-        return True, pct, speed
+        done  = getattr(self, "_last_bytes_done", 0)
+        total = getattr(self, "_last_bytes_total", 0)
+        remaining = max(total - done, 0) if total else None
+        return True, pct, speed, remaining
 
     def _mass_upload_status(self):
-        """Return (active, pct, speed_bps) for the Mass Upload section."""
+        """Return (active, pct, speed_bps, remaining_bytes) for the Mass
+        Upload section."""
         sec = getattr(self, "mass_upload_section", None)
         if not sec:
-            return False, 0.0, 0.0
+            return False, 0.0, 0.0, None
         active = bool(getattr(sec, "_active_workers", None))
         if not active:
-            return False, 0.0, 0.0
+            return False, 0.0, 0.0, None
         pct = 0.0
         try:
             pct = sec._prog_bar.value() / 1000.0
         except Exception:
             pass
         speed = getattr(sec, "_last_speed_bps", 0.0)
-        return True, pct, speed
+        remaining = None
+        try:
+            queue = getattr(sec, "_queue", [])
+            all_done  = sum(e.get("_bytes_done", 0)  for e in queue)
+            all_total = sum(e.get("_bytes_total", 0) for e in queue)
+            if all_total:
+                remaining = max(all_total - all_done, 0)
+        except Exception:
+            pass
+        return True, pct, speed, remaining
 
     def _sync_tab_status(self):
-        """Return (active, pct, speed_bps) for the Sync tab.
+        """Return (active, pct, speed_bps, remaining_bytes) for the Sync tab.
 
         Sync pairs run independently of one another, so there is no single
         meaningful overall percentage the way there is for one upload or
         one mass-upload queue. We still report `active` + summed speed;
         pct is left at 0 and the caller treats multi-pair sync as a
         "speed only" source, same as when several tabs run together.
+        Remaining bytes are summed across active pairs when known.
         """
         st = getattr(self, "sync_tab", None)
         if not st:
-            return False, 0.0, 0.0
+            return False, 0.0, 0.0, None
         pairs = getattr(st, "_pairs", {}) or {}
         active_pairs = [p for p in pairs.values() if p.get("status") == "uploading"]
         if not active_pairs:
-            return False, 0.0, 0.0
+            return False, 0.0, 0.0, None
         speed = sum(p.get("_speed_bps", 0.0) for p in active_pairs)
         pct = 0.0
         if len(active_pairs) == 1:
@@ -986,12 +1005,24 @@ class MochaTools(QMainWindow):
             done, total = p.get("_bytes_done", 0), p.get("_bytes_total", 0)
             if total:
                 pct = (done / total) * 100.0
-        return True, pct, speed
+        remaining = None
+        totals = [(p.get("_bytes_done", 0), p.get("_bytes_total", 0)) for p in active_pairs]
+        if all(total for _, total in totals):
+            remaining = sum(max(total - done, 0) for done, total in totals)
+        return True, pct, speed, remaining
+
+    @staticmethod
+    def _fmt_eta(seconds: float) -> str:
+        seconds = max(0, int(seconds))
+        h, rem = divmod(seconds, 3600)
+        m, s   = divmod(rem, 60)
+        if h:
+            return f"{h:d}h {m:02d}m"
+        if m:
+            return f"{m:d}m {s:02d}s"
+        return f"{s:d}s"
 
     def _refresh_tray_tooltip(self):
-        if not self._tray_icon:
-            return
-
         sources = [
             self._upload_tab_status(),
             self._mass_upload_status(),
@@ -1000,18 +1031,40 @@ class MochaTools(QMainWindow):
         active_sources = [s for s in sources if s[0]]
 
         if not active_sources:
-            self._tray_icon.setToolTip(APP_NAME)
+            if self._tray_icon:
+                self._tray_icon.setToolTip(APP_NAME)
+            if getattr(self, "titlebar", None):
+                self.titlebar.set_eta_text("")
             return
 
         total_speed = sum(s[2] for s in active_sources)
 
+        # ETA: only meaningful when every active source knows its remaining
+        # bytes, and only worth showing once there's measurable speed —
+        # otherwise a brief speed dip to ~0 would flash a huge/garbage ETA.
+        remainings = [s[3] for s in active_sources]
+        eta_text = ""
+        if total_speed > 1024 and all(r is not None for r in remainings):
+            total_remaining = sum(remainings)
+            eta_seconds = total_remaining / total_speed
+            eta_text = f"ETA {self._fmt_eta(eta_seconds)}"
+
+        if getattr(self, "titlebar", None):
+            self.titlebar.set_eta_text(eta_text)
+
+        if not self._tray_icon:
+            return
+
         if len(active_sources) == 1:
-            _, pct, speed = active_sources[0]
+            _, pct, speed, _ = active_sources[0]
             tooltip = f"{APP_NAME}\n{pct:.3f}% · {self._fmt_speed(speed)}"
         else:
             # Multiple tabs/features uploading at once — a single combined
             # percentage isn't meaningful, so show total speed only.
             tooltip = f"{APP_NAME}\nUploading · {self._fmt_speed(total_speed)}"
+
+        if eta_text:
+            tooltip += f"\n{eta_text}"
 
         self._tray_icon.setToolTip(tooltip)
 
