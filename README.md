@@ -75,7 +75,7 @@
 | Add custom colors support | ✅ |
 | Add custom font support | ✅ |
 | Add folder sync support | ✅ |
-| Add support for file previews (images, video, audio) | ❌ |
+| Add support for file previews (images, video, audio) | ✅ |
 | Add download support for your own files | ✅ |
 | Create android version | ❌ |
 | Add to context menu (traditiional and Windows 11 (maybe idk how that works yet) for easy uploading | ❌ |
