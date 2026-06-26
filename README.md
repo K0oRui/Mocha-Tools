@@ -39,6 +39,8 @@
 - pyinstaller
 - Packaging
 - Keyring
+- mutagen
+- python-ffmpeg
 - A Mocha account and an API key which can be obtained [here](https://mocha.my)
 
 ![Divider](https://capsule-render.vercel.app/api?type=rect&color=C8A96E&height=3)
