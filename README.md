@@ -33,7 +33,7 @@
 
 ## HUGE THANKS TO [BINK-LAB](https://github.com/Bink-lab) FOR MOCHA, ACCESS TO IT AND THE API, AS WELL AS CONTRIBUTIONS
 ## Source Requirements
-- Python 3.11 **ONLY** (can be downloader [here](https://www.python.org/downloads/))
+- Python 3.11 **ONLY** (can be downloaded [here](https://www.python.org/downloads/))
 - PyQt6
 - requests
 - pyinstaller
