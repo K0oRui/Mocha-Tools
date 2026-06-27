@@ -12,10 +12,10 @@ Tab index reference:
 import os
 import sys
 
-from PyQt6.QtCore import Qt, QSize, QTimer, QEvent
+from PyQt6.QtCore import Qt, QSize, QTimer, QEvent, QSettings
 from PyQt6.QtGui import QColor, QPalette, QAction
 from PyQt6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+    QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QProgressBar, QPushButton, QCheckBox, QComboBox, QScrollArea,
     QSizePolicy, QSpinBox, QVBoxLayout, QWidget, QMessageBox,
     QSystemTrayIcon, QMenu,
@@ -27,7 +27,7 @@ from .constants import (
 from .logging_utils import write_debug_log
 from .styles import STYLESHEET, build_stylesheet
 from .workers import UploadWorker, StorageWorker
-from .dialogs import FolderBrowserDialog
+from .dialogs import FolderBrowserDialog, MochaDialog
 from .updater import UpdateCheckWorker, UpdateDownloadWorker, launch_update_batch
 from .remote_cache import cache, registry, CachePoller
 
@@ -37,6 +37,62 @@ from .tabs import (
     build_settings_tab, load_settings, save_settings,
 )
 from .theme import get_accent, accent_qcolor, get_font, get_background, get_background_palette
+
+import re
+
+
+def _parse_release_notes_md(notes: str) -> str:
+    """
+    Extract just the "What's New" section from a GitHub release body, as
+    markdown — for feeding straight into a QLabel with
+    setTextFormat(Qt.TextFormat.MarkdownText), which renders bullets/bold/etc
+    natively without any manual HTML conversion.
+
+    Strips the leading <img> (the gif/screenshot always put at the top of a
+    release), the "## What's New" heading itself, and everything after the
+    section (additional headings, the "Full Changelog: ...compare/..."
+    footer) — but leaves the remaining markdown syntax (bullets, bold,
+    links) untouched so the renderer can do its job.
+    """
+    if not notes:
+        return ""
+
+    # Normalize line endings FIRST. GitHub's API returns release bodies
+    # with \r\n line endings; with re.MULTILINE, the trailing \r before \n
+    # breaks the $ anchor in the heading regex below (it doesn't match
+    # whitespace), which silently fails the heading match — and that
+    # failure cascades into the "cut at next heading" step truncating the
+    # body down to nothing. Normalizing up front avoids all of that.
+    text = notes.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    # Strip any <img ...> or <img ...>...</img> tag anywhere in the body.
+    text = re.sub(r"<img\b[^>]*?/?>(?:.*?</img>)?", "", text, flags=re.IGNORECASE | re.DOTALL)
+
+    # Find the "What's New" heading (## What's New, ### What's New, etc,
+    # tolerant of straight/curly apostrophes or a missing apostrophe).
+    heading_re = re.compile(
+        r"^[ \t]*#{1,6}[ \t]*what.?s\s+new[ \t]*$",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    m = heading_re.search(text)
+    body = text[m.end():] if m else text
+
+    # Cut off at the next markdown heading, or a "Full Changelog"/compare
+    # link line — whichever comes first.
+    cutoffs = []
+    next_heading = re.search(r"^[ \t]*#{1,6}\s+\S", body, re.MULTILINE)
+    if next_heading:
+        cutoffs.append(next_heading.start())
+    changelog_line = re.search(
+        r"^.*(Full Changelog|github\.com/.+/compare/).*$", body,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if changelog_line:
+        cutoffs.append(changelog_line.start())
+    if cutoffs:
+        body = body[:min(cutoffs)]
+
+    return body.strip()
 
 
 class MochaTools(QMainWindow):
@@ -61,6 +117,7 @@ class MochaTools(QMainWindow):
         self._update_tag:       str                      = ""
         self._update_url:       str                      = ""
         self._update_dl_worker: UpdateDownloadWorker | None = None
+        self._pending_silent_update_popup: bool = False
 
         # Storage capacity indicator state
         self._storage_worker: StorageWorker | None = None
@@ -697,6 +754,7 @@ class MochaTools(QMainWindow):
     def _check_for_updates(self, silent: bool = False):
         self.check_update_btn.setEnabled(False)
         self.update_status_lbl.setText("Checking for updates…")
+        self._pending_silent_update_popup = silent
         w = UpdateCheckWorker(self)
         w.update_available.connect(self._on_update_available)
         w.up_to_date.connect(lambda: self._on_up_to_date(silent))
@@ -714,6 +772,103 @@ class MochaTools(QMainWindow):
                 f"Update {tag} available — no binary for this platform. "
                 "Download manually from github.com/nxllxvxxd2/Mocha-Tools/releases"
             )
+            return
+
+        # Only pop up the startup-launch notification dialog (not on a
+        # manual "Check for updates" click — the Settings tab already
+        # reflects the new state for that case) and only if the user
+        # hasn't chosen to skip this specific version.
+        if getattr(self, "_pending_silent_update_popup", False):
+            self._pending_silent_update_popup = False
+            skipped = QSettings(ORG_NAME, APP_NAME).value("skip_update_tag", "")
+            if skipped != tag:
+                self._show_update_available_popup(tag, notes)
+
+    def _show_update_available_popup(self, tag: str, notes: str):
+        """
+        Startup notification: lets the user update now, snooze, or skip
+        this version. Built on MochaDialog so its titlebar (◆ + title +
+        close button, draggable) matches every other dialog in the app,
+        instead of a generic OS-chrome dialog.
+        """
+        whats_new_md = _parse_release_notes_md(notes)
+
+        # Pre-compute a width wide enough that the three buttons never clip
+        # (this is what caused "kip This Versio" / "emind Me Late" before),
+        # while keeping a sane floor for the body text.
+        _tmp_row = QHBoxLayout()
+        _tmp_buttons = [QPushButton(t) for t in ("Update Now", "Skip This Version", "Remind Me Later")]
+        for b in _tmp_buttons:
+            b.setMinimumHeight(32)
+            _tmp_row.addWidget(b)
+        btn_row_width = _tmp_row.sizeHint().width()
+        for b in _tmp_buttons:
+            b.deleteLater()
+        dlg_width = max(460, btn_row_width + 28 * 2 + 8)
+
+        dlg = MochaDialog("Update available", self, min_size=(dlg_width, 160))
+        lay = dlg.content_layout
+        grip_item = lay.takeAt(lay.count() - 1)  # pop the size-grip row, re-add at the end
+
+        header = QLabel(f"Mocha Tools {tag} is available (you have {APP_VERSION}).")
+        header.setWordWrap(True)
+        header.setStyleSheet("font-size: 14px; font-weight: 600; background: transparent;")
+        lay.addWidget(header)
+
+        if whats_new_md:
+            body = QLabel()
+            body.setTextFormat(Qt.TextFormat.MarkdownText)
+            body.setWordWrap(True)
+            body.setOpenExternalLinks(True)
+            body.setText(f"**What's New**\n\n{whats_new_md}")
+            body.setStyleSheet("background: transparent;")
+            lay.addWidget(body)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        update_btn = QPushButton("Update Now")
+        skip_btn   = QPushButton("Skip This Version")
+        later_btn  = QPushButton("Remind Me Later")
+        for b in (update_btn, skip_btn, later_btn):
+            b.setMinimumHeight(32)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn_row.addWidget(b)
+        lay.addLayout(btn_row)
+
+        try:
+            acc = get_accent()
+            update_btn.setStyleSheet(
+                f"background: {acc}; color: #111010; font-weight: 700; "
+                f"border: none; border-radius: 6px; padding: 4px 16px;"
+            )
+            for b in (skip_btn, later_btn):
+                b.setStyleSheet("border-radius: 6px; padding: 4px 16px;")
+        except Exception:
+            pass
+
+        if grip_item:
+            lay.addItem(grip_item)
+
+        result_holder = {"clicked": None}
+
+        def _set_clicked(name):
+            result_holder["clicked"] = name
+            dlg.accept()
+
+        update_btn.clicked.connect(lambda: _set_clicked("update"))
+        skip_btn.clicked.connect(lambda: _set_clicked("skip"))
+        later_btn.clicked.connect(lambda: _set_clicked("later"))
+
+        dlg.exec()
+        clicked = result_holder["clicked"]
+
+        if clicked == "update":
+            self.tabs.setCurrentIndex(5)
+            self._install_update()
+        elif clicked == "skip":
+            QSettings(ORG_NAME, APP_NAME).setValue("skip_update_tag", tag)
+        # "later" (or dialog dismissed via Esc/X) → do nothing further;
+        # it'll be offered again on the next launch.
 
     def _on_up_to_date(self, silent: bool):
         self.update_status_lbl.setText(f"You're up to date ({APP_VERSION})")
