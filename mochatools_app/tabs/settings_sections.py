@@ -406,7 +406,12 @@ def build_updates_tab(win, lay: QVBoxLayout):
 	card_lay = QVBoxLayout(card)
 	card_lay.setSpacing(8)
 
-	win.update_status_lbl = QLabel(f"Current version: {APP_VERSION}")
+	try:
+		from ..updater import _is_portable_windows
+		_portable_suffix = " (portable)" if _is_portable_windows() else ""
+	except Exception:
+		_portable_suffix = ""
+	win.update_status_lbl = QLabel(f"Current version: {APP_VERSION}{_portable_suffix}")
 	win.update_status_lbl.setObjectName("field_label")
 	win.update_status_lbl.setWordWrap(True)
 	card_lay.addWidget(win.update_status_lbl)
@@ -445,6 +450,18 @@ def build_updates_tab(win, lay: QVBoxLayout):
 		))
 	except Exception:
 		pass
+
+	win.release_info_btn = QPushButton("Release info")
+	win.release_info_btn.setObjectName("browse_btn")
+	win.release_info_btn.setFixedHeight(36)
+	win.release_info_btn.setStyleSheet(
+		"min-height:0px; padding:0px 16px; font-size:13px; font-weight:600;"
+		"background:#1e1c19; color:#f0ece6; border:1px solid #3d3a35; border-radius:7px;"
+	)
+	win.release_info_btn.clicked.connect(win._show_release_info)
+	win.release_info_btn.hide()
+	btn_row.addWidget(win.release_info_btn)
+
 	btn_row.addStretch()
 	card_lay.addLayout(btn_row)
 

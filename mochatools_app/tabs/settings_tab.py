@@ -646,7 +646,12 @@ def _build_updates_section(win, lay: QVBoxLayout):
     card_lay = QVBoxLayout(card)
     card_lay.setSpacing(8)
 
-    win.update_status_lbl = QLabel(f"Current version: {APP_VERSION}")
+    try:
+        from ..updater import _is_portable_windows
+        _portable_suffix = " (portable)" if _is_portable_windows() else ""
+    except Exception:
+        _portable_suffix = ""
+    win.update_status_lbl = QLabel(f"Current version: {APP_VERSION}{_portable_suffix}")
     win.update_status_lbl.setObjectName("field_label")
     win.update_status_lbl.setWordWrap(True)
     card_lay.addWidget(win.update_status_lbl)

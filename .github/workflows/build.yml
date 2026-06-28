@@ -115,12 +115,23 @@ jobs:
           name: debian_ubuntu-tar-${{ env.VERSION }}
           path: MochaTools-${{ env.VERSION }}-linux.tar.gz
 
+      - name: Rename portable exe (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          # The raw PyInstaller output has no version in its name and would
+          # collide across releases once attached to the GitHub release.
+          # updater.py's _asset_name() looks for this exact pattern when the
+          # app detects it's running as the portable (no-installer) build —
+          # see _is_portable_windows() in updater.py.
+          cp "dist/Mocha Tools.exe" "MochaTools-Portable-${{ env.VERSION }}.exe"
+
       - name: Upload portable exe (Windows)
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
           name: windows-portable-${{ env.VERSION }}
-          path: dist/Mocha Tools.exe
+          path: MochaTools-Portable-${{ env.VERSION }}.exe
 
       - name: Upload installer exe (Windows)
         if: matrix.os == 'windows-latest'

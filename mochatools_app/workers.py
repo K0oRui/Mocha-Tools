@@ -246,6 +246,79 @@ class UploadWorker(QThread):
         dest_dir  = dest_dir.rstrip("/") + "/"
         mime_type = mimetypes.guess_type(local_path)[0] or "application/octet-stream"
 
+        # ── Hold the file open for the whole upload ─────────────────────────
+        # This is a "guard" handle: we never read from it, it exists purely
+        # to keep an open file descriptor alive for the entire upload.
+        #
+        # On Windows, CPython's open() does NOT request FILE_SHARE_DELETE by
+        # default, so simply having this handle open already makes Explorer
+        # (and os.remove/os.rename from any process) fail with "the process
+        # cannot access the file because it is being used by another
+        # process" for as long as it's held — no special locking API needed.
+        # Without this, each chunk in upload_part() below opens+closes its
+        # own short-lived handle, leaving long windows between chunks (and
+        # before the first chunk, during the multipart/init network
+        # round-trip) where nothing is open and the file can be deleted or
+        # moved out from under the upload, corrupting it part-way through.
+        #
+        # On Linux/macOS this same open() does NOT block delete/rename
+        # (POSIX allows unlinking a file that's still open — the data stays
+        # readable via existing handles until the last one closes), so this
+        # is best-effort there: it still lets us detect a vanished/replaced
+        # file via the stat check below, it just can't stop the deletion
+        # itself.
+        try:
+            guard_fh = open(local_path, "rb")
+        except OSError as e:
+            raise RuntimeError(f"Couldn't open {file_name!r} for upload: {e}") from e
+
+        try:
+            try:
+                guard_stat = os.fstat(guard_fh.fileno())
+            except OSError:
+                guard_stat = None
+
+            def _verify_file_unchanged():
+                """
+                Best-effort check that the file we locked hasn't been
+                replaced in-place (same path, different underlying file)
+                since we opened the guard handle. Cheap — just an fstat,
+                no extra I/O — so safe to call before every chunk read.
+                """
+                if guard_stat is None:
+                    return
+                try:
+                    current = os.stat(local_path)
+                except OSError as e:
+                    raise RuntimeError(
+                        f"{file_name} was deleted or moved during upload: {e}"
+                    ) from e
+                # On POSIX, st_ino/st_dev identify the same underlying file
+                # even after a rename; on Windows these aren't reliable for
+                # this purpose, so fall back to a size sanity-check there.
+                if os.name != "nt":
+                    if (current.st_ino, current.st_dev) != (guard_stat.st_ino, guard_stat.st_dev):
+                        raise RuntimeError(
+                            f"{file_name} was replaced during upload (different file at the same path)"
+                        )
+                elif current.st_size != guard_stat.st_size:
+                    raise RuntimeError(
+                        f"{file_name} changed size during upload "
+                        f"(was {guard_stat.st_size} bytes, now {current.st_size})"
+                    )
+
+            return self._do_multipart_upload(
+                file_size, local_path, dest_path, file_name, dest_dir, mime_type,
+                bytes_progress_cb=bytes_progress_cb,
+                verify_file_unchanged=_verify_file_unchanged,
+            )
+        finally:
+            guard_fh.close()
+
+    def _do_multipart_upload(self, file_size, local_path, dest_path, file_name,
+                              dest_dir, mime_type, bytes_progress_cb=None,
+                              verify_file_unchanged=None):
+
         # Debug: log request details (excluding sensitive data)
         url = f"{self.base_url}/api/files/multipart/init"
         payload = {
@@ -355,6 +428,8 @@ class UploadWorker(QThread):
             read_size = min(chunk_size, file_size - offset)
             if self._cancel:
                 return None
+            if verify_file_unchanged is not None:
+                verify_file_unchanged()
             with open(local_path, "rb") as part_file:
                 part_file.seek(offset)
                 chunk = part_file.read(read_size)

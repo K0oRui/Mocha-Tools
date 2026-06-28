@@ -116,6 +116,7 @@ class MochaTools(QMainWindow):
         # Update worker state
         self._update_tag:       str                      = ""
         self._update_url:       str                      = ""
+        self._update_notes:     str                      = ""
         self._update_dl_worker: UpdateDownloadWorker | None = None
         self._pending_silent_update_popup: bool = False
 
@@ -765,8 +766,10 @@ class MochaTools(QMainWindow):
     def _on_update_available(self, tag: str, url: str, notes: str):
         self._update_tag = tag
         self._update_url = url
+        self._update_notes = notes
         self.update_status_lbl.setText(f"Update available: {tag}  (current: {APP_VERSION})")
         self.install_update_btn.setVisible(bool(url))
+        self.release_info_btn.setVisible(bool(url))
         if not url:
             self.update_status_lbl.setText(
                 f"Update {tag} available — no binary for this platform. "
@@ -784,27 +787,36 @@ class MochaTools(QMainWindow):
             if skipped != tag:
                 self._show_update_available_popup(tag, notes)
 
-    def _show_update_available_popup(self, tag: str, notes: str):
+    def _build_release_info_dialog(self, tag: str, notes: str, with_buttons: bool = True):
         """
-        Startup notification: lets the user update now, snooze, or skip
-        this version. Built on MochaDialog so its titlebar (◆ + title +
-        close button, draggable) matches every other dialog in the app,
-        instead of a generic OS-chrome dialog.
+        Builds the MochaDialog shared by both the startup "update available"
+        popup and the Settings → "Release Info" button, so the two always
+        render identically. When with_buttons is False, the dialog shows
+        only the header + "What's New" markdown (no Update/Skip/Remind Me
+        buttons) — used for the Settings-tab "Release Info" view.
+
+        Returns (dlg, update_btn, skip_btn, later_btn) — the latter three
+        are None when with_buttons is False.
         """
         whats_new_md = _parse_release_notes_md(notes)
 
-        # Pre-compute a width wide enough that the three buttons never clip
-        # (this is what caused "kip This Versio" / "emind Me Late" before),
-        # while keeping a sane floor for the body text.
-        _tmp_row = QHBoxLayout()
-        _tmp_buttons = [QPushButton(t) for t in ("Update Now", "Skip This Version", "Remind Me Later")]
-        for b in _tmp_buttons:
-            b.setMinimumHeight(32)
-            _tmp_row.addWidget(b)
-        btn_row_width = _tmp_row.sizeHint().width()
-        for b in _tmp_buttons:
-            b.deleteLater()
-        dlg_width = max(460, btn_row_width + 28 * 2 + 8)
+        update_btn = skip_btn = later_btn = None
+
+        if with_buttons:
+            # Pre-compute a width wide enough that the three buttons never
+            # clip (this is what caused "kip This Versio" / "emind Me
+            # Later" before), while keeping a sane floor for the body text.
+            _tmp_row = QHBoxLayout()
+            _tmp_buttons = [QPushButton(t) for t in ("Update Now", "Skip This Version", "Remind Me Later")]
+            for b in _tmp_buttons:
+                b.setMinimumHeight(32)
+                _tmp_row.addWidget(b)
+            btn_row_width = _tmp_row.sizeHint().width()
+            for b in _tmp_buttons:
+                b.deleteLater()
+            dlg_width = max(460, btn_row_width + 28 * 2 + 8)
+        else:
+            dlg_width = 460
 
         dlg = MochaDialog("Update available", self, min_size=(dlg_width, 160))
         lay = dlg.content_layout
@@ -824,30 +836,44 @@ class MochaTools(QMainWindow):
             body.setStyleSheet("background: transparent;")
             lay.addWidget(body)
 
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        update_btn = QPushButton("Update Now")
-        skip_btn   = QPushButton("Skip This Version")
-        later_btn  = QPushButton("Remind Me Later")
-        for b in (update_btn, skip_btn, later_btn):
-            b.setMinimumHeight(32)
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn_row.addWidget(b)
-        lay.addLayout(btn_row)
+        if with_buttons:
+            btn_row = QHBoxLayout()
+            btn_row.addStretch()
+            update_btn = QPushButton("Update Now")
+            skip_btn   = QPushButton("Skip This Version")
+            later_btn  = QPushButton("Remind Me Later")
+            for b in (update_btn, skip_btn, later_btn):
+                b.setMinimumHeight(32)
+                b.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn_row.addWidget(b)
+            lay.addLayout(btn_row)
 
-        try:
-            acc = get_accent()
-            update_btn.setStyleSheet(
-                f"background: {acc}; color: #111010; font-weight: 700; "
-                f"border: none; border-radius: 6px; padding: 4px 16px;"
-            )
-            for b in (skip_btn, later_btn):
-                b.setStyleSheet("border-radius: 6px; padding: 4px 16px;")
-        except Exception:
-            pass
+            try:
+                acc = get_accent()
+                update_btn.setStyleSheet(
+                    f"background: {acc}; color: #111010; font-weight: 700; "
+                    f"border: none; border-radius: 6px; padding: 4px 16px;"
+                )
+                for b in (skip_btn, later_btn):
+                    b.setStyleSheet("border-radius: 6px; padding: 4px 16px;")
+            except Exception:
+                pass
 
         if grip_item:
             lay.addItem(grip_item)
+
+        return dlg, update_btn, skip_btn, later_btn
+
+    def _show_update_available_popup(self, tag: str, notes: str):
+        """
+        Startup notification: lets the user update now, snooze, or skip
+        this version. Built on MochaDialog so its titlebar (◆ + title +
+        close button, draggable) matches every other dialog in the app,
+        instead of a generic OS-chrome dialog.
+        """
+        dlg, update_btn, skip_btn, later_btn = self._build_release_info_dialog(
+            tag, notes, with_buttons=True
+        )
 
         result_holder = {"clicked": None}
 
@@ -870,9 +896,29 @@ class MochaTools(QMainWindow):
         # "later" (or dialog dismissed via Esc/X) → do nothing further;
         # it'll be offered again on the next launch.
 
+    def _show_release_info(self):
+        """
+        Settings → "Release Info" button. Shows the exact same dialog as
+        the startup update popup (same MochaDialog titlebar, same header
+        line, same "What's New" markdown) but with no action buttons —
+        just the release info, for whatever update was last found.
+        """
+        if not self._update_tag:
+            return
+        dlg, _u, _s, _l = self._build_release_info_dialog(
+            self._update_tag, self._update_notes, with_buttons=False
+        )
+        dlg.exec()
+
     def _on_up_to_date(self, silent: bool):
-        self.update_status_lbl.setText(f"You're up to date ({APP_VERSION})")
+        try:
+            from .updater import _is_portable_windows
+            _portable_suffix = " (portable)" if _is_portable_windows() else ""
+        except Exception:
+            _portable_suffix = ""
+        self.update_status_lbl.setText(f"You're up to date ({APP_VERSION}{_portable_suffix})")
         self.install_update_btn.hide()
+        self.release_info_btn.hide()
         if not silent:
             QMessageBox.information(self, "Up to date",
                                     f"Mocha Tools {APP_VERSION} is the latest version.")
@@ -903,6 +949,7 @@ class MochaTools(QMainWindow):
         self._update_bat_path = bat_path
         self.update_progress.setValue(100)
         self.install_update_btn.hide()
+        self.release_info_btn.hide()
         result = QMessageBox.question(
             self, "Restart required",
             f"Mocha Tools {self._update_tag} has been installed.\n\nRestart now?",
@@ -916,6 +963,7 @@ class MochaTools(QMainWindow):
     def _on_update_done(self):
         self.update_progress.setValue(100)
         self.install_update_btn.hide()
+        self.release_info_btn.hide()
         QMessageBox.information(
             self, "Update installed",
             f"Mocha Tools {self._update_tag} has been installed.\n\n"
@@ -946,6 +994,7 @@ class MochaTools(QMainWindow):
         self.update_progress.show()
         self.check_update_btn.setEnabled(False)
         self.install_update_btn.hide()
+        self.release_info_btn.hide()
 
         def _fetch():
             try:
@@ -1493,7 +1542,7 @@ def main():
 
     if test_update:
         QTimer.singleShot(500, win._trigger_test_update)
-    else:
+    elif getattr(win, "check_updates_on_launch_cb", None) is None or win.check_updates_on_launch_cb.isChecked():
         QTimer.singleShot(2000, lambda: win._check_for_updates(silent=True))
 
     sys.exit(app.exec())
