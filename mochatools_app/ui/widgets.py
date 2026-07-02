@@ -44,7 +44,8 @@ class DropZone(QFrame):
 
         icon = QLabel("↑")
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setStyleSheet("color: #4a4a4a; font-size: 24px; background: transparent;")
+        from ..theme import get_accent as _ga
+        icon.setStyleSheet(f"color: {_ga()}; font-size: 28px; font-weight: 700; background: transparent;")
 
         row = QHBoxLayout()
         row.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -268,11 +269,15 @@ class FullWidthTabWidget(QWidget):
         try:
             from ..theme import get_background_palette
             pal = get_background_palette()
+            bg0 = pal["bg0"]
             bg1 = pal["bg1"]
             border = pal["border"]
         except Exception:
-            bg1, border = "#181614", "#2e2b27"
+            bg0, bg1, border = "#111010", "#181614", "#2e2b27"
         try:
+            # Segmented-pill nav sits on the root background so the active
+            # pill reads as a floating chip; a hairline separates it from
+            # the content area below.
             self._bar.setStyleSheet(
                 "QWidget#tabbar_row {"
                 f"  background: {bg1};"
@@ -282,7 +287,7 @@ class FullWidthTabWidget(QWidget):
         except Exception:
             pass
         try:
-            self._stack.setStyleSheet(f"QStackedWidget {{ background: {bg1}; }}")
+            self._stack.setStyleSheet(f"QStackedWidget {{ background: {bg0}; }}")
         except Exception:
             pass
 
@@ -340,6 +345,10 @@ class FullWidthTabWidget(QWidget):
     def _btn_style(active: bool) -> str:
         # Build tab button CSS dynamically from current accent + background
         # theme so the tab bar updates immediately when either changes.
+        #
+        # Modern "segmented pill" navigation: the active tab is a rounded,
+        # accent-tinted pill with accent text; inactive tabs are quiet and
+        # light up softly on hover. Replaces the old underline tab style.
         try:
             from ..theme import get_accent, get_font
             from ..styles import compute_accent_variants
@@ -357,20 +366,35 @@ class FullWidthTabWidget(QWidget):
             text_dim = pal["text_dim"]
             text_muted = pal["text_muted"]
             border2 = pal["border2"]
+            bg3 = pal["bg3"]
         except Exception:
-            text_dim, text_muted, border2 = "#5a5650", "#9c9484", "#3d3a35"
+            text_dim, text_muted, border2, bg3 = "#5a5650", "#9c9484", "#3d3a35", "#1e1c19"
+
+        # Derive accent-tinted rgba fills for the active pill + hover state.
+        def _rgba(hex_str, alpha):
+            try:
+                h = hex_str.lstrip("#")
+                r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+                return f"rgba({r}, {g}, {b}, {alpha})"
+            except Exception:
+                return hex_str
+
+        pill = _rgba(acc, 34)          # active pill fill (~13% accent)
+        pill_hover = _rgba(acc, 48)
+        hover_bg = _rgba(border2, 45)  # inactive hover fill
 
         if active:
             return (
-                f"QPushButton {{ background:transparent; color:{acc}; border:none;"
-                f" border-bottom:2px solid {acc}; padding:11px 22px 9px 22px;"
-                f" font-size:{int(fsz)}px; font-weight:600; letter-spacing:0.2px; border-radius:0px; }}"
+                f"QPushButton {{ background:{pill}; color:{acc}; border:none;"
+                f" border-radius:9px; padding:9px 20px; margin:6px 3px;"
+                f" font-size:{int(fsz)}px; font-weight:700; letter-spacing:0.2px; }}"
+                f"QPushButton:hover {{ background:{pill_hover}; }}"
             )
         return (
-            f"QPushButton {{ background:transparent; color:{text_dim}; border:none;"
-            f" border-bottom:2px solid transparent; padding:11px 22px 9px 22px;"
-            f" font-size:{int(fsz)}px; font-weight:600; letter-spacing:0.2px; border-radius:0px; }}"
-            f"QPushButton:hover {{ color:{text_muted}; border-bottom:2px solid {border2}; }}"
+            f"QPushButton {{ background:transparent; color:{text_muted}; border:none;"
+            f" border-radius:9px; padding:9px 20px; margin:6px 3px;"
+            f" font-size:{int(fsz)}px; font-weight:600; letter-spacing:0.2px; }}"
+            f"QPushButton:hover {{ background:{hover_bg}; color:{acc}; }}"
         )
 
 
@@ -383,11 +407,11 @@ class CustomTitleBar(QFrame):
         super().__init__(parent)
         self._window   = window
         self.setObjectName("titlebar")
-        self.setFixedHeight(42)
+        self.setFixedHeight(34)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(14, 0, 8, 0)
+        lay.setContentsMargins(12, 0, 6, 0)
         lay.setSpacing(0)
 
         # Coffee icon (clickable) + app name — keep original QLabel appearance
@@ -429,12 +453,30 @@ class CustomTitleBar(QFrame):
         self._storage_lbl.hide()
         lay.addWidget(self._storage_lbl)
 
+        # Detect whether the parent window still uses a hand-drawn frame.
+        # With a normal native OS frame the operating system already provides
+        # minimise/maximise/close buttons plus drag-to-move, so our own copies
+        # would be redundant. We only show them in the legacy frameless mode.
+        try:
+            self._native_frame = not bool(
+                window.windowFlags() & Qt.WindowType.FramelessWindowHint
+            )
+        except Exception:
+            self._native_frame = False
+
         self._min_btn = self._make_btn("tb_minmax", "minus",  "#5a5650", 13, "Minimise",        window.showMinimized)
         self._max_btn = self._make_btn("tb_minmax", "square", "#5a5650", 11, "Maximise",        self._toggle_maximise)
         self._cls_btn = self._make_btn("tb_close",  "x",      "#5a5650", 13, "Close",           window.close)
 
-        for btn in (self._min_btn, self._max_btn, self._cls_btn):
-            lay.addWidget(btn)
+        if self._native_frame:
+            # Native frame: the OS draws the window controls, so hide ours and
+            # keep this bar as a slim in-app header (icon, name, version, and
+            # the storage / ETA indicators).
+            for btn in (self._min_btn, self._max_btn, self._cls_btn):
+                btn.hide()
+        else:
+            for btn in (self._min_btn, self._max_btn, self._cls_btn):
+                lay.addWidget(btn)
 
     def _make_btn(self, obj_name, icon_name, color, icon_size, tooltip, slot) -> QPushButton:
         btn = QPushButton()
@@ -463,11 +505,12 @@ class CustomTitleBar(QFrame):
     # ── Maximise / restore ────────────────────────────────────────────────────
 
     def _toggle_maximise(self):
+        # NOTE: the old frameless mode capped the window at 640px wide and had
+        # to lift the cap before maximising. The app now uses a native frame
+        # with no width cap, so we simply toggle maximise/restore.
         if self._window.isMaximized():
-            self._window.setMaximumWidth(640)
             self._window.showNormal()
         else:
-            self._window.setMaximumWidth(16777215)  # QWIDGETSIZE_MAX
             self._window.showMaximized()
         self._sync_max_icon()
 
@@ -507,7 +550,16 @@ class CustomTitleBar(QFrame):
     # ── Drag-to-move ──────────────────────────────────────────────────────────
 
     def mousePressEvent(self, event):
+        # With a native OS frame the system titlebar handles moving the
+        # window, so this in-app header should not intercept drags.
+        if getattr(self, "_native_frame", False):
+            super().mousePressEvent(event)
+            return
         if event.button() == Qt.MouseButton.LeftButton:
+            try:
+                self._window._titlebar_dragging = True
+            except Exception:
+                pass
             # startSystemMove() works on both X11 and Wayland.
             # Manual move() calls are silently ignored by Wayland compositors,
             # so the old _drag_pos approach only ever worked on X11.
@@ -517,11 +569,40 @@ class CustomTitleBar(QFrame):
             event.accept()
 
     def mouseMoveEvent(self, event):
+        if getattr(self, "_native_frame", False):
+            super().mouseMoveEvent(event)
+            return
         event.accept()
 
     def mouseReleaseEvent(self, event):
+        if getattr(self, "_native_frame", False):
+            super().mouseReleaseEvent(event)
+            return
+        try:
+            self._window._titlebar_dragging = False
+        except Exception:
+            pass
+        try:
+            if event.button() == Qt.MouseButton.LeftButton and not self._window.isMaximized():
+                try:
+                    gp = event.globalPosition().toPoint()
+                except Exception:
+                    gp = event.globalPos()
+                screen = self._window.screen()
+                if screen is not None:
+                    top = screen.availableGeometry().top()
+                    if gp.y() <= top + 3:
+                        self._window.showMaximized()
+                        self._sync_max_icon()
+        except Exception:
+            pass
         event.accept()
 
     def mouseDoubleClickEvent(self, event):
+        # Native frame: let the OS handle double-click-to-maximise on its own
+        # titlebar; our in-app header should stay passive.
+        if getattr(self, "_native_frame", False):
+            super().mouseDoubleClickEvent(event)
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             self._toggle_maximise()

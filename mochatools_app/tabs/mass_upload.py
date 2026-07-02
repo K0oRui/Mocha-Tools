@@ -88,7 +88,10 @@ class MassUploadSection(QWidget):
 
     def _build_drop_section(self, parent_lay: QVBoxLayout):
         from ..ui.widgets import DropZone
-        parent_lay.addWidget(self._sh("Multi-Upload"))
+        # The Upload tab's mode switcher already labels this view "Multiple
+        # files", so use a plain section header here for consistency with the
+        # single-file view ("File" / "Files").
+        parent_lay.addWidget(self._sh("Files"))
 
         add_card = self._card()
         add_lay  = QVBoxLayout(add_card)

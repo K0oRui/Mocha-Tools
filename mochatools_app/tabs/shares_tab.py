@@ -100,15 +100,38 @@ class SharesTab(QWidget):
         self.tree.itemSelectionChanged.connect(self._on_selection_changed)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._context_menu)
+        # Readability: zebra striping, roomier uniform rows, and middle-elide
+        # so long filenames / share links stay legible instead of clipping.
+        self.tree.setAlternatingRowColors(True)
+        self.tree.setUniformRowHeights(True)
+        self.tree.setIndentation(10)
+        try:
+            self.tree.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        except Exception:
+            pass
 
         from PyQt6.QtWidgets import QHeaderView
         hdr = self.tree.header()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        hdr.setStretchLastSection(True)
-        hdr.resizeSection(0, 220)   # File
-        hdr.resizeSection(1, 320)   # Share Link
-        hdr.resizeSection(2, 90)    # Active
-        hdr.resizeSection(3, 100)   # Expires
+        hdr.setHighlightSections(False)
+        # Hide the native sort-indicator arrow (see files_tab): under Fusion it
+        # renders as a boxed square that QSS can't restyle. Clicking a header
+        # still sorts the column.
+        hdr.setSortIndicatorShown(False)
+        # File name and share link are the important, variable-width columns;
+        # let the link column stretch to fill and keep the rest fixed.
+        try:
+            hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+            hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+            hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+            hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        except Exception:
+            pass
+        hdr.setStretchLastSection(False)
+        hdr.resizeSection(0, 240)   # File
+        hdr.resizeSection(1, 340)   # Share Link
+        hdr.resizeSection(2, 92)    # Active
+        hdr.resizeSection(3, 108)   # Expires
         parent_lay.addWidget(self.tree, 1)
 
     def _build_copy_bar(self, parent_lay: QVBoxLayout):
@@ -227,6 +250,9 @@ class SharesTab(QWidget):
             self._on_selection_changed()
 
         self.tree.setSortingEnabled(True)
+        # setSortingEnabled(True) re-shows the native sort arrow each refresh;
+        # re-hide it (it renders as a boxed square under the Fusion style).
+        self.tree.header().setSortIndicatorShown(False)
         count = self.tree.topLevelItemCount()
         self._status(f"{count} share{'s' if count != 1 else ''}")
 

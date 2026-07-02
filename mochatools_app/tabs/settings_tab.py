@@ -96,27 +96,94 @@ def build_settings_tab(win) -> QWidget:
         win.acc_b = _shared_spinbox(0, 255, int(DEFAULT_ACCENT[5:7], 16), "", "Blue component (0–255)")
         win.acc_b.setFixedWidth(80)
 
+        # ── Accent colour picker ─────────────────────────────────────────────
+        # A large, clickable colour preview that opens a full colour wheel,
+        # shown alongside the hex value. The RGB spin rows above stay as a
+        # fine-tuning option. This makes "how do I change the colour?" obvious.
+        pick_row = QHBoxLayout(); pick_row.setContentsMargins(0, 2, 0, 2); pick_row.setSpacing(10)
+        pick_lbl = QLabel("Accent colour"); pick_lbl.setObjectName("field_label")
+        try:
+            from PyQt6.QtWidgets import QSizePolicy as _SP
+            pick_lbl.setSizePolicy(_SP.Policy.Fixed, _SP.Policy.Fixed)
+        except Exception:
+            pass
+
+        # Big, obviously-clickable swatch (opens the colour wheel on click).
+        win.acc_swatch = QLabel()
+        win.acc_swatch.setFixedSize(52, 34)
+        win.acc_swatch.setCursor(Qt.CursorShape.PointingHandCursor)
+        win.acc_swatch.setToolTip("Click to open the colour picker")
+        win.acc_swatch.setStyleSheet(
+            f"border:1px solid #2e2b27; border-radius:8px; background:{DEFAULT_ACCENT};"
+        )
+
+        win.acc_hex = QLineEdit(); win.acc_hex.setReadOnly(True); win.acc_hex.setFixedWidth(96)
+        win.acc_hex.setFixedHeight(34)
+        win.acc_hex.setToolTip("Current accent colour (hex)")
+
+        win.acc_pick_btn = QPushButton("Pick colour…")
+        win.acc_pick_btn.setFixedHeight(34)
+        win.acc_pick_btn.setToolTip("Open a colour wheel to choose any accent colour")
+
+        def _open_color_wheel():
+            """Open a full colour-wheel dialog and push the chosen colour into
+            the RGB spin boxes (which update the hex + swatch via their
+            valueChanged handler)."""
+            try:
+                from PyQt6.QtWidgets import QColorDialog
+                from PyQt6.QtGui import QColor
+                cur = QColor(win.acc_hex.text() or DEFAULT_ACCENT)
+                if not cur.isValid():
+                    cur = QColor(DEFAULT_ACCENT)
+                col = QColorDialog.getColor(
+                    cur, win, "Choose accent colour",
+                    QColorDialog.ColorDialogOption.DontUseNativeDialog,
+                )
+                if col.isValid():
+                    win.acc_r.setValue(col.red())
+                    win.acc_g.setValue(col.green())
+                    win.acc_b.setValue(col.blue())
+                    try:
+                        _apply()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        win.acc_pick_btn.clicked.connect(_open_color_wheel)
+        # Clicking the swatch itself also opens the wheel.
+        win.acc_swatch.mousePressEvent = lambda _ev: _open_color_wheel()
+
+        pick_row.addWidget(pick_lbl)
+        pick_row.addWidget(win.acc_swatch)
+        pick_row.addWidget(win.acc_hex)
+        pick_row.addWidget(win.acc_pick_btn)
+        pick_row.addStretch()
+        card_lay.addLayout(pick_row)
+
+        # Subtle helper caption so the interaction is self-explanatory.
+        pick_hint = QLabel("Click the swatch or “Pick colour…” for a colour wheel, or fine-tune with the RGB values below.")
+        pick_hint.setObjectName("field_label")
+        pick_hint.setWordWrap(True)
+        try:
+            pick_hint.setStyleSheet("color:#8a8378; font-size:11px; background:transparent;")
+        except Exception:
+            pass
+        card_lay.addWidget(pick_hint)
+
+        # A thin divider then the RGB fine-tuning controls (secondary).
+        _rgb_div = QFrame(); _rgb_div.setObjectName("divider"); _rgb_div.setFixedHeight(1)
+        card_lay.addWidget(_rgb_div)
+        _rgb_cap = QLabel("Fine-tune (RGB)")
+        _rgb_cap.setObjectName("field_label")
+        try:
+            _rgb_cap.setStyleSheet("color:#8a8378; font-size:11px; font-weight:600; letter-spacing:0.5px; background:transparent;")
+        except Exception:
+            pass
+        card_lay.addWidget(_rgb_cap)
         _add_spin_row(card_lay, "Red", win.acc_r)
         _add_spin_row(card_lay, "Green", win.acc_g)
         _add_spin_row(card_lay, "Blue", win.acc_b)
-
-        # Hex preview + swatch on one compact row
-        hex_row = QHBoxLayout(); hex_row.setContentsMargins(0, 0, 0, 0); hex_row.setSpacing(8)
-        hex_lbl = QLabel("Hex"); hex_lbl.setObjectName("field_label")
-        try:
-            from PyQt6.QtWidgets import QSizePolicy as _SP
-            hex_lbl.setSizePolicy(_SP.Policy.Fixed, _SP.Policy.Fixed)
-        except Exception:
-            pass
-        win.acc_hex = QLineEdit(); win.acc_hex.setReadOnly(True); win.acc_hex.setFixedWidth(100)
-        win.acc_hex.setFixedHeight(34)
-        win.acc_swatch = QLabel(); win.acc_swatch.setFixedSize(36, 34)
-        win.acc_swatch.setStyleSheet(f"border:1px solid #2e2b27; background:{DEFAULT_ACCENT};")
-        hex_row.addWidget(hex_lbl)
-        hex_row.addWidget(win.acc_hex)
-        hex_row.addWidget(win.acc_swatch)
-        hex_row.addStretch()
-        card_lay.addLayout(hex_row)
 
         # Background theme selector (Mocha / White / Black)
         bg_row = QHBoxLayout(); bg_row.setContentsMargins(0, 0, 0, 0); bg_row.setSpacing(8)
@@ -224,7 +291,9 @@ def build_settings_tab(win) -> QWidget:
         try:
             from ..ui.icons import lucide_icon
             from PyQt6.QtCore import QEvent, QSize, QObject
-            from PyQt6.QtCore import Qt
+            # NOTE: Qt is already imported at module scope; importing it again
+            # here would make Python treat `Qt` as a function-local everywhere
+            # in build_settings_tab, breaking earlier uses (UnboundLocalError).
             from PyQt6.QtWidgets import QToolButton
             class _ComboOverlay(QObject):
                 def __init__(self, cmb):
@@ -298,7 +367,7 @@ def build_settings_tab(win) -> QWidget:
             r = win.acc_r.value(); g = win.acc_g.value(); b = win.acc_b.value()
             hx = f"#{r:02x}{g:02x}{b:02x}"
             win.acc_hex.setText(hx)
-            win.acc_swatch.setStyleSheet(f"border:1px solid #2e2b27; background:{hx};")
+            win.acc_swatch.setStyleSheet(f"border:1px solid #2e2b27; border-radius:8px; background:{hx};")
 
         def _apply():
             # Apply accent and font selections to the running app and persist
@@ -754,7 +823,7 @@ def load_settings(win):
             win.acc_hex.setText(accent)
             r = int(accent[1:3], 16); g = int(accent[3:5], 16); b = int(accent[5:7], 16)
             win.acc_r.setValue(r); win.acc_g.setValue(g); win.acc_b.setValue(b)
-            win.acc_swatch.setStyleSheet(f"border:1px solid #2e2b27; background:{accent};")
+            win.acc_swatch.setStyleSheet(f"border:1px solid #2e2b27; border-radius:8px; background:{accent};")
         # legacy swatch used earlier
         if accent and getattr(win, 'accent_swatch', None) is not None:
             win.accent_swatch.setStyleSheet(f"border:1px solid #2e2b27; border-radius:3px; background:{accent};")

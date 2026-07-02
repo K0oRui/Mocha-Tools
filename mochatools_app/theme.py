@@ -31,22 +31,27 @@ DEFAULT_BACKGROUND = "mocha"
 #   text_dim   placeholder/disabled text
 BACKGROUND_THEMES: dict[str, dict[str, str]] = {
 	"mocha": {
-		"bg0": "#111010", "bg1": "#181614", "bg2": "#181614", "bg3": "#1e1c19",
-		"bg4": "#222018", "bg5": "#252320", "bg6": "#3d3a35", "bg7": "#141210",
-		"border": "#2e2b27", "border2": "#3d3a35",
-		"text": "#f0ece6", "text_muted": "#9c9484", "text_dim": "#5a5650",
+		# Layered warm-dark scheme: distinct root → card → input elevation
+		# so panels read as separate surfaces instead of one flat wash.
+		# Wider steps between bg0/bg2/bg3 give clearly-readable depth.
+		"bg0": "#0d0c0b", "bg1": "#1c1a18", "bg2": "#211e1b", "bg3": "#2a2724",
+		"bg4": "#332f2a", "bg5": "#2e2a26", "bg6": "#423d37", "bg7": "#131110",
+		"border": "#34302b", "border2": "#4a453e",
+		"text": "#f4f1eb", "text_muted": "#aca496", "text_dim": "#6f6a60",
 	},
 	"white": {
-		"bg0": "#fafafa", "bg1": "#ffffff", "bg2": "#ffffff", "bg3": "#f2f2f0",
-		"bg4": "#ffffff", "bg5": "#ececea", "bg6": "#dcdad6", "bg7": "#f5f5f3",
-		"border": "#dedcd8", "border2": "#c7c4be",
-		"text": "#191816", "text_muted": "#5d5a54", "text_dim": "#9d9a92",
+		# Warm off-white with a clear card > page > input elevation ladder.
+		"bg0": "#f1f0ed", "bg1": "#ffffff", "bg2": "#ffffff", "bg3": "#f3f2ef",
+		"bg4": "#ffffff", "bg5": "#ebe9e5", "bg6": "#d8d4cd", "bg7": "#f6f5f2",
+		"border": "#e5e2dc", "border2": "#cec9c1",
+		"text": "#1a1815", "text_muted": "#605c55", "text_dim": "#948f86",
 	},
 	"black": {
-		"bg0": "#000000", "bg1": "#0a0a0a", "bg2": "#0a0a0a", "bg3": "#141414",
-		"bg4": "#181818", "bg5": "#1c1c1c", "bg6": "#2c2c2c", "bg7": "#000000",
-		"border": "#242424", "border2": "#333333",
-		"text": "#f0ece6", "text_muted": "#9c9484", "text_dim": "#5a5650",
+		# True-black OLED variant with subtly warm neutral steps.
+		"bg0": "#000000", "bg1": "#0d0d0c", "bg2": "#131311", "bg3": "#1b1a18",
+		"bg4": "#232220", "bg5": "#1f1e1c", "bg6": "#302e2b", "bg7": "#050504",
+		"border": "#282624", "border2": "#3a3733",
+		"text": "#f4f1eb", "text_muted": "#aca496", "text_dim": "#6f6a60",
 	},
 }
 
