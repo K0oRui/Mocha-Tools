@@ -117,12 +117,20 @@ def build_settings_tab(win) -> QWidget:
             f"border:1px solid #2e2b27; border-radius:8px; background:{DEFAULT_ACCENT};"
         )
 
-        win.acc_hex = QLineEdit(); win.acc_hex.setReadOnly(True); win.acc_hex.setFixedWidth(96)
-        win.acc_hex.setFixedHeight(34)
+        win.acc_hex = QLineEdit(); win.acc_hex.setReadOnly(True); win.acc_hex.setFixedSize(130, 34)
         win.acc_hex.setToolTip("Current accent colour (hex)")
 
         win.acc_pick_btn = QPushButton("Pick colour…")
-        win.acc_pick_btn.setFixedHeight(34)
+        win.acc_pick_btn.setObjectName("accent_pick_btn")
+        win.acc_pick_btn.setFixedSize(130, 34)
+        # The app-wide QPushButton{} rule sets padding: 7px 16px and only a
+        # min-height (no max-height), so its content box can render taller
+        # than the fixed size we just set — unlike QLineEdit, which pins
+        # both min-height and max-height itself. Scope out the padding here
+        # so this button can't grow past acc_hex's box.
+        win.acc_pick_btn.setStyleSheet(
+            "QPushButton#accent_pick_btn { padding: 0px 13px; border-radius: 10px; }"
+        )
         win.acc_pick_btn.setToolTip("Open a colour wheel to choose any accent colour")
 
         def _open_color_wheel():
@@ -132,21 +140,37 @@ def build_settings_tab(win) -> QWidget:
             try:
                 from PyQt6.QtWidgets import QColorDialog
                 from PyQt6.QtGui import QColor
+                from PyQt6.QtCore import QTimer
                 cur = QColor(win.acc_hex.text() or DEFAULT_ACCENT)
                 if not cur.isValid():
                     cur = QColor(DEFAULT_ACCENT)
-                col = QColorDialog.getColor(
-                    cur, win, "Choose accent colour",
-                    QColorDialog.ColorDialogOption.DontUseNativeDialog,
-                )
-                if col.isValid():
-                    win.acc_r.setValue(col.red())
-                    win.acc_g.setValue(col.green())
-                    win.acc_b.setValue(col.blue())
+
+                dlg = QColorDialog(cur, win)
+                dlg.setWindowTitle("Choose accent colour")
+                dlg.setOption(QColorDialog.ColorDialogOption.DontUseNativeDialog, True)
+
+                def _style_dialog_spinboxes():
+                    # Qt's built-in colour dialog has its own Hue/Sat/Val/
+                    # Red/Green/Blue QSpinBox fields; give them the same
+                    # lucide chevron overlay as everywhere else in the app.
                     try:
-                        _apply()
+                        for sb in dlg.findChildren(QSpinBox):
+                            _install_lucide_spin_arrows(sb)
                     except Exception:
                         pass
+
+                QTimer.singleShot(0, _style_dialog_spinboxes)
+
+                if dlg.exec() == QColorDialog.DialogCode.Accepted:
+                    col = dlg.currentColor()
+                    if col.isValid():
+                        win.acc_r.setValue(col.red())
+                        win.acc_g.setValue(col.green())
+                        win.acc_b.setValue(col.blue())
+                        try:
+                            _apply()
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
@@ -951,46 +975,17 @@ def _sh(text: str) -> QLabel:
     return lbl
 
 
-def _card() -> QFrame:
-    f = QFrame()
-    f.setObjectName("card")
-    return f
-
-
-def _spinbox(min_val: int, max_val: int, default: int,
-             suffix: str, tooltip: str) -> QSpinBox:
-    """Create a QSpinBox with lucide chevron arrow overlays.
-
-    Delegates to settings_sections._spinbox so the Upload-tab arrow
-    treatment is used everywhere.  A full local implementation is kept
-    as the fallback so the arrows still appear even if the import fails.
+def _install_lucide_spin_arrows(sb: QSpinBox):
+    """Hide a QSpinBox's native up/down buttons and overlay lucide chevron
+    buttons instead. Same visual treatment as the Upload-tab / Fine-tune
+    RGB spinboxes, factored out so it can also be applied to spinboxes we
+    don't build ourselves (e.g. the ones inside Qt's built-in QColorDialog).
     """
     try:
-        from .settings_sections import _spinbox as _shared_spinbox
-        return _shared_spinbox(min_val, max_val, default, suffix, tooltip)
-    except Exception:
-        pass
-
-    # ── Full local fallback (mirrors settings_sections._spinbox) ─────────────
-    sb = QSpinBox()
-    sb.setRange(min_val, max_val)
-    sb.setValue(default)
-    sb.setSuffix(suffix)
-    sb.setToolTip(tooltip)
-    sb.setMaximumWidth(200)
-    try:
-        sb.setFixedHeight(34)
-    except Exception:
-        pass
-
-    # Hide the native up/down buttons via stylesheet so the lucide overlay
-    # buttons are the only visible controls (same approach as Upload tab).
-    sb.setStyleSheet(
-        "QSpinBox::up-button { width: 0px; border: none; }"
-        "QSpinBox::down-button { width: 0px; border: none; }"
-    )
-
-    try:
+        sb.setStyleSheet(
+            "QSpinBox::up-button { width: 0px; border: none; }"
+            "QSpinBox::down-button { width: 0px; border: none; }"
+        )
         from ..ui.icons import lucide_icon
         from PyQt6.QtCore import QEvent, QObject, QSize, QTimer
         from PyQt6.QtCore import Qt as _Qt
@@ -1047,11 +1042,49 @@ def _spinbox(min_val: int, max_val: int, default: int,
                     pass
 
         ov = _SpinOverlay(sb)
-        # Reposition again after layout settles
+        sb._lucide_overlay = ov  # keep a ref so it isn't garbage-collected
         QTimer.singleShot(40,  lambda: ov._reposition())
         QTimer.singleShot(120, lambda: ov._reposition())
+        return ov
+    except Exception:
+        return None
+
+
+def _card() -> QFrame:
+    f = QFrame()
+    f.setObjectName("card")
+    return f
+
+
+def _spinbox(min_val: int, max_val: int, default: int,
+             suffix: str, tooltip: str) -> QSpinBox:
+    """Create a QSpinBox with lucide chevron arrow overlays.
+
+    Delegates to settings_sections._spinbox so the Upload-tab arrow
+    treatment is used everywhere.  A full local implementation is kept
+    as the fallback so the arrows still appear even if the import fails.
+    """
+    try:
+        from .settings_sections import _spinbox as _shared_spinbox
+        return _shared_spinbox(min_val, max_val, default, suffix, tooltip)
     except Exception:
         pass
+
+    # ── Full local fallback (mirrors settings_sections._spinbox) ─────────────
+    sb = QSpinBox()
+    sb.setRange(min_val, max_val)
+    sb.setValue(default)
+    sb.setSuffix(suffix)
+    sb.setToolTip(tooltip)
+    sb.setMaximumWidth(200)
+    try:
+        sb.setFixedHeight(34)
+    except Exception:
+        pass
+
+    # Hide the native up/down buttons and overlay lucide chevrons
+    # (same approach as Upload tab).
+    _install_lucide_spin_arrows(sb)
 
     return sb
 
