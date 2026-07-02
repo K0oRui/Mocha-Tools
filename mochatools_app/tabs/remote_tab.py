@@ -383,6 +383,8 @@ class RemoteTab(QWidget):
         self.result_bar.setText(f"Finished: {name}  Job: {job_id}")
         self.result_bar.show()
         self._status(f"✓ Remote ingest finished: {name}")
+        from ..sound_player import play_sound_event
+        play_sound_event("sound_remote_ingest")
         if self._is_active:
             QMessageBox.information(self, "Remote Ingest Finished", f"{name} finished ingesting.")
 

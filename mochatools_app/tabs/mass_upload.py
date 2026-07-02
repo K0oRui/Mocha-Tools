@@ -645,6 +645,8 @@ class MassUploadSection(QWidget):
         if entry in self._queue and entry.get("item") is not None:
             entry["item"].setText(self._COL_STATUS, "✓ Done")
             entry["item"].setForeground(3, QColor("#4ade80"))
+        from ..sound_player import play_sound_event
+        play_sound_event("sound_mass_file")
         if entry.get("worker") in self._active_workers:
             self._active_workers.remove(entry.get("worker"))
         if self._on_upload_done_cb is not None:
@@ -687,6 +689,8 @@ class MassUploadSection(QWidget):
         else:
             self._set_badge("Complete", "#4ade80")
             self._log("✓ All uploads complete.")
+        from ..sound_player import play_sound_event
+        play_sound_event("sound_mass_all")
 
     def _cancel(self):
         self._cancelled = True

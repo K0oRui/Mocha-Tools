@@ -672,6 +672,8 @@ class MochaTools(QMainWindow):
         self._badge("Complete", "#4ade80")
         self.transferred_label.setText("")
         self._log(f"✓ Done! File ID: {result['file_id']}")
+        from .sound_player import play_sound_event
+        play_sound_event("sound_single_upload")
         upload_path = self.upload_path_edit.text().strip() or "/"
         self._on_upload_done(upload_path)
         if result.get("share_url"):

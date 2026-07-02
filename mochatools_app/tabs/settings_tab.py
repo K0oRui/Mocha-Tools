@@ -53,7 +53,9 @@ def build_settings_tab(win) -> QWidget:
     # "floating" inside a single scroll area which caused the large gap.
 
     # Split settings into tabs for easier maintenance
-    from .settings_sections import build_basic_tab, build_upload_tab, build_updates_tab
+    from .settings_sections import (
+        build_basic_tab, build_upload_tab, build_updates_tab, build_sounds_tab,
+    )
     # Use the app's FullWidthTabWidget so sub-tabs match the main upper tabs
     from ..ui.widgets import FullWidthTabWidget
 
@@ -66,7 +68,8 @@ def build_settings_tab(win) -> QWidget:
     basic_page = QWidget(); basic_l = QVBoxLayout(basic_page); basic_l.setContentsMargins(8, 12, 8, 8); basic_l.setSpacing(12)
     upload_page = QWidget(); upload_l = QVBoxLayout(upload_page); upload_l.setContentsMargins(8, 12, 8, 8); upload_l.setSpacing(12)
     updates_page = QWidget(); updates_l = QVBoxLayout(updates_page); updates_l.setContentsMargins(8, 12, 8, 8); updates_l.setSpacing(12)
-    for p in (basic_page, upload_page, updates_page):
+    sounds_page = QWidget(); sounds_l = QVBoxLayout(sounds_page); sounds_l.setContentsMargins(8, 12, 8, 8); sounds_l.setSpacing(12)
+    for p in (basic_page, upload_page, updates_page, sounds_page):
         try:
             p.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         except Exception:
@@ -75,6 +78,7 @@ def build_settings_tab(win) -> QWidget:
     build_basic_tab(win, basic_l)
     build_upload_tab(win, upload_l)
     build_updates_tab(win, updates_l)
+    build_sounds_tab(win, sounds_l)
 
     # Appearance / Accent tab
     def _build_appearance_tab(win, lay: QVBoxLayout):
@@ -502,10 +506,19 @@ def build_settings_tab(win) -> QWidget:
     appearance_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     appearance_scroll.setStyleSheet("QScrollBar:vertical {width:0px;} QScrollBar:horizontal{height:0px;}")
 
+    sounds_scroll = QScrollArea()
+    sounds_scroll.setWidgetResizable(True)
+    sounds_scroll.setFrameShape(QFrame.Shape.NoFrame)
+    sounds_scroll.setWidget(sounds_page)
+    sounds_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    sounds_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    sounds_scroll.setStyleSheet("QScrollBar:vertical {width:0px;} QScrollBar:horizontal{height:0px;}")
+
     tabs.addTab(basic_scroll, "Basic")
     tabs.addTab(upload_scroll, "Upload")
     tabs.addTab(updates_scroll, "Updates")
     tabs.addTab(appearance_scroll, "UI")
+    tabs.addTab(sounds_scroll, "Sounds")
 
     # When the UI tab becomes visible, raise any overlay buttons that may have
     # been obscured by the tab widget's own paint pass.
@@ -778,6 +791,19 @@ def load_settings(win):
     win.auto_restart_cb.setChecked(
         s.value("auto_restart_after_update", False, type=bool)
     )
+
+    # Sound settings — populate each event's path field from QSettings
+    try:
+        from ..sound_player import SOUND_EVENTS, sound_path
+        for _key, _label in SOUND_EVENTS:
+            widgets = getattr(win, "sound_widgets", {}).get(_key)
+            if not widgets:
+                continue
+            p = sound_path(_key)
+            widgets["edit"].setText(p)
+            widgets["edit"].setToolTip(p)
+    except Exception:
+        pass
     # Accent color — update appearance tab controls if present
     try:
         accent = s.value("accent", None)
@@ -839,6 +865,18 @@ def save_settings(win):
     s.setValue("browser_download",          win.browser_download_cb.isChecked())
     s.setValue("check_updates_on_launch",   win.check_updates_on_launch_cb.isChecked())
     s.setValue("auto_restart_after_update", win.auto_restart_cb.isChecked())
+
+    # Sound settings — already persisted live as they're picked/reset, but
+    # save here too so the on-disk value always matches what's shown.
+    try:
+        from ..sound_player import SOUND_EVENTS, set_sound_path
+        for _key, _label in SOUND_EVENTS:
+            widgets = getattr(win, "sound_widgets", {}).get(_key)
+            if not widgets:
+                continue
+            set_sound_path(_key, widgets["edit"].text().strip())
+    except Exception:
+        pass
 
     cache = win.shares_tab._cache
     if cache is not None:
