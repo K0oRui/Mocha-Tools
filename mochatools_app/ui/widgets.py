@@ -42,10 +42,10 @@ class DropZone(QFrame):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.setSpacing(4)
 
-        icon = QLabel("↑")
-        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._icon_label = QLabel("↑")
+        self._icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         from ..theme import get_accent as _ga
-        icon.setStyleSheet(f"color: {_ga()}; font-size: 28px; font-weight: 700; background: transparent;")
+        self._icon_label.setStyleSheet(f"color: {_ga()}; font-size: 28px; font-weight: 700; background: transparent;")
 
         row = QHBoxLayout()
         row.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -114,11 +114,20 @@ class DropZone(QFrame):
                         self.file_label.update()
                     except Exception:
                         pass
+                try:
+                    # The arrow icon's color is baked into an inline stylesheet
+                    # rather than a QSS token, so it must be rebuilt explicitly
+                    # on every accent change.
+                    self._icon_label.setStyleSheet(
+                        f"color: {_new}; font-size: 28px; font-weight: 700; background: transparent;"
+                    )
+                except Exception:
+                    pass
             notifier().accent_changed.connect(_on_accent_changed)
         except Exception:
             pass
 
-        layout.addWidget(icon)
+        layout.addWidget(self._icon_label)
         layout.addLayout(row)
         layout.addWidget(self.file_label)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
