@@ -1,6 +1,8 @@
+import os
+
 from PyQt6.QtCore import Qt, QObject, QEvent
 from PyQt6.QtWidgets import (
-	QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
+	QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
 	QProgressBar, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 	QAbstractButton, QSizePolicy, QLayout,
 )
@@ -480,5 +482,96 @@ def build_updates_tab(win, lay: QVBoxLayout):
 		"downloading, without showing a confirmation prompt."
 	)
 	card_lay.addWidget(win.auto_restart_cb)
+
+	lay.addWidget(card)
+
+
+# Sounds tab builder
+def build_sounds_tab(win, lay: QVBoxLayout):
+	"""
+	Build the Sounds settings section. Each event gets an optional audio
+	file (any format PyQt6 Multimedia can play), a Browse… button to pick
+	one, and a Reset button to clear it. Events with no file assigned are
+	silent — nothing plays.
+	"""
+	lay.setAlignment(Qt.AlignmentFlag.AlignTop)
+	lay.setSpacing(0)
+	lay.addWidget(_sh("Sounds"))
+	card     = _card()
+	card_lay = QVBoxLayout(card)
+	card_lay.setSpacing(14)
+
+	note = QLabel(
+		"Optionally play a sound for each of these events. Leave one unset "
+		"and nothing plays for it. Any audio format PyQt6 Multimedia can "
+		"decode is supported (WAV, MP3, OGG, FLAC, M4A, and more)."
+	)
+	note.setObjectName("field_label")
+	note.setWordWrap(True)
+	card_lay.addWidget(note)
+
+	from ..sound_player import SOUND_EVENTS, set_sound_path
+
+	win.sound_widgets = {}
+
+	for key, label in SOUND_EVENTS:
+		block = QVBoxLayout()
+		block.setSpacing(4)
+
+		lbl = QLabel(label)
+		lbl.setObjectName("field_label")
+		block.addWidget(lbl)
+
+		row = QHBoxLayout()
+		row.setSpacing(6)
+
+		path_edit = QLineEdit()
+		path_edit.setReadOnly(True)
+		path_edit.setPlaceholderText("No sound selected")
+
+		browse_btn = QPushButton("Browse…")
+		browse_btn.setObjectName("browse_btn")
+		browse_btn.setFixedSize(92, 32)
+		browse_btn.setToolTip(f"Choose a sound file for \u201c{label}\u201d")
+
+		reset_btn = QPushButton("Reset")
+		reset_btn.setObjectName("browse_btn")
+		reset_btn.setFixedSize(70, 32)
+		reset_btn.setToolTip(f"Clear the sound for \u201c{label}\u201d")
+
+		row.addWidget(path_edit, 1)
+		row.addWidget(browse_btn)
+		row.addWidget(reset_btn)
+		block.addLayout(row)
+		card_lay.addLayout(block)
+
+		win.sound_widgets[key] = {
+			"edit": path_edit, "browse": browse_btn, "reset": reset_btn,
+		}
+
+		def _make_browse(k=key, lbl_text=label, edit=path_edit):
+			def _browse():
+				start_dir = os.path.dirname(edit.text()) if edit.text() else ""
+				path, _ = QFileDialog.getOpenFileName(
+					win,
+					f"Select sound for \u201c{lbl_text}\u201d",
+					start_dir,
+					"Audio Files (*.wav *.mp3 *.ogg *.flac *.m4a *.aac *.wma *.opus *.aiff);;All Files (*)",
+				)
+				if path:
+					edit.setText(path)
+					edit.setToolTip(path)
+					set_sound_path(k, path)
+			return _browse
+
+		def _make_reset(k=key, edit=path_edit):
+			def _reset():
+				edit.clear()
+				edit.setToolTip("")
+				set_sound_path(k, "")
+			return _reset
+
+		browse_btn.clicked.connect(_make_browse())
+		reset_btn.clicked.connect(_make_reset())
 
 	lay.addWidget(card)

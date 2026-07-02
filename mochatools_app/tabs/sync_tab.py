@@ -584,6 +584,8 @@ class SyncTab(QWidget):
             # Fallback: assume 'changed' describes the completed files
             uploaded = [rel for _abs, rel in changed]
 
+        from ..sound_player import play_sound_event
+
         for rel_path in uploaded:
             try:
                 abs_path = os.path.join(pair["local"], rel_path)
@@ -596,6 +598,7 @@ class SyncTab(QWidget):
             # clear file_state for completed file
             if pair.get("file_state") and rel_path in pair["file_state"]:
                 pair["file_state"].pop(rel_path, None)
+            play_sound_event("sound_sync_file")
 
         # Try to schedule more uploads
         self._schedule_uploads()
@@ -608,6 +611,7 @@ class SyncTab(QWidget):
             pair["_active_rel"] = None
             self._refresh_pair_badge(pair_id)
             self._save_pairs()
+            play_sound_event("sound_sync_folder")
 
     def _on_upload_error(self, pair_id: str, msg: str):
         pair = self._pairs.get(pair_id)
