@@ -131,12 +131,101 @@ class MochaDialog(QDialog):
         self._drag_pos = None
 
 
+# ── Shared: apply the Mocha titlebar to a dialog we didn't build ─────────────
+def apply_mocha_titlebar(dialog: QDialog, title: str):
+    """Strip a QDialog's native window chrome and install the same dark
+    diamond titlebar MochaDialog draws, including drag-to-move and a
+    themed close (X) button wired to dialog.reject().
+
+    Unlike MochaDialog this doesn't require owning the dialog's __init__ —
+    it works on dialogs built elsewhere (e.g. Qt's own QColorDialog),
+    inserting the titlebar at the top of the dialog's existing layout().
+    """
+    dialog.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+
+    try:
+        from .theme import get_accent, get_font
+        _dot_color = get_accent()
+        _fs = int(get_font()[1])
+    except Exception:
+        _dot_color = "#c8a96e"
+        _fs = 13
+
+    tb = QFrame()
+    tb.setObjectName("titlebar")
+    tb.setFixedHeight(42)
+    tb_lay = QHBoxLayout(tb)
+    tb_lay.setContentsMargins(12, 0, 8, 0)
+    tb_lay.setSpacing(6)
+
+    dot = QLabel("◆")
+    dot.setStyleSheet(f"color:{_dot_color}; font-size:{max(8, _fs-3)}px; background:transparent;")
+    tb_lay.addWidget(dot)
+
+    title_lbl = QLabel()
+    title_lbl.setStyleSheet(
+        f"color:#dcd6cc; font-size:{max(9, _fs-2)}px; font-weight:600;"
+        f" background:transparent; margin-left:6px;"
+    )
+    metrics = title_lbl.fontMetrics()
+    title_lbl.setText(metrics.elidedText(title, Qt.TextElideMode.ElideRight, 320))
+    title_lbl.setToolTip(title)
+    tb_lay.addWidget(title_lbl)
+    tb_lay.addStretch()
+
+    try:
+        from .theme import get_accent as _ga
+        _xcol = _ga()
+    except Exception:
+        _xcol = "#c8a96e"
+    close_btn = QPushButton()
+    close_btn.setIcon(lucide_icon("x", _xcol, 12))
+    close_btn.setObjectName("tb_close")
+    close_btn.setFixedSize(32, 28)
+    close_btn.clicked.connect(dialog.reject)
+    tb_lay.addWidget(close_btn)
+
+    div = QFrame()
+    div.setObjectName("divider")
+    div.setFixedHeight(1)
+
+    lay = dialog.layout()
+    if lay is not None and hasattr(lay, "insertWidget"):
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.insertWidget(0, div)
+        lay.insertWidget(0, tb)
+
+    drag_state = {"pos": None}
+
+    def _press(ev: QMouseEvent):
+        if ev.button() == Qt.MouseButton.LeftButton:
+            drag_state["pos"] = ev.globalPosition().toPoint() - dialog.frameGeometry().topLeft()
+
+    def _move(ev: QMouseEvent):
+        if drag_state["pos"] and ev.buttons() == Qt.MouseButton.LeftButton:
+            dialog.move(ev.globalPosition().toPoint() - drag_state["pos"])
+
+    def _release(ev: QMouseEvent):
+        drag_state["pos"] = None
+
+    tb.mousePressEvent = _press
+    tb.mouseMoveEvent = _move
+    tb.mouseReleaseEvent = _release
+
+    # keep refs alive on the dialog itself
+    dialog._mocha_titlebar = tb
+    dialog._mocha_titlebar_divider = div
+    return tb
+
+
 # ── Shared: styled button helpers ─────────────────────────────────────────────
 def _gold_btn(text: str, width=160) -> QPushButton:
     btn = QPushButton(text)
     btn.setObjectName("upload_btn")
     btn.setFixedSize(width, 36)
     try:
+        from .theme import get_accent
         acc = get_accent()
     except Exception:
         from .theme import DEFAULT_ACCENT
@@ -252,14 +341,27 @@ class FolderBrowserDialog(MochaDialog):
         path_row = QHBoxLayout()
         path_row.setSpacing(6)
 
-        path_icon = QLabel("📂")
         try:
-            from .theme import get_font
-            pfs = int(get_font()[1])
+            from .theme import get_accent
+            _path_icon_col = get_accent()
         except Exception:
-            pfs = 14
-        path_icon.setStyleSheet(f"background:transparent; font-size:{pfs}px;")
-        path_row.addWidget(path_icon)
+            from .theme import DEFAULT_ACCENT
+            _path_icon_col = DEFAULT_ACCENT
+        self.path_icon = QLabel()
+        self.path_icon.setPixmap(lucide_icon("folder", _path_icon_col, 16).pixmap(16, 16))
+        self.path_icon.setStyleSheet("background:transparent;")
+        path_row.addWidget(self.path_icon)
+
+        try:
+            from .theme import notifier
+            def _refresh_path_icon(old, new):
+                try:
+                    self.path_icon.setPixmap(lucide_icon("folder", new, 16).pixmap(16, 16))
+                except Exception:
+                    pass
+            notifier().accent_changed.connect(_refresh_path_icon)
+        except Exception:
+            pass
 
         self.path_edit = QLineEdit(self.current)
         self.path_edit.setPlaceholderText("Type or navigate to a path…")
@@ -269,6 +371,7 @@ class FolderBrowserDialog(MochaDialog):
         go_btn = QPushButton("Go")
         go_btn.setFixedSize(48, 34)
         try:
+            from .theme import get_accent
             acc = get_accent()
             from .styles import compute_accent_variants
             _, acc_hov, _ = compute_accent_variants(acc)
@@ -287,6 +390,7 @@ class FolderBrowserDialog(MochaDialog):
         # ── Folder list ───────────────────────────────────────────────────────
         self.list = QListWidget()
         try:
+            from .theme import get_accent
             acc = get_accent()
             acc_hov = acc + "33"
         except Exception:
@@ -443,6 +547,7 @@ class FolderBrowserDialog(MochaDialog):
             from .theme import accent_qcolor
             item.setForeground(accent_qcolor())
             try:
+                from .theme import get_accent
                 item.setIcon(lucide_icon("folder", get_accent(), 12))
             except Exception:
                 pass
@@ -477,6 +582,7 @@ class FolderBrowserDialog(MochaDialog):
             item = QListWidgetItem(f"{name}")
             item.setData(Qt.ItemDataRole.UserRole, ("dir", fullpath))
             try:
+                from .theme import get_accent
                 item.setIcon(lucide_icon("folder", get_accent(), 12))
             except Exception:
                 pass
