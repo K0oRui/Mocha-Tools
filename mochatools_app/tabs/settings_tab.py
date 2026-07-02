@@ -82,132 +82,69 @@ def build_settings_tab(win) -> QWidget:
         lay.addWidget(_sh("UI"))
         card = _card(); card_lay = QVBoxLayout(card); card_lay.setSpacing(10); card_lay.setContentsMargins(12,8,12,12)
 
-        # Use the shared settings_sections._spinbox implementation so the
-        # accent RGB controls get the exact same lucide arrow treatment as
-        # the Upload tab on Windows.
-        try:
-            from .settings_sections import _spinbox as _shared_spinbox
-        except Exception:
-            _shared_spinbox = _spinbox
-        win.acc_r = _shared_spinbox(0, 255, int(DEFAULT_ACCENT[1:3], 16), "", "Red component (0–255)")
-        win.acc_r.setFixedWidth(80)
-        win.acc_g = _shared_spinbox(0, 255, int(DEFAULT_ACCENT[3:5], 16), "", "Green component (0–255)")
-        win.acc_g.setFixedWidth(80)
-        win.acc_b = _shared_spinbox(0, 255, int(DEFAULT_ACCENT[5:7], 16), "", "Blue component (0–255)")
-        win.acc_b.setFixedWidth(80)
-
         # ── Accent colour picker ─────────────────────────────────────────────
-        # A large, clickable colour preview that opens a full colour wheel,
-        # shown alongside the hex value. The RGB spin rows above stay as a
-        # fine-tuning option. This makes "how do I change the colour?" obvious.
-        pick_row = QHBoxLayout(); pick_row.setContentsMargins(0, 2, 0, 2); pick_row.setSpacing(10)
+        # A small live preview (swatch + hex) above the picker itself.
         pick_lbl = QLabel("Accent colour"); pick_lbl.setObjectName("field_label")
         try:
             from PyQt6.QtWidgets import QSizePolicy as _SP
             pick_lbl.setSizePolicy(_SP.Policy.Fixed, _SP.Policy.Fixed)
         except Exception:
             pass
+        card_lay.addWidget(pick_lbl)
 
-        # Big, obviously-clickable swatch (opens the colour wheel on click).
+        preview_row = QHBoxLayout(); preview_row.setContentsMargins(0, 2, 0, 6); preview_row.setSpacing(10)
         win.acc_swatch = QLabel()
         win.acc_swatch.setFixedSize(52, 34)
-        win.acc_swatch.setCursor(Qt.CursorShape.PointingHandCursor)
-        win.acc_swatch.setToolTip("Click to open the colour picker")
         win.acc_swatch.setStyleSheet(
             f"border:1px solid #2e2b27; border-radius:8px; background:{DEFAULT_ACCENT};"
         )
-
         win.acc_hex = QLineEdit(); win.acc_hex.setReadOnly(True); win.acc_hex.setFixedSize(130, 34)
+        win.acc_hex.setText(DEFAULT_ACCENT)
         win.acc_hex.setToolTip("Current accent colour (hex)")
+        preview_row.addWidget(win.acc_swatch)
+        preview_row.addWidget(win.acc_hex)
+        preview_row.addStretch()
+        card_lay.addLayout(preview_row)
 
-        win.acc_pick_btn = QPushButton("Pick colour…")
-        win.acc_pick_btn.setObjectName("accent_pick_btn")
-        win.acc_pick_btn.setFixedSize(130, 34)
-        # The app-wide QPushButton{} rule sets padding: 7px 16px and only a
-        # min-height (no max-height), so its content box can render taller
-        # than the fixed size we just set — unlike QLineEdit, which pins
-        # both min-height and max-height itself. Scope out the padding here
-        # so this button can't grow past acc_hex's box.
-        win.acc_pick_btn.setStyleSheet(
-            "QPushButton#accent_pick_btn { padding: 0px 13px; border-radius: 10px; }"
-        )
-        win.acc_pick_btn.setToolTip("Open a colour wheel to choose any accent colour")
+        # Embed the colour picker directly in the page instead of opening it
+        # as a separate dialog — there's no point making the user open a
+        # popup for something that fits fine inline.
+        from PyQt6.QtWidgets import QColorDialog, QDialogButtonBox
+        win.acc_dialog = QColorDialog(QColor(DEFAULT_ACCENT), win)
+        win.acc_dialog.setOption(QColorDialog.ColorDialogOption.DontUseNativeDialog, True)
+        try:
+            win.acc_dialog.setOption(QColorDialog.ColorDialogOption.NoButtons, True)
+        except Exception:
+            pass
+        win.acc_dialog.setWindowFlags(Qt.WindowType.Widget)
+        # Belt-and-braces: hide any OK/Cancel button box that may still be
+        # present so only the picker controls themselves are shown.
+        try:
+            for bb in win.acc_dialog.findChildren(QDialogButtonBox):
+                bb.hide()
+        except Exception:
+            pass
+        card_lay.addWidget(win.acc_dialog)
 
-        def _open_color_wheel():
-            """Open a full colour-wheel dialog and push the chosen colour into
-            the RGB spin boxes (which update the hex + swatch via their
-            valueChanged handler)."""
+        def _on_color_changed(col: QColor):
+            if not col.isValid():
+                return
+            hx = col.name()
+            win.acc_hex.setText(hx)
+            win.acc_swatch.setStyleSheet(f"border:1px solid #2e2b27; border-radius:8px; background:{hx};")
+
+        win.acc_dialog.currentColorChanged.connect(_on_color_changed)
+
+        # Give the embedded picker's own Hue/Sat/Val/Red/Green/Blue spinboxes
+        # the same lucide chevron treatment used everywhere else in the app.
+        def _style_dialog_spinboxes():
             try:
-                from PyQt6.QtWidgets import QColorDialog
-                from PyQt6.QtGui import QColor
-                from PyQt6.QtCore import QTimer
-                cur = QColor(win.acc_hex.text() or DEFAULT_ACCENT)
-                if not cur.isValid():
-                    cur = QColor(DEFAULT_ACCENT)
-
-                dlg = QColorDialog(cur, win)
-                dlg.setWindowTitle("Choose accent colour")
-                dlg.setOption(QColorDialog.ColorDialogOption.DontUseNativeDialog, True)
-
-                def _style_dialog_spinboxes():
-                    # Qt's built-in colour dialog has its own Hue/Sat/Val/
-                    # Red/Green/Blue QSpinBox fields; give them the same
-                    # lucide chevron overlay as everywhere else in the app.
-                    try:
-                        for sb in dlg.findChildren(QSpinBox):
-                            _install_lucide_spin_arrows(sb)
-                    except Exception:
-                        pass
-
-                QTimer.singleShot(0, _style_dialog_spinboxes)
-
-                if dlg.exec() == QColorDialog.DialogCode.Accepted:
-                    col = dlg.currentColor()
-                    if col.isValid():
-                        win.acc_r.setValue(col.red())
-                        win.acc_g.setValue(col.green())
-                        win.acc_b.setValue(col.blue())
-                        try:
-                            _apply()
-                        except Exception:
-                            pass
+                for sb in win.acc_dialog.findChildren(QSpinBox):
+                    _install_lucide_spin_arrows(sb)
             except Exception:
                 pass
-
-        win.acc_pick_btn.clicked.connect(_open_color_wheel)
-        # Clicking the swatch itself also opens the wheel.
-        win.acc_swatch.mousePressEvent = lambda _ev: _open_color_wheel()
-
-        pick_row.addWidget(pick_lbl)
-        pick_row.addWidget(win.acc_swatch)
-        pick_row.addWidget(win.acc_hex)
-        pick_row.addWidget(win.acc_pick_btn)
-        pick_row.addStretch()
-        card_lay.addLayout(pick_row)
-
-        # Subtle helper caption so the interaction is self-explanatory.
-        pick_hint = QLabel("Click the swatch or “Pick colour…” for a colour wheel, or fine-tune with the RGB values below.")
-        pick_hint.setObjectName("field_label")
-        pick_hint.setWordWrap(True)
-        try:
-            pick_hint.setStyleSheet("color:#8a8378; font-size:11px; background:transparent;")
-        except Exception:
-            pass
-        card_lay.addWidget(pick_hint)
-
-        # A thin divider then the RGB fine-tuning controls (secondary).
-        _rgb_div = QFrame(); _rgb_div.setObjectName("divider"); _rgb_div.setFixedHeight(1)
-        card_lay.addWidget(_rgb_div)
-        _rgb_cap = QLabel("Fine-tune (RGB)")
-        _rgb_cap.setObjectName("field_label")
-        try:
-            _rgb_cap.setStyleSheet("color:#8a8378; font-size:11px; font-weight:600; letter-spacing:0.5px; background:transparent;")
-        except Exception:
-            pass
-        card_lay.addWidget(_rgb_cap)
-        _add_spin_row(card_lay, "Red", win.acc_r)
-        _add_spin_row(card_lay, "Green", win.acc_g)
-        _add_spin_row(card_lay, "Blue", win.acc_b)
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, _style_dialog_spinboxes)
 
         # Background theme selector (Mocha / White / Black)
         bg_row = QHBoxLayout(); bg_row.setContentsMargins(0, 0, 0, 0); bg_row.setSpacing(8)
@@ -233,10 +170,13 @@ def build_settings_tab(win) -> QWidget:
         bg_row.addStretch()
         card_lay.addLayout(bg_row)
 
-        btn_row = QHBoxLayout(); btn_row.setSpacing(12)
-        apply_btn = QPushButton("Apply")
-        reset_btn = QPushButton("Reset")
-        # Font selection
+        lay.addWidget(card)
+
+        # ── Font (its own section, separate from accent/background) ──────────
+        lay.addWidget(_sh("Font"))
+        font_card = _card(); font_card_lay = QVBoxLayout(font_card)
+        font_card_lay.setSpacing(10); font_card_lay.setContentsMargins(12, 8, 12, 12)
+
         font_row = QHBoxLayout(); font_row.setSpacing(8)
         font_lbl = QLabel("Font")
         font_lbl.setObjectName("field_label")
@@ -380,18 +320,18 @@ def build_settings_tab(win) -> QWidget:
         font_row.addWidget(font_lbl)
         font_row.addWidget(win.font_combo)
         font_row.addStretch()
-        card_lay.addLayout(font_row)
+        font_card_lay.addLayout(font_row)
         # Font size on its own row so the spinbox has a clean fixed width
         # and _add_spin_row can install the lucide arrow overlay correctly.
-        _add_spin_row(card_lay, "Font size", win.font_size)
-        btn_row.addWidget(apply_btn); btn_row.addWidget(reset_btn); btn_row.addStretch()
-        card_lay.addLayout(btn_row)
+        _add_spin_row(font_card_lay, "Font size", win.font_size)
+        lay.addWidget(font_card)
 
-        def _update_from_spins():
-            r = win.acc_r.value(); g = win.acc_g.value(); b = win.acc_b.value()
-            hx = f"#{r:02x}{g:02x}{b:02x}"
-            win.acc_hex.setText(hx)
-            win.acc_swatch.setStyleSheet(f"border:1px solid #2e2b27; border-radius:8px; background:{hx};")
+        # Apply / Reset — applies accent, background, and font together.
+        btn_row = QHBoxLayout(); btn_row.setSpacing(12)
+        apply_btn = QPushButton("Apply")
+        reset_btn = QPushButton("Reset")
+        btn_row.addWidget(apply_btn); btn_row.addWidget(reset_btn); btn_row.addStretch()
+        lay.addLayout(btn_row)
 
         def _apply():
             # Apply accent and font selections to the running app and persist
@@ -476,9 +416,7 @@ def build_settings_tab(win) -> QWidget:
                 pass
 
         def _reset():
-            r = int(DEFAULT_ACCENT[1:3], 16); g = int(DEFAULT_ACCENT[3:5], 16); b = int(DEFAULT_ACCENT[5:7], 16)
-            win.acc_r.setValue(r); win.acc_g.setValue(g); win.acc_b.setValue(b)
-            _update_from_spins()
+            win.acc_dialog.setCurrentColor(QColor(DEFAULT_ACCENT))
             # reset background theme to default (mocha)
             try:
                 idx = win.bg_combo.findData(DEFAULT_BACKGROUND)
@@ -522,14 +460,9 @@ def build_settings_tab(win) -> QWidget:
             except Exception:
                 pass
 
-        win.acc_r.valueChanged.connect(_update_from_spins)
-        win.acc_g.valueChanged.connect(_update_from_spins)
-        win.acc_b.valueChanged.connect(_update_from_spins)
         win.bg_combo.currentIndexChanged.connect(_apply)
         apply_btn.clicked.connect(_apply)
         reset_btn.clicked.connect(_reset)
-
-        lay.addWidget(card)
 
     appearance_page = QWidget(); appearance_l = QVBoxLayout(appearance_page); appearance_l.setContentsMargins(8,12,8,8); appearance_l.setSpacing(12)
     _build_appearance_tab(win, appearance_l)
@@ -580,7 +513,12 @@ def build_settings_tab(win) -> QWidget:
         if idx is not None and idx != 3:
             return
         try:
-            for sb in (win.acc_r, win.acc_g, win.acc_b, win.font_size):
+            spins = [win.font_size]
+            try:
+                spins.extend(win.acc_dialog.findChildren(QSpinBox))
+            except Exception:
+                pass
+            for sb in spins:
                 try:
                     up = getattr(sb, '_overlay_up_btn', None)
                     dn = getattr(sb, '_overlay_dn_btn', None)
@@ -845,9 +783,12 @@ def load_settings(win):
         accent = s.value("accent", None)
         if accent and getattr(win, 'acc_hex', None) is not None:
             win.acc_hex.setText(accent)
-            r = int(accent[1:3], 16); g = int(accent[3:5], 16); b = int(accent[5:7], 16)
-            win.acc_r.setValue(r); win.acc_g.setValue(g); win.acc_b.setValue(b)
             win.acc_swatch.setStyleSheet(f"border:1px solid #2e2b27; border-radius:8px; background:{accent};")
+            if getattr(win, 'acc_dialog', None) is not None:
+                try:
+                    win.acc_dialog.setCurrentColor(QColor(accent))
+                except Exception:
+                    pass
         # legacy swatch used earlier
         if accent and getattr(win, 'accent_swatch', None) is not None:
             win.accent_swatch.setStyleSheet(f"border:1px solid #2e2b27; border-radius:3px; background:{accent};")
