@@ -24,20 +24,26 @@ QMainWindow, QWidget#root {{
     background-color: __BG0__;
 }}
 QFrame#titlebar {{
-    background-color: __BG7__;
-    border-bottom: 1px solid __BORDER__;
-    min-height: 42px;
-    max-height: 42px;
+    background-color: __BG0__;
+    border-bottom: 1px solid #181512;
+    min-height: 34px;
+    max-height: 34px;
 }}
 QLabel#title_app_name {{
     color: #c8a96e;
     font-size: __FONT_SIZE__px;
     font-weight: 700;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.4px;
     background: transparent;
 }}
 QLabel#title_version {{
-    color: __BORDER2__;
+    color: __TEXT_DIM__;
+    font-size: __FONT_SIZE__px;
+    font-weight: 500;
+    background: transparent;
+}}
+QLabel#title_storage, QLabel#title_eta {{
+    color: __TEXT__;
     font-size: __FONT_SIZE__px;
     font-weight: 500;
     background: transparent;
@@ -77,25 +83,26 @@ QWidget {{
     font-size: __FONT_SIZE__px;
 }}
 QFrame#card {{
-    background-color: __BG1__;
+    background-color: __BG2__;
     border: 1px solid __BORDER__;
-    border-radius: 10px;
-    padding: 12px;
+    border-radius: 16px;
+    padding: 18px;
 }}
 QLabel#section_header {{
-    color: __TEXT_DIM__;
+    color: __ACCENT__;
     font-size: __FONT_SIZE__px;
     font-weight: 700;
-    letter-spacing: 1.5px;
+    letter-spacing: 1.4px;
     text-transform: uppercase;
-    padding: 8px 2px 8px 0px; /* add top/bottom padding so header sits clear of tab bar */
-    margin: 0px 0px 8px 0px;
+    padding: 12px 2px 4px 2px; /* add top/bottom padding so header sits clear of tab bar */
+    margin: 6px 0px 4px 0px;
     background: transparent;
 }}
 QLabel#field_label {{
     color: __TEXT_MUTED__;
     font-size: __FONT_SIZE__px;
-    min-width: 90px;
+    font-weight: 500;
+    min-width: 96px;
     background: transparent;
 }}
 QLabel#status_label {{
@@ -106,14 +113,16 @@ QLabel#status_label {{
 QLineEdit {{
     background-color: __BG3__;
     border: 1px solid __BORDER__;
-    border-radius: 8px;
-    padding: 0px 10px;
+    border-radius: 10px;
+    padding: 0px 13px;
     color: __TEXT__;
     font-size: __FONT_SIZE__px;
     selection-background-color: #c8a96e;
-    min-height: 34px;
-    max-height: 34px;
+    selection-color: #111010;
+    min-height: 38px;
+    max-height: 38px;
 }}
+QLineEdit:hover {{ border-color: __BORDER2__; }}
 QLineEdit:focus {{
     border: 1px solid #c8a96e;
     background-color: __BG4__;
@@ -124,11 +133,12 @@ QLineEdit::placeholder {{ color: __TEXT_DIM__; }}
 QSpinBox {{
     background-color: __BG3__;
     border: 1px solid __BORDER__;
-    border-radius: 8px;
-    padding: 6px 8px;
+    border-radius: 9px;
+    padding: 7px 9px;
     color: __TEXT__;
     font-size: __FONT_SIZE__px;
 }}
+QSpinBox:hover {{ border-color: __BORDER2__; }}
 QSpinBox:focus {{ border-color: #c8a96e; }}
 QSpinBox::up-button {{
     subcontrol-origin: border;
@@ -160,11 +170,12 @@ QSpinBox::down-arrow:hover {{ image: url("{_DOWN_GOLD}"); }}
 QComboBox {{
     background-color: __BG3__;
     border: 1px solid __BORDER__;
-    border-radius: 8px;
-    padding: 6px 10px;
+    border-radius: 9px;
+    padding: 7px 12px;
     color: __TEXT__;
     font-size: __FONT_SIZE__px;
 }}
+QComboBox:hover {{ border-color: __BORDER2__; }}
 QComboBox:focus {{ border-color: #c8a96e; }}
 QComboBox::drop-down {{
     subcontrol-origin: padding;
@@ -182,55 +193,79 @@ QComboBox::down-arrow:on   {{ image: url("{_UP_GOLD}"); }}
 QComboBox QAbstractItemView {{
     background-color: __BG3__;
     border: 1px solid __BORDER2__;
-    border-radius: 8px;
+    border-radius: 9px;
+    padding: 4px;
     selection-background-color: #5a4a28;
     selection-color: __TEXT__;
     outline: none;
 }}
 QPushButton#upload_btn {{
-    background: #c8a96e;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #d4b87a, stop:1 #c8a96e);
     color: __ON_ACCENT_TEXT__;
     border: none;
-    border-radius: 8px;
-    padding: 10px 24px;
+    border-radius: 12px;
+    padding: 13px 26px;
     font-size: __FONT_SIZE__px;
     font-weight: 700;
     letter-spacing: 0.3px;
 }}
-QPushButton#upload_btn:hover   {{ background: #d4b87a; }}
+QPushButton#upload_btn:hover   {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #dec38a, stop:1 #d4b87a); }}
 QPushButton#upload_btn:pressed {{ background: #a88950; }}
-QPushButton#upload_btn:disabled {{ background: __BORDER__; color: __TEXT_DIM__; }}
+QPushButton#upload_btn:disabled {{ background: __BG5__; color: __TEXT_DIM__; }}
+/* ── Upload mode switcher (Single file / Multiple files) ─────────────────── */
+QPushButton#mode_btn {{
+    background-color: __BG2__;
+    color: __TEXT_MUTED__;
+    border: 1px solid __BORDER__;
+    border-radius: 11px;
+    padding: 9px 16px;
+    font-size: __FONT_SIZE__px;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+}}
+QPushButton#mode_btn:hover {{
+    background-color: __BG4__;
+    color: __TEXT__;
+    border-color: __BORDER2__;
+}}
+QPushButton#mode_btn:checked {{
+    background-color: __BG_ACCENT_TINT__;
+    color: __ACCENT__;
+    border: 1px solid __ACCENT__;
+    font-weight: 700;
+}}
 QPushButton#browse_btn {{
     background-color: __BG3__;
     color: #c8a96e;
-    border: 1px solid #c8a96e;
-    border-radius: 8px;
-    padding: 0px 14px;
+    border: 1px solid __BORDER2__;
+    border-radius: 10px;
+    padding: 0px 16px;
+    font-weight: 600;
     font-size: __FONT_SIZE__px;
-    min-height: 34px;
-    max-height: 34px;
+    min-height: 38px;
+    max-height: 38px;
 }}
-QPushButton#browse_btn:hover {{ background-color: __BG5__; border-color: __ACCENT_HOVER__; }}
+QPushButton#browse_btn:hover {{ background-color: __BG5__; border-color: #c8a96e; color: __ACCENT_HOVER__; }}
 QCheckBox {{
     color: __TEXT_MUTED__;
     font-size: __FONT_SIZE__px;
-    spacing: 6px;
+    spacing: 8px;
     background: transparent;
 }}
 QCheckBox::indicator {{
-    width: 15px;
-    height: 15px;
+    width: 16px;
+    height: 16px;
     border: 1px solid __BORDER2__;
-    border-radius: 4px;
+    border-radius: 5px;
     background: __BG3__;
 }}
 QCheckBox::indicator:checked {{ background: #c8a96e; border-color: #c8a96e; image: none; }}
 QCheckBox::indicator:hover   {{ border-color: #c8a96e; }}
 QProgressBar {{
     background-color: __BG3__;
-    border: 1px solid __BORDER__;
+    border: none;
     border-radius: 5px;
-    height: 6px;
+    height: 8px;
     text-align: center;
     color: transparent;
 }}
@@ -240,33 +275,33 @@ QProgressBar::chunk {{
 }}
 QLabel#log_console,
 QPlainTextEdit#log_console {{
-    background-color: __BG7__;
+    background-color: __BG3__;
     border: 1px solid __BORDER__;
-    border-radius: 8px;
+    border-radius: 10px;
     color: #c8a96e;
     font-family: __FONT_FAMILY__;
     font-size: __FONT_SIZE__px;
-    padding: 8px 10px;
+    padding: 11px 13px;
     min-height: 46px;
 }}
 QPlainTextEdit#log_console {{
     selection-background-color: #5a4a28;
 }}
 QLabel#status_badge {{
-    background-color: __BG3__;
-    border: 1px solid __BORDER__;
-    border-radius: 10px;
+    background-color: __BG5__;
+    border: 1px solid __BORDER2__;
+    border-radius: 13px;
     color: __TEXT_MUTED__;
     font-size: __FONT_SIZE__px;
     font-weight: 600;
-    padding: 2px 10px;
+    padding: 4px 14px;
 }}
 QFrame#drop_zone {{
-    background-color: __BG7__;
+    background-color: __BG3__;
     /* use the accent (with subtle alpha) so the outer dashed border follows the selected accent */
     border: 2px dashed __ACCENT__33;
-    border-radius: 12px;
-    min-height: 110px;
+    border-radius: 14px;
+    min-height: 128px;
 }}
 QFrame#drop_zone[drag_active="true"] {{
     /* active state uses full accent color */
@@ -322,7 +357,7 @@ QTabBar::tab {{
     color: __TEXT_DIM__;
     border: none;
     border-bottom: 2px solid transparent;
-    padding: 8px 16px 6px 16px;
+    padding: 11px 18px 9px 18px;
     font-size: __FONT_SIZE__px;
     font-weight: 600;
     letter-spacing: 0.2px;
@@ -343,37 +378,52 @@ QTabBar::scroller {{ width: 0px; }}
 QTabWidget > QTabBar {{ background: __BG1__; }}
 QTabWidget > QWidget {{ background: __BG1__; }}
 QTreeWidget {{
-    background: __BG7__;
+    background: __BG2__;
     border: 1px solid __BORDER__;
-    border-radius: 8px;
+    border-radius: 12px;
     color: __TEXT__;
     font-size: __FONT_SIZE__px;
     outline: none;
     show-decoration-selected: 1;
+    alternate-background-color: __BG1__;
 }}
-QTreeWidget::item {{ padding: 5px 4px; border-bottom: 1px solid __BG6__; }}
-QTreeWidget::item:selected {{ background: __ACCENT_PRESSED__; color: __TEXT__; }}
-QTreeWidget::item:hover:!selected {{ background: __BG3__; }}
+QTreeWidget::item {{
+    padding: 9px 8px;
+    border: none;
+    border-bottom: 1px solid __BORDER__;
+    color: __TEXT__;
+}}
+QTreeWidget::item:selected {{
+    background: __ACCENT_PRESSED__;
+    color: __ON_ACCENT_TEXT__;
+}}
+QTreeWidget::item:hover:!selected {{ background: __BG4__; }}
+QHeaderView {{ background: transparent; border: none; }}
 QHeaderView::section {{
     background: __BG3__;
-    color: __TEXT_DIM__;
+    color: __TEXT_MUTED__;
     border: none;
-    border-right: 1px solid __BORDER__;
-    border-bottom: 1px solid __BORDER__;
-    padding: 5px 8px;
+    border-bottom: 2px solid __BORDER2__;
+    padding: 9px 10px;
     font-size: __FONT_SIZE__px;
     font-weight: 700;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.6px;
 }}
+QHeaderView::section:first {{ border-top-left-radius: 12px; }}
+QHeaderView::section:last {{ border-top-right-radius: 12px; }}
+QHeaderView::section:hover {{ background: __BG5__; color: __TEXT__; }}
+/* The sort-indicator arrow is disabled in code (header.setSortIndicatorShown
+   (False)) because under the Fusion style it renders as a boxed native
+   primitive that QSS can't restyle. */
 QPushButton#tb_btn {{
     background: __BG3__;
     color: #c8a96e;
     border: 1px solid __BORDER__;
-    border-radius: 7px;
-    padding: 5px 12px;
+    border-radius: 8px;
+    padding: 6px 13px;
     font-size: __FONT_SIZE__px;
     font-weight: 600;
-    min-height: 28px;
+    min-height: 30px;
 }}
 QPushButton#tb_btn:hover    {{ background: __BG5__; border-color: #6a5535; }}
 QPushButton#tb_btn:pressed  {{ background: __BG7__; }}
@@ -382,33 +432,34 @@ QPushButton#tb_btn_danger {{
     background: __BG3__;
     color: #f87171;
     border: 1px solid __BORDER__;
-    border-radius: 7px;
-    padding: 5px 12px;
+    border-radius: 8px;
+    padding: 6px 13px;
     font-size: __FONT_SIZE__px;
     font-weight: 600;
-    min-height: 28px;
+    min-height: 30px;
 }}
 QPushButton#tb_btn_danger:hover    {{ background: #251a1a; border-color: #8a3535; }}
 QPushButton#tb_btn_danger:disabled {{ color: __TEXT_DIM__; border-color: __BG3__; }}
 QMenu {{
     background: __BG3__;
     border: 1px solid __BORDER2__;
-    border-radius: 8px;
+    border-radius: 10px;
+    padding: 4px;
     color: __TEXT__;
     font-size: __FONT_SIZE__px;
 }}
-QMenu::item {{ padding: 6px 8px; border-radius: 4px; }}
+QMenu::item {{ padding: 7px 10px; border-radius: 6px; }}
 QMenu::item:selected {{ background: __ACCENT_PRESSED__; }}
 QMenu::separator {{ height: 1px; background: __BORDER__; margin: 4px 8px; }}
 QMenu::icon {{ padding: 0 6px 0 4px; width: 12px; height: 12px; }}
 QDialog {{ background-color: __BG1__; }}
 QDialogButtonBox QPushButton {{
-    min-width: 72px;
-    min-height: 30px;
-    border-radius: 7px;
+    min-width: 76px;
+    min-height: 32px;
+    border-radius: 9px;
     font-size: __FONT_SIZE__px;
     font-weight: 600;
-    padding: 4px 16px;
+    padding: 5px 18px;
     background: __BG3__;
     color: __TEXT__;
     border: 1px solid __BORDER2__;
@@ -423,11 +474,11 @@ QDialogButtonBox QPushButton#upload_btn:hover {{ background: #d4b87a; }}
 QListWidget {{
     background: __BG7__;
     border: 1px solid __BORDER__;
-    border-radius: 8px;
+    border-radius: 9px;
     color: __TEXT__;
     font-size: __FONT_SIZE__px;
 }}
-QListWidget::item {{ padding: 6px 10px; }}
+QListWidget::item {{ padding: 7px 10px; border-radius: 6px; }}
 QListWidget::item:selected {{ background: __ACCENT_PRESSED__; color: __TEXT__; }}
 QListWidget::item:hover {{ background: __BG3__; }}
 QMessageBox {{ background-color: __BG1__; }}
@@ -436,11 +487,11 @@ QPushButton {{
     background: __BG3__;
     color: __TEXT__;
     border: 1px solid __BORDER2__;
-    border-radius: 7px;
-    padding: 6px 16px;
-    min-height: 32px;
+    border-radius: 9px;
+    padding: 7px 16px;
+    min-height: 34px;
 }}
-QPushButton:hover  {{ background: __BG5__; }}
+QPushButton:hover  {{ background: __BG5__; border-color: __BORDER2__; }}
 QPushButton:pressed {{ background: __BG7__; }}
 """
 

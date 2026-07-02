@@ -943,15 +943,46 @@ class FilesBrowserTab(QWidget):
         self.tree.itemSelectionChanged.connect(self._on_selection_changed)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._context_menu)
+        # Readability: zebra striping, roomier rows, no distracting focus
+        # outline, and a uniform row height so the file list scans cleanly.
+        self.tree.setAlternatingRowColors(True)
+        self.tree.setUniformRowHeights(True)
+        self.tree.setIndentation(10)
+        try:
+            self.tree.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        except Exception:
+            pass
+        try:
+            self.tree.setIconSize(QSize(18, 18))
+        except Exception:
+            pass
 
         hdr = self.tree.header()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        hdr.setStretchLastSection(True)
-        hdr.resizeSection(0, 320)   # Name
-        hdr.resizeSection(1, 90)    # Size
-        hdr.resizeSection(2, 90)    # Type
-        hdr.resizeSection(3, 80)    # Shared
-        hdr.resizeSection(4, 100)   # Expires
+        # Hide the native sort-indicator arrow. Under the Fusion style it is
+        # drawn as a boxed native primitive that QSS can't reliably restyle,
+        # so it showed up as a stray bordered square next to the sorted
+        # column. Sorting by clicking a header still works without it.
+        hdr.setSortIndicatorShown(False)
+        # Let the Name column absorb spare width so long filenames get room,
+        # while the metadata columns keep sensible fixed widths.
+        try:
+            hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            for _c in (1, 2, 3, 4):
+                hdr.setSectionResizeMode(_c, QHeaderView.ResizeMode.Interactive)
+        except Exception:
+            pass
+        hdr.setStretchLastSection(False)
+        hdr.setHighlightSections(False)
+        hdr.resizeSection(0, 340)   # Name
+        hdr.resizeSection(1, 96)    # Size
+        hdr.resizeSection(2, 96)    # Type
+        hdr.resizeSection(3, 84)    # Shared
+        hdr.resizeSection(4, 108)   # Expires
+        try:
+            self.tree.setColumnWidth(0, 340)
+        except Exception:
+            pass
 
         parent_lay.addWidget(self.tree, 1)
 
@@ -1289,6 +1320,9 @@ class FilesBrowserTab(QWidget):
             pass
 
         self.tree.setSortingEnabled(True)
+        # setSortingEnabled(True) re-shows the native sort arrow every time, so
+        # re-hide it after each refresh (it renders as a boxed square here).
+        self.tree.header().setSortIndicatorShown(False)
         self.tree.blockSignals(False)
 
         # Restore previous selection if those items still exist in the new listing

@@ -12,8 +12,8 @@ Tab index reference:
 import os
 import sys
 
-from PyQt6.QtCore import Qt, QSize, QTimer, QEvent, QSettings
-from PyQt6.QtGui import QColor, QPalette, QAction
+from PyQt6.QtCore import Qt, QSize, QTimer, QEvent, QSettings, QRectF
+from PyQt6.QtGui import QColor, QPalette, QAction, QPainterPath, QRegion
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QProgressBar, QPushButton, QCheckBox, QComboBox, QScrollArea,
@@ -99,10 +99,23 @@ class MochaTools(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Mocha Tools")
-        self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        # Custom Mocha titlebar, but without the risky Windows nativeEvent hook.
+        # Qt's startSystemMove/startSystemResize restore the important native
+        # behaviours (drag, snap, edge/corner resize) while keeping the old
+        # frameless Mocha look.
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._corner_radius = 12
+        self._resize_margin = 7
+        self._resize_cursor_active = False
+        self._titlebar_dragging = False
+        self.setMouseTracking(True)
         self.setMinimumWidth(520)
-        self.setMaximumWidth(640)
+        # No maximum-width cap — a native window must be free to grow when the
+        # user maximises or drags it to a screen edge. Open at a comfortable
+        # larger default size so the app feels spacious on first launch.
+        self.setMinimumHeight(600)
+        self.resize(760, 900)
 
         self.selected_files: list[str] = []
         self.selected_root:  str       = ""
@@ -132,6 +145,12 @@ class MochaTools(QMainWindow):
         self._build_ui()
         self._build_tray_icon()
         load_settings(self)
+        try:
+            app = QApplication.instance()
+            if app:
+                app.installEventFilter(self)
+        except Exception:
+            pass
 
     # ── UI construction ───────────────────────────────────────────────────────
 
@@ -197,6 +216,13 @@ class MochaTools(QMainWindow):
         except Exception:
             upload_tab.layout().addWidget(self.mass_upload_section)
 
+        # Start in single-file mode; the segmented switcher at the top of the
+        # Upload tab flips between this and the multi-file batch queue.
+        try:
+            self._set_upload_mode("single")
+        except Exception:
+            pass
+
         # Add tabs in order
         self.tabs.addTab(upload_tab,       "Upload")
         self.tabs.addTab(self.remote_tab,  "Remote")
@@ -244,8 +270,8 @@ class MochaTools(QMainWindow):
 
         inner = QWidget()
         main  = QVBoxLayout(inner)
-        main.setContentsMargins(16, 16, 16, 20)
-        main.setSpacing(12)
+        main.setContentsMargins(18, 14, 18, 22)
+        main.setSpacing(14)
         scroll.setWidget(inner)
 
         tab_lay = QVBoxLayout(upload_tab)
@@ -255,17 +281,50 @@ class MochaTools(QMainWindow):
         # widgets into the Upload tab's content area later
         self._upload_main_layout = main
 
+        # ── Upload mode switcher ──────────────────────────────────────────────
+        # A prominent segmented toggle at the very top of the tab so the
+        # Multi-Upload feature is discoverable instead of being buried at the
+        # bottom of the page. "Single file" shows the classic single-upload
+        # form; "Multiple files" shows the batch queue (MassUploadSection).
+        mode_row = QHBoxLayout()
+        mode_row.setContentsMargins(0, 0, 0, 4)
+        mode_row.setSpacing(8)
+        self._mode_single_btn = QPushButton("  Single file")
+        self._mode_multi_btn  = QPushButton("  Multiple files")
+        for _b, _icon in ((self._mode_single_btn, "upload"),
+                          (self._mode_multi_btn, "copy")):
+            _b.setCheckable(True)
+            _b.setObjectName("mode_btn")
+            _b.setIcon(lucide_icon(_icon, get_accent(), 15))
+            _b.setIconSize(QSize(15, 15))
+            _b.setMinimumHeight(40)
+            _b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            _b.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mode_single_btn.clicked.connect(lambda: self._set_upload_mode("single"))
+        self._mode_multi_btn.clicked.connect(lambda: self._set_upload_mode("multi"))
+        mode_row.addWidget(self._mode_single_btn)
+        mode_row.addWidget(self._mode_multi_btn)
+        main.addLayout(mode_row)
+
+        # All single-file widgets live in their own container so the switcher
+        # can show/hide them as a unit without disturbing the mass section.
+        self._single_box = QWidget()
+        single_lay = QVBoxLayout(self._single_box)
+        single_lay.setContentsMargins(0, 0, 0, 0)
+        single_lay.setSpacing(14)
+        main.addWidget(self._single_box)
+
         # FILE section
-        main.addWidget(self._sh("File"))
+        single_lay.addWidget(self._sh("File"))
         file_card = self._card()
         file_lay  = QVBoxLayout(file_card)
         self.drop_zone = DropZone()
         self.drop_zone.selection_changed.connect(self._on_files_selected)
         file_lay.addWidget(self.drop_zone)
-        main.addWidget(file_card)
+        single_lay.addWidget(file_card)
 
         # DESTINATION section
-        main.addWidget(self._sh("Destination"))
+        single_lay.addWidget(self._sh("Destination"))
         dest_card = self._card()
         dest_lay  = QVBoxLayout(dest_card)
         dest_lay.setSpacing(8)
@@ -290,10 +349,10 @@ class MochaTools(QMainWindow):
         dest_row.addWidget(self.upload_path_edit, 1)
         dest_row.addWidget(browse_dest_btn)
         dest_lay.addLayout(dest_row)
-        main.addWidget(dest_card)
+        single_lay.addWidget(dest_card)
 
         # UPLOAD STATUS section
-        main.addWidget(self._sh("Upload"))
+        single_lay.addWidget(self._sh("Upload"))
         status_card = self._card()
         status_lay  = QVBoxLayout(status_card)
         status_lay.setSpacing(8)
@@ -356,7 +415,7 @@ class MochaTools(QMainWindow):
         self._share_result_widget.setLayout(share_result_row)
         self._share_result_widget.hide()
         status_lay.addWidget(self._share_result_widget)
-        main.addWidget(status_card)
+        single_lay.addWidget(status_card)
 
         # SHARE OPTIONS section
         share_card = self._card()
@@ -400,7 +459,7 @@ class MochaTools(QMainWindow):
 
         share_lay.addWidget(self.share_opts_widget)
         self.share_opts_widget.hide()
-        main.addWidget(share_card)
+        single_lay.addWidget(share_card)
 
         # UPLOAD BUTTON
         self.upload_btn = QPushButton("  Upload file")
@@ -409,7 +468,7 @@ class MochaTools(QMainWindow):
         self.upload_btn.setIconSize(QSize(15, 15))
         self.upload_btn.setMinimumHeight(42)
         self.upload_btn.clicked.connect(self._start_upload)
-        main.addWidget(self.upload_btn)
+        single_lay.addWidget(self.upload_btn)
 
         self.cancel_btn = QPushButton("  Cancel")
         self.cancel_btn.setObjectName("browse_btn")
@@ -418,10 +477,33 @@ class MochaTools(QMainWindow):
         self.cancel_btn.setMinimumHeight(36)
         self.cancel_btn.clicked.connect(self._cancel_upload)
         self.cancel_btn.hide()
-        main.addWidget(self.cancel_btn)
-        main.addStretch()
+        single_lay.addWidget(self.cancel_btn)
+        single_lay.addStretch()
 
         return upload_tab
+
+    def _set_upload_mode(self, mode: str):
+        """Toggle the Upload tab between single-file and multi-file (batch)
+        views. Both share the same tab; only their visibility changes so no
+        upload/queue state is ever destroyed by switching."""
+        multi = (mode == "multi")
+        try:
+            self._single_box.setVisible(not multi)
+        except Exception:
+            pass
+        try:
+            sec = getattr(self, "mass_upload_section", None)
+            if sec is not None:
+                sec.setVisible(multi)
+        except Exception:
+            pass
+        # Keep the segmented toggle in sync (works whether called by a click
+        # or programmatically at startup).
+        try:
+            self._mode_single_btn.setChecked(not multi)
+            self._mode_multi_btn.setChecked(multi)
+        except Exception:
+            pass
 
     # ── Widget helpers ────────────────────────────────────────────────────────
 
@@ -1272,15 +1354,159 @@ class MochaTools(QMainWindow):
 
         self._tray_icon.setToolTip(tooltip)
 
+    def _event_global_pos(self, event):
+        try:
+            return event.globalPosition().toPoint()
+        except Exception:
+            try:
+                return event.globalPos()
+            except Exception:
+                return None
+
+    def _resize_edges_at(self, global_pos):
+        if global_pos is None or self.isMaximized() or self.isMinimized():
+            return None
+        try:
+            p = self.mapFromGlobal(global_pos)
+            r = self.rect()
+            m = int(getattr(self, "_resize_margin", 7))
+            left = 0 <= p.x() <= m
+            right = r.width() - m <= p.x() <= r.width()
+            top = 0 <= p.y() <= m
+            bottom = r.height() - m <= p.y() <= r.height()
+            edges = None
+            if left:
+                edges = Qt.Edge.LeftEdge
+            elif right:
+                edges = Qt.Edge.RightEdge
+            if top:
+                edges = Qt.Edge.TopEdge if edges is None else edges | Qt.Edge.TopEdge
+            elif bottom:
+                edges = Qt.Edge.BottomEdge if edges is None else edges | Qt.Edge.BottomEdge
+            return edges
+        except Exception:
+            return None
+
+    def _cursor_for_edges(self, edges):
+        try:
+            if edges in (
+                Qt.Edge.LeftEdge | Qt.Edge.TopEdge,
+                Qt.Edge.RightEdge | Qt.Edge.BottomEdge,
+            ):
+                return Qt.CursorShape.SizeFDiagCursor
+            if edges in (
+                Qt.Edge.RightEdge | Qt.Edge.TopEdge,
+                Qt.Edge.LeftEdge | Qt.Edge.BottomEdge,
+            ):
+                return Qt.CursorShape.SizeBDiagCursor
+            if edges in (Qt.Edge.LeftEdge, Qt.Edge.RightEdge):
+                return Qt.CursorShape.SizeHorCursor
+            if edges in (Qt.Edge.TopEdge, Qt.Edge.BottomEdge):
+                return Qt.CursorShape.SizeVerCursor
+        except Exception:
+            pass
+        return None
+
+    def _set_resize_cursor(self, edges):
+        cursor = self._cursor_for_edges(edges) if edges else None
+        try:
+            if cursor:
+                if not getattr(self, "_resize_cursor_active", False):
+                    QApplication.setOverrideCursor(cursor)
+                    self._resize_cursor_active = True
+                else:
+                    QApplication.changeOverrideCursor(cursor)
+            elif getattr(self, "_resize_cursor_active", False):
+                QApplication.restoreOverrideCursor()
+                self._resize_cursor_active = False
+        except Exception:
+            pass
+
+    def _apply_window_rounding(self):
+        """Round the actual frameless window in normal mode.
+
+        When maximised, clear the mask so the window fills the screen without
+        transparent gaps at the corners/edges.
+        """
+        try:
+            if self.isMaximized() or self.isFullScreen():
+                self.clearMask()
+                return
+            radius = int(getattr(self, "_corner_radius", 12))
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(self.rect()), radius, radius)
+            self.setMask(QRegion(path.toFillPolygon().toPolygon()))
+        except Exception:
+            try:
+                self.clearMask()
+            except Exception:
+                pass
+
+    def resizeEvent(self, event):
+        try:
+            self._apply_window_rounding()
+        except Exception:
+            pass
+        super().resizeEvent(event)
+
+    def showEvent(self, event):
+        try:
+            self._apply_window_rounding()
+        except Exception:
+            pass
+        super().showEvent(event)
+
+    def eventFilter(self, obj, event):
+        try:
+            if isinstance(obj, QWidget) and obj.window() is self:
+                et = event.type()
+                if et == QEvent.Type.MouseMove:
+                    self._set_resize_cursor(self._resize_edges_at(self._event_global_pos(event)))
+                elif et == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                    edges = self._resize_edges_at(self._event_global_pos(event))
+                    if edges:
+                        self._set_resize_cursor(edges)
+                        wh = self.windowHandle()
+                        if wh is not None and hasattr(wh, "startSystemResize"):
+                            try:
+                                if wh.startSystemResize(edges):
+                                    event.accept()
+                                    return True
+                            except Exception:
+                                pass
+                elif et == QEvent.Type.MouseButtonRelease:
+                    try:
+                        if getattr(self, "_titlebar_dragging", False) and not self.isMaximized():
+                            gp = self._event_global_pos(event)
+                            screen = self.screen()
+                            if gp is not None and screen is not None:
+                                if gp.y() <= screen.availableGeometry().top() + 3:
+                                    self.showMaximized()
+                        self._titlebar_dragging = False
+                    except Exception:
+                        pass
+                    self._set_resize_cursor(None)
+                elif et == QEvent.Type.Leave:
+                    self._set_resize_cursor(None)
+        except Exception:
+            pass
+        return super().eventFilter(obj, event)
+
     def changeEvent(self, event):
-        if (
-            event.type() == QEvent.Type.WindowStateChange
-            and self.isMinimized()
-            and self._tray_enabled()
-        ):
-            # Defer to the next event loop pass so the minimise animation
-            # completes normally before we hide the window into the tray.
-            QTimer.singleShot(0, self.hide)
+        if event.type() == QEvent.Type.WindowStateChange:
+            try:
+                if getattr(self, "titlebar", None):
+                    self.titlebar._sync_max_icon()
+            except Exception:
+                pass
+            try:
+                QTimer.singleShot(0, self._apply_window_rounding)
+            except Exception:
+                pass
+            if self.isMinimized() and self._tray_enabled():
+                # Defer to the next event loop pass so the minimise animation
+                # completes normally before we hide the window into the tray.
+                QTimer.singleShot(0, self.hide)
         super().changeEvent(event)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -1341,6 +1567,7 @@ def _build_app_palette() -> QPalette:
     palette.setColor(QPalette.ColorRole.Highlight,       accent_qcolor())
     palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#111010"))
     return palette
+
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
