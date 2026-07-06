@@ -23,12 +23,40 @@ from .logging_utils import write_debug_log
 
 
 # ── Progress Tracker ─────────────────────────────────────────────────────────
+class _SlidingWindow:
+    """Lightweight ring-buffer speed calculator.
+
+    Stores (timestamp, cumulative_bytes) samples.  Speed is derived
+    from the oldest sample within *window* seconds, giving a stable
+    moving average that reacts to changes within one window length.
+    Thread-safe when used from *feed* (the only writer).
+    """
+    def __init__(self, window: float = 5.0):
+        self._window = window
+        self._samples: list[tuple[float, int]] = []   # (monotonic, cum_bytes)
+
+    def add(self, now: float, cum_bytes: int) -> float:
+        """Add a sample and return the speed (bytes/sec) over the window."""
+        samples = self._samples
+        samples.append((now, cum_bytes))
+        # Prune samples older than window
+        cutoff = now - self._window
+        # Keep at least two samples so we can always compute a slope
+        while len(samples) > 2 and samples[0][0] < cutoff:
+            samples.pop(0)
+        # If the window hasn't filled yet, use whatever span we have
+        oldest_ts, oldest_bytes = samples[0]
+        span = max(now - oldest_ts, 0.001)
+        return (cum_bytes - oldest_bytes) / span
+
+
 class ProgressTracker:
     """Thread-safe byte counter shared across all parallel upload workers.
 
     Each worker calls feed(n) as bytes leave the socket. The tracker
     accumulates totals and fires progress/speed callbacks at most once
-    every EMIT_INTERVAL seconds so the UI isn't flooded.
+    every EMIT_INTERVAL seconds so the UI isn't flooded.  Speed uses a
+    sliding window average (default 5 s) for responsive ETA estimates.
     """
     EMIT_INTERVAL = 0.25   # seconds between UI updates
 
@@ -38,6 +66,7 @@ class ProgressTracker:
         self._lock      = threading.Lock()
         self._start     = time.monotonic()
         self._last_emit = 0.0
+        self._window    = _SlidingWindow(5.0)
         self._on_prog   = on_progress   # callable(int pct)
         self._on_speed  = on_speed      # callable(float bps)
         self._on_bytes  = on_bytes_progress  # callable(int done, int total) or None
@@ -51,7 +80,7 @@ class ProgressTracker:
             if now - self._last_emit >= self.EMIT_INTERVAL:
                 self._last_emit = now
                 pct = min(self._sent / self._total * 100, 99.999)
-                bps = self._sent / elapsed
+                bps = self._window.add(now, self._sent)
                 self._on_prog(pct)
                 self._on_speed(bps)
                 if self._on_bytes:
@@ -66,8 +95,9 @@ class ProgressTracker:
     def finish(self):
         """Call once when all parts are done to snap to 100%."""
         with self._lock:
-            elapsed = max(time.monotonic() - self._start, 0.001)
-            bps     = self._sent / elapsed
+            now     = time.monotonic()
+            elapsed = max(now - self._start, 0.001)
+            bps     = self._window.add(now, self._sent) or (self._sent / elapsed)
             total   = self._total
         self._on_prog(100)
         self._on_speed(bps)
@@ -366,7 +396,10 @@ class UploadWorker(QThread):
                 time.sleep(min(2 ** (_init_attempt - 1), 10))
         if last_init_error is not None:
             raise last_init_error
-        init_data  = init_resp.json()
+        try:
+            init_data = init_resp.json()
+        except Exception as e:
+            raise RuntimeError(f"Failed to parse multipart init response: {e}") from e
         self.status.emit(f"[DEBUG] Init response: {init_data}")
         # Store the init response fields in one session payload so every
         # multipart request uses the same uploadId, key, nodeId, and path.

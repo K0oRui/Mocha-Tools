@@ -21,7 +21,7 @@
 ; APP_VERSION can be overridden at build time:
 ;   makensis /DAPP_VERSION=3.0.1 installer.nsi
 !ifndef APP_VERSION
-  !define APP_VERSION "1.0.0"
+  !define APP_VERSION "0.0.0"
 !endif
 
 ; Output filename
