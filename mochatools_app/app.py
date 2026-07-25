@@ -104,7 +104,10 @@ class MochaTools(QMainWindow):
         # behaviours (drag, snap, edge/corner resize) while keeping the old
         # frameless Mocha look.
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        # Translucent background disabled — on some Windows 11 builds it causes
+        # the window to not render at all (especially after sleep/resume cycles).
+        # The setMask-based corner rounding still works without it.
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self._corner_radius = 12
         self._resize_margin = 7
         self._resize_cursor_active = False
@@ -581,14 +584,18 @@ class MochaTools(QMainWindow):
         self.transferred_label.setText("")
         self._badge("Uploading", get_accent())
 
-        expiry_hours = self._expiry_map[self.expiry_combo.currentIndex()][1] \
-            if self.create_share_cb.isChecked() else None
+        idx = self.expiry_combo.currentIndex()
+        expiry_hours = self._expiry_map[idx][1] \
+            if self.create_share_cb.isChecked() and 0 <= idx < len(self._expiry_map) else None
         max_dl = self.max_dl_spin.value() if self.create_share_cb.isChecked() else 0
 
         base_remote = "/" + upload_path.strip("/")
         file_pairs: list[tuple[str, str]] = []
         for local in self.selected_files:
-            rel = os.path.relpath(local, self.selected_root).replace(os.sep, "/")
+            try:
+                rel = os.path.relpath(local, self.selected_root).replace(os.sep, "/")
+            except ValueError:
+                rel = os.path.basename(local)
             if rel.startswith("/") or (len(rel) > 1 and rel[1] == ":"):
                 rel = os.path.basename(local)
             dest = f"{base_remote}/{rel}" if base_remote != "/" else f"/{rel}"
@@ -600,9 +607,14 @@ class MochaTools(QMainWindow):
         for local, dest in file_pairs[:3]:
             self._log(f"[DEBUG] Dest: {dest}")
 
-        self._upload_grand_total = sum(
-            os.path.getsize(lp) for lp, _ in file_pairs if os.path.isfile(lp)
-        )
+        grand_total = 0
+        for lp, _ in file_pairs:
+            if os.path.isfile(lp):
+                try:
+                    grand_total += os.path.getsize(lp)
+                except OSError:
+                    pass
+        self._upload_grand_total = grand_total
 
         self.worker = UploadWorker(
             api_key, HARDCODED_BASE_URL, file_pairs,
@@ -671,9 +683,12 @@ class MochaTools(QMainWindow):
         self._set_uploading(False)
         self._badge("Complete", "#4ade80")
         self.transferred_label.setText("")
-        self._log(f"✓ Done! File ID: {result['file_id']}")
-        from .sound_player import play_sound_event
-        play_sound_event("sound_single_upload")
+        self._log(f"✓ Done! File ID: {result.get('file_id', '')}")
+        try:
+            from .sound_player import play_sound_event
+            play_sound_event("sound_single_upload")
+        except Exception:
+            pass
         upload_path = self.upload_path_edit.text().strip() or "/"
         self._on_upload_done(upload_path)
         if result.get("share_url"):
@@ -726,7 +741,9 @@ class MochaTools(QMainWindow):
         self._poller.force_refresh("shares")
 
     def _copy_share_result(self):
-        QApplication.clipboard().setText(self._share_result_url)
+        cb = QApplication.clipboard()
+        if cb is not None:
+            cb.setText(self._share_result_url)
         self.copy_share_result_btn.setText("Copied!")
         QTimer.singleShot(1500, lambda: self.copy_share_result_btn.setText("Copy link"))
 
@@ -1110,7 +1127,7 @@ class MochaTools(QMainWindow):
                 return
 
             url = next(
-                (a["browser_download_url"] for a in assets if a["name"] == want),
+                (a.get("browser_download_url", "") for a in assets if a.get("name") == want),
                 "",
             )
             if not url:
@@ -1197,9 +1214,12 @@ class MochaTools(QMainWindow):
             self._restore_from_tray()
 
     def _restore_from_tray(self):
-        self.showNormal()
-        self.raise_()
-        self.activateWindow()
+        try:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+        except RuntimeError:
+            pass
 
     def _quit_from_tray(self):
         self._quitting = True
@@ -1477,16 +1497,6 @@ class MochaTools(QMainWindow):
                             except Exception:
                                 pass
                 elif et == QEvent.Type.MouseButtonRelease:
-                    try:
-                        if getattr(self, "_titlebar_dragging", False) and not self.isMaximized():
-                            gp = self._event_global_pos(event)
-                            screen = self.screen()
-                            if gp is not None and screen is not None:
-                                if gp.y() <= screen.availableGeometry().top() + 3:
-                                    self.showMaximized()
-                        self._titlebar_dragging = False
-                    except Exception:
-                        pass
                     self._set_resize_cursor(None)
                 elif et == QEvent.Type.Leave:
                     self._set_resize_cursor(None)
@@ -1527,8 +1537,10 @@ class MochaTools(QMainWindow):
             return
 
         save_settings(self)
-        self.remote_tab.set_active(False)
-        self.sync_tab.closeEvent(event)
+        if hasattr(self, 'remote_tab'):
+            self.remote_tab.set_active(False)
+        if hasattr(self, 'sync_tab'):
+            self.sync_tab.closeEvent(event)
         if self._poller:
             self._poller.stop()
         if self._storage_timer:
@@ -1537,16 +1549,18 @@ class MochaTools(QMainWindow):
             self._tray_tooltip_timer.stop()
         if self._storage_worker:
             self._storage_worker.quit()
-        for w in list(self.remote_tab._workers):
+        for w in list(getattr(self.remote_tab, '_workers', [])):
             w.quit()
-        for w in list(self.files_tab._workers):
+        for w in list(getattr(self.files_tab, '_workers', [])):
             w.quit()
-        for w in list(self.shares_tab._workers):
+        for w in list(getattr(self.shares_tab, '_workers', [])):
             w.quit()
         if self._tray_icon:
             self._tray_icon.hide()
         super().closeEvent(event)
-        QApplication.instance().quit()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
 
 
 def _build_app_palette() -> QPalette:
@@ -1739,17 +1753,16 @@ def main():
                     a = QApplication.instance()
                     if a:
                         a.setFont(QFont(fam, int(sz)))
-                        a.processEvents()
-                        widgets = a.topLevelWidgets()
-                        for w in widgets:
-                            try:    a.style().unpolish(w)
-                            except Exception: pass
-                            try:    a.style().polish(w)
-                            except Exception: pass
-                        try:
-                            a.setStyleSheet(build_stylesheet(get_accent(), background_key=get_background()))
-                        except Exception:
-                            pass
+                    widgets = a.topLevelWidgets()
+                    for w in widgets:
+                        try:    a.style().unpolish(w)
+                        except Exception: pass
+                        try:    a.style().polish(w)
+                        except Exception: pass
+                    try:
+                        a.setStyleSheet(build_stylesheet(get_accent(), background_key=get_background()))
+                    except Exception:
+                        pass
                 except Exception:
                     pass
             _notifier().font_changed.connect(_on_font_change)

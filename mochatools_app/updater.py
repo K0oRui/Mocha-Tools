@@ -199,7 +199,7 @@ class UpdateCheckWorker(QThread):
             return
 
         url = next(
-            (a["browser_download_url"] for a in assets if a["name"] == want),
+            (a.get("browser_download_url", "") for a in assets if a.get("name") == want),
             "",
         )
         self.update_available.emit(latest_tag, url, release_body)

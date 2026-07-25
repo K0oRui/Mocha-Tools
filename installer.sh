@@ -22,7 +22,7 @@ set -euo pipefail
 
 APP_NAME="Mocha Tools"
 APP_BINARY="mochatools"
-APP_VERSION="v1.0.0"
+APP_VERSION="v0.0.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Detect the bundled binary name (raw or renamed)

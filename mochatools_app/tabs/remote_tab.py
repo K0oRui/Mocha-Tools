@@ -340,7 +340,11 @@ class RemoteTab(QWidget):
                 or job.get("name") or job.get("sourceUrl") or "—"
             )
             status   = job.get("status") or job.get("state") or "—"
-            progress = job.get("progress") or job.get("percent") or job.get("progressPercent")
+            progress = job.get("progress")
+            if progress is None:
+                progress = job.get("percent")
+            if progress is None:
+                progress = job.get("progressPercent")
             progress_text = f"{progress}%" if progress not in (None, "") else "—"
 
             item = QTreeWidgetItem([str(name), str(status), str(progress_text), str(job_id)])

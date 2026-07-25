@@ -770,8 +770,10 @@ def load_settings(win):
     else:
         key = s.value("api_key", "")
     win.api_key_edit.setText(key)
-    win.upload_path_edit.setText(s.value("upload_path", "/"))
-    win.remote_tab.path_edit.setText(s.value("remote_path", "/"))
+    if hasattr(win, 'upload_path_edit') and win.upload_path_edit is not None:
+        win.upload_path_edit.setText(s.value("upload_path", "/"))
+    if hasattr(win, 'remote_tab') and hasattr(win.remote_tab, 'path_edit'):
+        win.remote_tab.path_edit.setText(s.value("remote_path", "/"))
 
     win.remember_cb.setChecked(s.value("remember", False, type=bool))
     win.debug_cb.setChecked(s.value("debug", False, type=bool))
@@ -878,7 +880,7 @@ def save_settings(win):
     except Exception:
         pass
 
-    cache = win.shares_tab._cache
+    cache = getattr(getattr(win, 'shares_tab', None), '_cache', None)
     if cache is not None:
         try:
             s.setValue("shares_cache", json.dumps(cache))
@@ -890,8 +892,10 @@ def save_settings(win):
             keyring.set_password(_KR_SERVICE, _KR_USER, win.api_key_edit.text())
         else:
             s.setValue("api_key", win.api_key_edit.text())
-        s.setValue("upload_path", win.upload_path_edit.text())
-        s.setValue("remote_path", win.remote_tab.path_edit.text())
+        if hasattr(win, 'upload_path_edit') and win.upload_path_edit is not None:
+            s.setValue("upload_path", win.upload_path_edit.text())
+        if hasattr(win, 'remote_tab') and hasattr(win.remote_tab, 'path_edit'):
+            s.setValue("remote_path", win.remote_tab.path_edit.text())
         s.setValue("remember",    True)
     else:
         if _KEYRING_OK:

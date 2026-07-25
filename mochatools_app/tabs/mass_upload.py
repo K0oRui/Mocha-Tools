@@ -331,12 +331,16 @@ class MassUploadSection(QWidget):
                 rel = os.path.basename(local)
             dest_base = "/" + (self._default_dest.text().strip("/") or "")
             rdest = f"{dest_base}/{rel}" if dest_base != "/" else f"/{rel}"
+            try:
+                fsize = os.path.getsize(local)
+            except OSError:
+                fsize = 0
             entry = {
                 "local": local, "root": root, "dest": rdest,
-                "size": os.path.getsize(local),
+                "size": fsize,
                 "status": "pending", "worker": None, "item": None,
                 "_bytes_done": 0,
-                "_bytes_total": os.path.getsize(local),
+                "_bytes_total": fsize,
             }
             self._queue.append(entry)
             display_name = os.path.relpath(local, root).replace(os.sep, "/")
@@ -569,7 +573,10 @@ class MassUploadSection(QWidget):
             if slot == 0:
                 self._launch_next(api_key)
             else:
-                QTimer.singleShot(slot * 1500, lambda k=api_key: self._launch_next(k))
+                t = QTimer(self)
+                t.setSingleShot(True)
+                t.timeout.connect(lambda k=api_key: self._launch_next(k))
+                t.start(slot * 1500)
 
     def _launch_next(self, api_key=None):
         if self._cancelled:
@@ -667,7 +674,7 @@ class MassUploadSection(QWidget):
             entry["item"].setToolTip(self._COL_STATUS, msg)
         if entry.get("worker") in self._active_workers:
             self._active_workers.remove(entry.get("worker"))
-        self._log(f"✗ {os.path.basename(entry['local'])}: {msg}")
+        self._log(f"✗ {os.path.basename(entry.get('local', 'unknown'))}: {msg}")
         self._update_queue_label()
         self._update_overall_progress()
         self._launch_next()
@@ -698,10 +705,13 @@ class MassUploadSection(QWidget):
             try:
                 w.cancel()
                 for sig_name in ("progress", "speed", "status", "finished", "error"):
-                    getattr(w, sig_name).disconnect()
+                    sig = getattr(w, sig_name, None)
+                    if sig is not None:
+                        try: sig.disconnect()
+                        except (RuntimeError, TypeError): pass
                 if hasattr(w, "bytes_progress"):
                     try:    w.bytes_progress.disconnect()
-                    except RuntimeError: pass
+                    except (RuntimeError, TypeError): pass
             except RuntimeError:
                 pass
         self._active_workers.clear()

@@ -193,6 +193,12 @@ class SharesTab(QWidget):
             cache.invalidate_op("shares")
             self._poller.force_refresh("shares")
         else:
+            for w in list(self._workers):
+                try:
+                    w.quit()
+                    w.wait(500)
+                except Exception:
+                    pass
             w = FilesWorker("shares", api_key, self.base_url)
             w.done.connect(self._on_done)
             w.error.connect(lambda msg: self._status(f"✗ {msg}"))
@@ -279,7 +285,8 @@ class SharesTab(QWidget):
         self.delete_btn.setEnabled(has)
 
     def _selected_meta(self) -> list[dict]:
-        return [item.data(0, Qt.ItemDataRole.UserRole) for item in self.tree.selectedItems()]
+        return [item.data(0, Qt.ItemDataRole.UserRole) or {}
+                for item in self.tree.selectedItems()]
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
@@ -288,20 +295,26 @@ class SharesTab(QWidget):
         if not items:
             return
         if len(items) == 1:
-            url = items[0]["url"]
-            QApplication.clipboard().setText(url)
+            url = items[0].get("url", "")
+            cb = QApplication.clipboard()
+            if cb is not None:
+                cb.setText(url)
             self.copy_bar.setText(f'Copied: <a href="{url}" style="color:#e11d48;">{url}</a>')
         else:
-            urls = "\n".join(m["url"] for m in items)
-            QApplication.clipboard().setText(urls)
+            urls = "\n".join(m.get("url", "") for m in items)
+            cb = QApplication.clipboard()
+            if cb is not None:
+                cb.setText(urls)
             self.copy_bar.setText(f"Copied {len(items)} links to clipboard.")
         self.copy_bar.show()
 
     def _toggle_selected(self):
         api_key = self.get_api_key()
         for meta in self._selected_meta():
-            token      = meta["token"]
-            new_active = not meta["is_active"]
+            token      = meta.get("token", "")
+            if not token:
+                continue
+            new_active = not meta.get("is_active", True)
             try:
                 resp = _req.patch(
                     f"{self.base_url}/api/shares/{token}",
@@ -326,7 +339,7 @@ class SharesTab(QWidget):
         if not items:
             return
         msg = (
-            f"Delete share for {items[0]['file_name']!r}?"
+            f"Delete share for {items[0].get('file_name', '?')!r}?"
             if len(items) == 1
             else f"Delete {len(items)} shares?"
         )
@@ -339,14 +352,17 @@ class SharesTab(QWidget):
         api_key        = self.get_api_key()
         deleted_tokens = set()
         for meta in items:
+            token = meta.get("token", "")
+            if not token:
+                continue
             try:
                 resp = _req.delete(
-                    f"{self.base_url}/api/shares/{meta['token']}",
+                    f"{self.base_url}/api/shares/{token}",
                     headers={"Authorization": f"Bearer {api_key}"},
                     timeout=15,
                 )
                 resp.raise_for_status()
-                deleted_tokens.add(meta["token"])
+                deleted_tokens.add(token)
             except Exception as e:
                 QMessageBox.warning(self, "Error", str(e))
                 return

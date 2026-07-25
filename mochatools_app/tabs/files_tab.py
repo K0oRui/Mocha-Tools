@@ -1035,7 +1035,9 @@ class FilesBrowserTab(QWidget):
         parent_lay.addWidget(self._share_bar_widget)
 
     def _copy_share_url(self):
-        QApplication.clipboard().setText(self._current_share_url)
+        cb = QApplication.clipboard()
+        if cb is not None:
+            cb.setText(self._current_share_url)
         self.copy_share_btn.setText("Copied!")
         QTimer.singleShot(1500, lambda: self.copy_share_btn.setText("Copy link"))
 
@@ -1066,6 +1068,8 @@ class FilesBrowserTab(QWidget):
 
     def _on_shares_cache_update(self, data):
         """Called by remote_cache registry when a fresh 'shares' result arrives."""
+        if data is None:
+            return
         self._shares_cache = data
         self._index_shares(data)
         self._refresh_share_indicators()
@@ -1165,8 +1169,8 @@ class FilesBrowserTab(QWidget):
     def _on_worker_done(self, result: dict):
         op = result.get("op")
         if op == "list":
-            path = result["path"]
-            data = result["data"]
+            path = result.get("path", "")
+            data = result.get("data", {})
             # Write into remote_cache so poller and other subscribers see it
             cache.set("list", data, path=path)
             registry.notify("list", data, path=path)
@@ -1241,7 +1245,33 @@ class FilesBrowserTab(QWidget):
 
     # ── Tree population ───────────────────────────────────────────────────────
 
+    # Cache folder icon so we don't re-create it on every poll cycle
+    _folder_icon = None
+
+    @classmethod
+    def _get_folder_icon(cls):
+        if cls._folder_icon is None:
+            try:
+                from ..theme import get_accent
+                cls._folder_icon = lucide_icon("folder", get_accent(), 14)
+            except Exception:
+                pass
+        return cls._folder_icon
+
     def _populate(self, path: str, data):
+        # Skip re-render if data hasn't changed (hash comparison)
+        import hashlib
+        new_hash = hashlib.md5(str(data).encode()).hexdigest()
+        old_hash = getattr(self, '_listing_hashes', {}).get(path)
+        if old_hash == new_hash and hasattr(self, '_populated_path') and self._populated_path == path:
+            # Data unchanged — update selection restore status only
+            self._on_selection_changed()
+            return
+        if not hasattr(self, '_listing_hashes'):
+            self._listing_hashes = {}
+        self._listing_hashes[path] = new_hash
+        self._populated_path = path
+
         # Remember which items were selected so we can restore them after
         # the tree rebuild (background refreshes shouldn't steal focus).
         selected_keys = set()
@@ -1256,29 +1286,32 @@ class FilesBrowserTab(QWidget):
         self.tree.clear()
 
         folders, files = self._parse_listing(path, data)
+        accent = get_accent()
+        folder_icon = self._get_folder_icon()
 
+        folder_items = []
         if path and path != "/":
             up_item = QTreeWidgetItem(["..", "", "folder", "", ""])
             up_item.setData(0, Qt.ItemDataRole.UserRole,
                             {"_type": "up", "path": self._parent_path(path)})
             up_item.setForeground(0, QColor("#9ca3af"))
             try:
-                up_item.setIcon(0, lucide_icon("folder", get_accent(), 14))
+                up_item.setIcon(0, folder_icon or lucide_icon("folder", accent, 14))
             except Exception:
                 pass
-            self.tree.addTopLevelItem(up_item)
-
+            folder_items.append(up_item)
         for f in sorted(folders, key=lambda x: x["name"].lower()):
             item = QTreeWidgetItem([f"{f['name']}", "", "folder", "", ""])
             item.setData(0, Qt.ItemDataRole.UserRole, {"_type": "folder", **f})
             from ..theme import accent_qcolor
             item.setForeground(0, accent_qcolor())
             try:
-                item.setIcon(0, lucide_icon("folder", get_accent(), 14))
+                item.setIcon(0, folder_icon or lucide_icon("folder", accent, 14))
             except Exception:
                 pass
-            self.tree.addTopLevelItem(item)
+            folder_items.append(item)
 
+        file_items = []
         for f in sorted(files, key=lambda x: (
                 x.get("originalName") or x.get("original_name") or
                 x.get("name") or x.get("file_name") or "").lower()):
@@ -1299,7 +1332,11 @@ class FilesBrowserTab(QWidget):
                 "file_name": stored_name,
                 "path": f.get("path") or f"{path.rstrip('/')}/{stored_name or name}",
             })
-            self.tree.addTopLevelItem(item)
+            file_items.append(item)
+
+        # Batch-add all items at once to minimize tree signal emissions
+        self.tree.addTopLevelItems(folder_items)
+        self.tree.addTopLevelItems(file_items)
 
         # ensure accent-aware items update if the accent changes
         try:
@@ -1320,8 +1357,6 @@ class FilesBrowserTab(QWidget):
             pass
 
         self.tree.setSortingEnabled(True)
-        # setSortingEnabled(True) re-shows the native sort arrow every time, so
-        # re-hide it after each refresh (it renders as a boxed square here).
         self.tree.header().setSortIndicatorShown(False)
         self.tree.blockSignals(False)
 
@@ -1339,7 +1374,6 @@ class FilesBrowserTab(QWidget):
             f"{len(folders)} folder{'s' if len(folders) != 1 else ''}, "
             f"{len(files)} file{'s' if len(files) != 1 else ''}"
         )
-        # Fire selection-changed once to sync toolbar button states
         self._on_selection_changed()
         self._refresh_share_indicators()
 
@@ -1440,8 +1474,9 @@ class FilesBrowserTab(QWidget):
         items       = self._selected_items()
         has         = len(items) > 0
         single      = len(items) == 1
-        single_file   = single and items[0].data(0, Qt.ItemDataRole.UserRole).get("_type") == "file"
-        single_folder = single and items[0].data(0, Qt.ItemDataRole.UserRole).get("_type") == "folder"
+        item_data = (items[0].data(0, Qt.ItemDataRole.UserRole) or {}) if single else {}
+        single_file   = single and item_data.get("_type") == "file"
+        single_folder = single and item_data.get("_type") == "folder"
         self.rename_btn.setEnabled(single_folder)
         self.move_btn.setEnabled(single)
         self.share_btn.setEnabled(single_file)

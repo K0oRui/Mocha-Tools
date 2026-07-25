@@ -574,14 +574,19 @@ class CustomTitleBar(QFrame):
             # so the old _drag_pos approach only ever worked on X11.
             win = self._window.windowHandle()
             if win is not None:
-                win.startSystemMove()
+                try:
+                    win.startSystemMove()
+                except Exception:
+                    pass
             event.accept()
+        else:
+            super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
         if getattr(self, "_native_frame", False):
             super().mouseMoveEvent(event)
             return
-        event.accept()
+        super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if getattr(self, "_native_frame", False):
@@ -606,6 +611,7 @@ class CustomTitleBar(QFrame):
         except Exception:
             pass
         event.accept()
+        super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         # Native frame: let the OS handle double-click-to-maximise on its own
@@ -615,3 +621,4 @@ class CustomTitleBar(QFrame):
             return
         if event.button() == Qt.MouseButton.LeftButton:
             self._toggle_maximise()
+        super().mouseDoubleClickEvent(event)

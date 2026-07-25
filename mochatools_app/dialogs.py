@@ -280,9 +280,9 @@ class _FolderFetchWorker(QThread):
     def _get_session(cls) -> "requests.Session":
         if cls._session is None:
             adapter = requests.adapters.HTTPAdapter(
-                pool_connections=1,
-                pool_maxsize=4,
-                max_retries=0,
+                pool_connections=8,
+                pool_maxsize=16,
+                max_retries=1,
             )
             cls._session = requests.Session()
             cls._session.mount("https://", adapter)
@@ -332,6 +332,7 @@ class FolderBrowserDialog(MochaDialog):
         self._worker: _FolderFetchWorker | None = None
         self._cancel_token: list = [False]
         self._dead_workers: list[_FolderFetchWorker] = []
+        self._closed: bool = False       # prevents use-after-close in deferred slots
         self._navigating: bool = False   # suppresses auto-highlight during render
 
         lay = self.content_layout
@@ -357,9 +358,10 @@ class FolderBrowserDialog(MochaDialog):
             def _refresh_path_icon(old, new):
                 try:
                     self.path_icon.setPixmap(lucide_icon("folder", new, 16).pixmap(16, 16))
-                except Exception:
+                except RuntimeError:
                     pass
-            notifier().accent_changed.connect(_refresh_path_icon)
+            self._refresh_path_icon = _refresh_path_icon
+            notifier().accent_changed.connect(self._refresh_path_icon)
         except Exception:
             pass
 
@@ -412,18 +414,22 @@ class FolderBrowserDialog(MochaDialog):
         try:
             from .theme import notifier
             def _refresh_list(old, new):
-                for i in range(self.list.count()):
-                    it = self.list.item(i)
-                    try:
-                        data = it.data(Qt.ItemDataRole.UserRole)
-                    except Exception:
-                        data = None
-                    if data and isinstance(data, tuple) and data[0] == "dir":
+                try:
+                    for i in range(self.list.count()):
+                        it = self.list.item(i)
                         try:
-                            it.setIcon(lucide_icon("folder", new, 12))
-                        except Exception:
-                            pass
-            notifier().accent_changed.connect(_refresh_list)
+                            data = it.data(Qt.ItemDataRole.UserRole)
+                        except RuntimeError:
+                            data = None
+                        if data and isinstance(data, tuple) and data[0] == "dir":
+                            try:
+                                it.setIcon(lucide_icon("folder", new, 12))
+                            except RuntimeError:
+                                pass
+                except RuntimeError:
+                    pass
+            self._refresh_list_cb = _refresh_list
+            notifier().accent_changed.connect(self._refresh_list_cb)
         except Exception:
             pass
 
@@ -504,7 +510,7 @@ class FolderBrowserDialog(MochaDialog):
 
     # ── Fetch result ──────────────────────────────────────────────────────────
     def _on_fetch_done(self, path: str, result):
-        if path != self.current:
+        if self._closed or path != self.current:
             return
 
         self._worker = None
@@ -515,7 +521,7 @@ class FolderBrowserDialog(MochaDialog):
             if hasattr(e, "response") and e.response is not None:
                 msg = f"Error {e.response.status_code}: {e.response.text[:200]}"
             else:
-                first_line = str(e).splitlines()[0].strip()
+                first_line = (str(e).splitlines() or [""])[0].strip()
                 if "):" in first_line:
                     first_line = first_line.split("):", 1)[-1].strip()
                 msg = f"Connection error: {first_line[:120]}"
@@ -533,10 +539,26 @@ class FolderBrowserDialog(MochaDialog):
             pass
 
     # ── Render folder list — exact same logic as the original ─────────────────
+    _dialog_folder_icon = None
+
+    @classmethod
+    def _get_dialog_folder_icon(cls):
+        if cls._dialog_folder_icon is None:
+            try:
+                from .theme import get_accent
+                cls._dialog_folder_icon = lucide_icon("folder", get_accent(), 12)
+            except Exception:
+                pass
+        return cls._dialog_folder_icon
+
     def _render(self, path: str, data):
         self._navigating = True
         self.list.blockSignals(True)
         self.list.clear()
+
+        folder_icon = self._get_dialog_folder_icon()
+        from .theme import accent_qcolor
+        accent = accent_qcolor()
 
         # "▲ .." entry
         if path and path != "/":
@@ -544,11 +566,9 @@ class FolderBrowserDialog(MochaDialog):
             parent = parent if parent != "/" else "/"
             item = QListWidgetItem(".. (go up)")
             item.setData(Qt.ItemDataRole.UserRole, ("dir", parent))
-            from .theme import accent_qcolor
-            item.setForeground(accent_qcolor())
+            item.setForeground(accent)
             try:
-                from .theme import get_accent
-                item.setIcon(lucide_icon("folder", get_accent(), 12))
+                item.setIcon(folder_icon or lucide_icon("folder", accent.name(), 12))
             except Exception:
                 pass
             self.list.addItem(item)
@@ -582,8 +602,7 @@ class FolderBrowserDialog(MochaDialog):
             item = QListWidgetItem(f"{name}")
             item.setData(Qt.ItemDataRole.UserRole, ("dir", fullpath))
             try:
-                from .theme import get_accent
-                item.setIcon(lucide_icon("folder", get_accent(), 12))
+                item.setIcon(folder_icon or lucide_icon("folder", accent.name(), 12))
             except Exception:
                 pass
             self.list.addItem(item)
@@ -602,14 +621,18 @@ class FolderBrowserDialog(MochaDialog):
         if self._navigating:
             return
         if current:
-            _kind, path = current.data(Qt.ItemDataRole.UserRole)
-            self.selected = path
-            self.path_edit.setText(path)
+            data = current.data(Qt.ItemDataRole.UserRole)
+            if isinstance(data, tuple) and len(data) == 2:
+                _, path = data
+                self.selected = path
+                self.path_edit.setText(path)
 
     def _on_double_click(self, item):
-        kind, path = item.data(Qt.ItemDataRole.UserRole)
-        if kind == "dir":
-            self._navigate(path)
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(data, tuple) and len(data) == 2:
+            kind, path = data
+            if kind == "dir":
+                self._navigate(path)
 
     def _on_accept(self):
         # self.selected is either:
@@ -619,12 +642,22 @@ class FolderBrowserDialog(MochaDialog):
         self.accept()
 
     def closeEvent(self, event):
+        self._closed = True
         self._cancel_token[0] = True
         if self._worker is not None:
             try:
                 self._worker.done.disconnect(self._on_fetch_done)
             except RuntimeError:
                 pass
+        # disconnect notifier callbacks to prevent use-after-free
+        try:
+            from .theme import notifier
+            if hasattr(self, '_refresh_path_icon'):
+                notifier().accent_changed.disconnect(self._refresh_path_icon)
+            if hasattr(self, '_refresh_list_cb'):
+                notifier().accent_changed.disconnect(self._refresh_list_cb)
+        except Exception:
+            pass
         # also mark any outstanding workers for cancellation
         try:
             for w in list(_OUTSTANDING_FETCH_WORKERS):
@@ -697,9 +730,11 @@ class ShareLinkDialog(MochaDialog):
             lay.addItem(grip_item)
 
     def _copy(self):
-        QApplication.clipboard().setText(self.url)
+        cb = QApplication.clipboard()
+        if cb is not None:
+            cb.setText(self.url)
         self.copy_btn.setText("✓  Copied!")
-        QTimer.singleShot(2000, lambda: self.copy_btn.setText("⧉  Copy URL"))
+        QTimer.singleShot(2000, lambda btn=self.copy_btn: btn.setText("⧉  Copy URL"))
 
 
 # ── Local path dialog (used in mass-upload file picker) ──────────────────────

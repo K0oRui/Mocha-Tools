@@ -604,7 +604,7 @@ class SyncTab(QWidget):
         self._schedule_uploads()
 
         # If nothing left for this pair mark idle
-        still_pending = any(p_id == pair_id for (p_id, *_rest) in self._pending_queue)
+        still_pending = any(item[0] == pair_id for item in self._pending_queue if item)
         active_count = len(pair.get("worker") or [])
         if not still_pending and active_count == 0:
             pair["status"]      = _ST_IDLE
@@ -734,6 +734,8 @@ class SyncTab(QWidget):
             parent_rel = os.path.dirname(rel_path).replace("\\", "/")
             if parent_rel:
                 parent_item = self._ensure_folder_item(pair_id, parent_rel)
+                if parent_item is None:
+                    parent_item = root_item
             else:
                 parent_item = root_item
 
@@ -768,6 +770,8 @@ class SyncTab(QWidget):
         parent_rel = os.path.dirname(folder_rel).replace("\\", "/").strip("/")
         if parent_rel:
             parent_item = self._ensure_folder_item(pair_id, parent_rel)
+            if parent_item is None:
+                return None
         else:
             parent_item = pair["tree_item"]
 
