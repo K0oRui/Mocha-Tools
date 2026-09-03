@@ -35,4 +35,5 @@
 /Mocha Tools.spec
 /app-debug.apk
 /venv311
+/.venv/
 /__pycache__

@@ -1,6 +1,6 @@
 requests
-PyQt6
-pyinstaller
+PySide6
+nuitka
 packaging
 keyring
 mutagen

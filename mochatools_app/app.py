@@ -12,9 +12,9 @@ Tab index reference:
 import os
 import sys
 
-from PyQt6.QtCore import Qt, QSize, QTimer, QEvent, QSettings, QRectF
-from PyQt6.QtGui import QColor, QPalette, QAction, QPainterPath, QRegion
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QSize, QTimer, QEvent, QSettings, QRectF
+from PySide6.QtGui import QColor, QPalette, QAction, QPainterPath, QRegion
+from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QProgressBar, QPushButton, QCheckBox, QComboBox, QScrollArea,
     QSizePolicy, QSpinBox, QVBoxLayout, QWidget, QMessageBox,
@@ -1153,7 +1153,7 @@ class MochaTools(QMainWindow):
             w.start()
             self._update_dl_worker = w
 
-        from PyQt6.QtCore import QThread
+        from PySide6.QtCore import QThread
         class _FetchThread(QThread):
             def run(self_):
                 _fetch()
@@ -1604,7 +1604,7 @@ def main():
 
     try:
         from .theme import get_font
-        from PyQt6.QtGui import QFont
+        from PySide6.QtGui import QFont
         fam, sz = get_font()
         if fam:
             app.setFont(QFont(fam, int(sz)))
@@ -1692,7 +1692,7 @@ def main():
                         from .theme import get_font
                         fam, sz = get_font()
                         if fam:
-                            from PyQt6.QtGui import QFont
+                            from PySide6.QtGui import QFont
                             a = QApplication.instance()
                             if a:
                                 a.setFont(QFont(fam, int(sz)))
@@ -1749,7 +1749,7 @@ def main():
             from .theme import notifier as _notifier
             def _on_font_change(fam, sz):
                 try:
-                    from PyQt6.QtGui import QFont
+                    from PySide6.QtGui import QFont
                     a = QApplication.instance()
                     if a:
                         a.setFont(QFont(fam, int(sz)))

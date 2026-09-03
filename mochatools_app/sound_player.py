@@ -1,7 +1,7 @@
 """
 sound_player.py — Optional per-event sound playback for MochaTools.
 
-Six events can each be assigned an audio file (any format PyQt6 Multimedia
+Six events can each be assigned an audio file (any format PySide6 Multimedia
 can decode — wav, mp3, ogg, flac, m4a, etc.). If an event has no file
 assigned, playing it is a silent no-op — nothing happens, by design.
 
@@ -12,7 +12,7 @@ size) so file paths persist across restarts as soon as they're picked.
 
 import os
 
-from PyQt6.QtCore import QSettings, QUrl
+from PySide6.QtCore import QSettings, QUrl
 
 from .constants import ORG_NAME, APP_NAME
 
@@ -61,7 +61,7 @@ def play_sound_event(event_key: str) -> None:
         return
 
     try:
-        from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+        from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
     except Exception:
         return
 

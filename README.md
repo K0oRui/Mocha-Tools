@@ -39,9 +39,9 @@
 ## HUGE THANKS TO [BINK-LAB](https://github.com/Bink-lab) FOR MOCHA, ACCESS TO IT AND THE API, AS WELL AS CONTRIBUTIONS
 ## Source Requirements
 - Python 3.11 **ONLY** (can be downloaded [here](https://www.python.org/downloads/))
-- PyQt6
+- PySide6
 - requests
-- pyinstaller
+- nuitka
 - Packaging
 - Keyring
 - mutagen

@@ -19,9 +19,9 @@ except ImportError:
 _KR_SERVICE = "MochaTools"
 _KR_USER    = "api_key"
 
-from PyQt6.QtCore import Qt, QSettings
-from PyQt6.QtGui import QColor, QPalette
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QSettings
+from PySide6.QtGui import QColor, QPalette
+from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QProgressBar, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
     QSizePolicy,
@@ -64,7 +64,7 @@ def build_settings_tab(win) -> QWidget:
 
     # Each tab page uses a scroll area with slightly larger top padding so
     # section headers don't overlap the tab underline.
-    from PyQt6.QtWidgets import QScrollArea
+    from PySide6.QtWidgets import QScrollArea
     basic_page = QWidget(); basic_l = QVBoxLayout(basic_page); basic_l.setContentsMargins(8, 12, 8, 8); basic_l.setSpacing(12)
     upload_page = QWidget(); upload_l = QVBoxLayout(upload_page); upload_l.setContentsMargins(8, 12, 8, 8); upload_l.setSpacing(12)
     updates_page = QWidget(); updates_l = QVBoxLayout(updates_page); updates_l.setContentsMargins(8, 12, 8, 8); updates_l.setSpacing(12)
@@ -90,7 +90,7 @@ def build_settings_tab(win) -> QWidget:
         # A small live preview (swatch + hex) above the picker itself.
         pick_lbl = QLabel("Accent colour"); pick_lbl.setObjectName("field_label")
         try:
-            from PyQt6.QtWidgets import QSizePolicy as _SP
+            from PySide6.QtWidgets import QSizePolicy as _SP
             pick_lbl.setSizePolicy(_SP.Policy.Fixed, _SP.Policy.Fixed)
         except Exception:
             pass
@@ -113,7 +113,7 @@ def build_settings_tab(win) -> QWidget:
         # Embed the colour picker directly in the page instead of opening it
         # as a separate dialog — there's no point making the user open a
         # popup for something that fits fine inline.
-        from PyQt6.QtWidgets import QColorDialog, QDialogButtonBox
+        from PySide6.QtWidgets import QColorDialog, QDialogButtonBox
         win.acc_dialog = QColorDialog(QColor(DEFAULT_ACCENT), win)
         win.acc_dialog.setOption(QColorDialog.ColorDialogOption.DontUseNativeDialog, True)
         try:
@@ -147,14 +147,14 @@ def build_settings_tab(win) -> QWidget:
                     _install_lucide_spin_arrows(sb)
             except Exception:
                 pass
-        from PyQt6.QtCore import QTimer
+        from PySide6.QtCore import QTimer
         QTimer.singleShot(0, _style_dialog_spinboxes)
 
         # Background theme selector (Mocha / White / Black)
         bg_row = QHBoxLayout(); bg_row.setContentsMargins(0, 0, 0, 0); bg_row.setSpacing(8)
         bg_lbl = QLabel("Background"); bg_lbl.setObjectName("field_label")
         try:
-            from PyQt6.QtWidgets import QSizePolicy as _SP
+            from PySide6.QtWidgets import QSizePolicy as _SP
             bg_lbl.setSizePolicy(_SP.Policy.Fixed, _SP.Policy.Fixed)
         except Exception:
             pass
@@ -191,7 +191,7 @@ def build_settings_tab(win) -> QWidget:
         # initialize font controls from persisted/runtime values
         try:
             from ..theme import get_font
-            from PyQt6.QtGui import QFont
+            from PySide6.QtGui import QFont
             fam, fsz = get_font()
             try:
                 win.font_combo.setCurrentFont(QFont(fam))
@@ -205,7 +205,7 @@ def build_settings_tab(win) -> QWidget:
             win.font_size.setValue(13)
         # make font combo visually compact to match other controls
         try:
-            from PyQt6.QtGui import QFont
+            from PySide6.QtGui import QFont
             win.font_combo.setFixedHeight(34)
             # enforce a compact, uniform rendering for the popup list so items
             # don't render using their own family at large sizes
@@ -215,7 +215,7 @@ def build_settings_tab(win) -> QWidget:
                     # Prevent the popup from rendering each item using its own
                     # font by installing a delegate that forces a uniform
                     # preview font and item height.
-                    from PyQt6.QtWidgets import QStyledItemDelegate
+                    from PySide6.QtWidgets import QStyledItemDelegate
 
                     class _FixedFontDelegate(QStyledItemDelegate):
                         def initStyleOption(self, option, index):
@@ -258,11 +258,11 @@ def build_settings_tab(win) -> QWidget:
         # add a chevron overlay on the right to mimic the spinbox arrows
         try:
             from ..ui.icons import lucide_icon
-            from PyQt6.QtCore import QEvent, QSize, QObject
+            from PySide6.QtCore import QEvent, QSize, QObject
             # NOTE: Qt is already imported at module scope; importing it again
             # here would make Python treat `Qt` as a function-local everywhere
             # in build_settings_tab, breaking earlier uses (UnboundLocalError).
-            from PyQt6.QtWidgets import QToolButton
+            from PySide6.QtWidgets import QToolButton
             class _ComboOverlay(QObject):
                 def __init__(self, cmb):
                     super().__init__(cmb)
@@ -314,7 +314,7 @@ def build_settings_tab(win) -> QWidget:
                 pass
             # ensure overlay positioned after initial layout
             try:
-                from PyQt6.QtCore import QTimer
+                from PySide6.QtCore import QTimer
                 QTimer.singleShot(40, lambda: getattr(win.font_combo, '_overlay_btn', None) and getattr(win.font_combo, '_overlay_btn').raise_())
             except Exception:
                 pass
@@ -380,7 +380,7 @@ def build_settings_tab(win) -> QWidget:
 
             # Update palette and global stylesheet
             try:
-                from PyQt6.QtWidgets import QApplication
+                from PySide6.QtWidgets import QApplication
                 from ..styles import build_stylesheet
                 from ..theme import get_accent, get_background
                 a = QApplication.instance()
@@ -401,8 +401,8 @@ def build_settings_tab(win) -> QWidget:
             # Apply font selection
             try:
                 from ..theme import set_font, notifier
-                from PyQt6.QtGui import QFont
-                from PyQt6.QtWidgets import QApplication
+                from PySide6.QtGui import QFont
+                from PySide6.QtWidgets import QApplication
                 fam = win.font_combo.currentFont().family()
                 sz = int(win.font_size.value())
                 set_font(fam, sz, persist=bool(win.remember_cb.isChecked()))
@@ -431,7 +431,7 @@ def build_settings_tab(win) -> QWidget:
             # reset font to defaults
             try:
                 from ..theme import DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE
-                from PyQt6.QtGui import QFont
+                from PySide6.QtGui import QFont
                 # Try several methods to ensure the combo actually selects the family
                 try:
                     win.font_combo.setCurrentFont(QFont(DEFAULT_FONT_FAMILY))
@@ -548,7 +548,7 @@ def build_settings_tab(win) -> QWidget:
         tabs.currentChanged.connect(_ensure_accent_spin_arrows)
     except Exception:
         pass
-    from PyQt6.QtCore import QTimer
+    from PySide6.QtCore import QTimer
     QTimer.singleShot(120, lambda: _ensure_accent_spin_arrows(None))
 
     center_row.addWidget(tabs, 1)
@@ -970,9 +970,9 @@ def _install_lucide_spin_arrows(sb: QSpinBox):
             "QSpinBox::down-button { width: 0px; border: none; }"
         )
         from ..ui.icons import lucide_icon
-        from PyQt6.QtCore import QEvent, QObject, QSize, QTimer
-        from PyQt6.QtCore import Qt as _Qt
-        from PyQt6.QtWidgets import QToolButton
+        from PySide6.QtCore import QEvent, QObject, QSize, QTimer
+        from PySide6.QtCore import Qt as _Qt
+        from PySide6.QtWidgets import QToolButton
 
         class _SpinOverlay(QObject):
             def __init__(self, spinbox: QSpinBox):
@@ -1088,7 +1088,7 @@ def _add_spin_row(card_lay: QVBoxLayout, label: str, spinbox: QSpinBox):
     lbl = QLabel(label)
     lbl.setObjectName("field_label")
     try:
-        from PyQt6.QtWidgets import QSizePolicy
+        from PySide6.QtWidgets import QSizePolicy
         lbl.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
     except Exception:
         pass

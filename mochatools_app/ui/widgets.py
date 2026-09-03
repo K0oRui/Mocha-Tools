@@ -8,9 +8,9 @@ ui/widgets.py — Reusable custom Qt widgets for MochaTools.
 
 import os
 
-from PyQt6.QtCore import Qt, QSize, pyqtSignal, QUrl
-from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent, QDesktopServices
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QSize, Signal, QUrl
+from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QDesktopServices
+from PySide6.QtWidgets import (
     QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow,
     QMenu, QPushButton, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
@@ -29,7 +29,7 @@ class DropZone(QFrame):
     base for os.path.relpath so common-path guessing is never needed.
     """
 
-    selection_changed = pyqtSignal(list, str)
+    selection_changed = Signal(list, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -223,7 +223,7 @@ class FullWidthTabWidget(QWidget):
     width — no bare gap to the right of the last tab.
     """
 
-    currentChanged = pyqtSignal(int)
+    currentChanged = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)

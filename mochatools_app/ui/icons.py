@@ -5,9 +5,9 @@ Minimal subset of Lucide icon paths used throughout the app.
 Each value is the SVG <path d="..."> content for a 24x24 viewBox icon.
 """
 
-from PyQt6.QtCore import QByteArray, QSize, Qt
-from PyQt6.QtGui import QIcon, QPixmap, QPainter
-from PyQt6.QtSvg import QSvgRenderer
+from PySide6.QtCore import QByteArray, QSize, Qt
+from PySide6.QtGui import QIcon, QPixmap, QPainter
+from PySide6.QtSvg import QSvgRenderer
 
 _LUCIDE_PATHS: dict[str, str] = {
     "upload":         'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12',

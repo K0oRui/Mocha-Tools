@@ -14,7 +14,7 @@ import threading
 import time
 from typing import Any, Callable
 
-from PyQt6.QtCore import QThread, pyqtSignal, QObject
+from PySide6.QtCore import QThread, Signal, QObject
 
 POLL_INTERVAL = 5          # seconds between refreshes
 _CACHE_VERSION = 0         # bumped on invalidation so stale renders never block
@@ -118,7 +118,7 @@ class CachePollWorker(QThread):
     Fetches one (op, kwargs) slot and emits refreshed(op, data, kwargs_tuple).
     Used by the poller to do network I/O off the main thread.
     """
-    refreshed = pyqtSignal(str, object, object)   # op, data, kwargs_dict
+    refreshed = Signal(str, object, object)   # op, data, kwargs_dict
 
     def __init__(self, op: str, api_key: str, base_url: str, kwargs: dict):
         super().__init__()
@@ -221,7 +221,7 @@ class CachePoller(QObject):
             ]
 
     def start(self):
-        from PyQt6.QtCore import QTimer
+        from PySide6.QtCore import QTimer
         if self._timer is None:
             self._timer = QTimer()
             self._timer.setInterval(POLL_INTERVAL * 1000)

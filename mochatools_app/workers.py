@@ -5,7 +5,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
-from PyQt6.QtCore import QThread, pyqtSignal
+from PySide6.QtCore import QThread, Signal
 
 from .constants import (
     CHUNK_SIZE,
@@ -136,12 +136,12 @@ class ProgressTracker:
 
 # ── Upload Worker ────────────────────────────────────────────────────────────
 class UploadWorker(QThread):
-    progress        = pyqtSignal(float)                  # 0.0-100.0
-    speed           = pyqtSignal(float)                  # bytes/sec
-    bytes_progress  = pyqtSignal('qint64', 'qint64')     # (bytes_done, bytes_total) — 64-bit to handle files > 2 GB
-    status          = pyqtSignal(str)          # log message
-    finished        = pyqtSignal(dict)         # result dict
-    error           = pyqtSignal(str)
+    progress        = Signal(float)                  # 0.0-100.0
+    speed           = Signal(float)                  # bytes/sec
+    bytes_progress  = Signal('qint64', 'qint64')     # (bytes_done, bytes_total) — 64-bit to handle files > 2 GB
+    status          = Signal(str)          # log message
+    finished        = Signal(dict)         # result dict
+    error           = Signal(str)
 
     def __init__(self, api_key, base_url, file_pairs,
                  create_share, share_expiry, share_max_downloads,
@@ -859,8 +859,8 @@ class UploadWorker(QThread):
 # ── Files API Worker ─────────────────────────────────────────────────────────
 class FilesWorker(QThread):
     """Generic background worker for Files-tab API operations."""
-    done    = pyqtSignal(object)   # result payload (varies by op)
-    error   = pyqtSignal(str)
+    done    = Signal(object)   # result payload (varies by op)
+    error   = Signal(str)
     # (connect_timeout, read_timeout) — fail fast on unreachable hosts
     _TIMEOUT = (5, 60)
 
@@ -1123,8 +1123,8 @@ class FilesWorker(QThread):
 
 # ── Remote Ingest Worker ─────────────────────────────────────────────────────
 class RemoteWorker(QThread):
-    done  = pyqtSignal(object)
-    error = pyqtSignal(str)
+    done  = Signal(object)
+    error = Signal(str)
     _TIMEOUT = (5, 60)  # (connect, read)
 
     def __init__(self, op, api_key, base_url, **kwargs):
@@ -1192,8 +1192,8 @@ class RemoteWorker(QThread):
 # ── Storage Capacity Worker ───────────────────────────────────────────────────
 class StorageWorker(QThread):
     """Fetches remote storage capacity for the titlebar indicator."""
-    done  = pyqtSignal(object)   # dict: usedBytes, availableBytes, maxStorageBytes, storagePercent
-    error = pyqtSignal(str)
+    done  = Signal(object)   # dict: usedBytes, availableBytes, maxStorageBytes, storagePercent
+    error = Signal(str)
     _TIMEOUT = (5, 60)  # (connect, read)
 
     def __init__(self, api_key, base_url):
@@ -1217,10 +1217,10 @@ class StorageWorker(QThread):
 # ── Direct Download Worker ────────────────────────────────────────────────────
 class DownloadWorker(QThread):
     """Downloads a file from a presigned URL directly to a local path."""
-    progress = pyqtSignal(float)    # 0.0-100.0
-    speed    = pyqtSignal(float)    # bytes/sec
-    done     = pyqtSignal(str)      # local file path on success
-    error    = pyqtSignal(str)
+    progress = Signal(float)    # 0.0-100.0
+    speed    = Signal(float)    # bytes/sec
+    done     = Signal(str)      # local file path on success
+    error    = Signal(str)
 
     def __init__(self, url: str, dest_path: str, parent=None):
         super().__init__(parent)

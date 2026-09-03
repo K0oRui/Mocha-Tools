@@ -1,8 +1,8 @@
 import requests
 
-from PyQt6.QtCore import Qt, QThread, QTimer, QPoint, pyqtSignal
-from PyQt6.QtGui import QColor, QMouseEvent
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QThread, QTimer, QPoint, Signal
+from PySide6.QtGui import QColor, QMouseEvent
+from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QHBoxLayout,
@@ -270,7 +270,7 @@ class _FolderFetchWorker(QThread):
     A cancel token (single-element list) lets the caller suppress the result
     if the user has already navigated elsewhere before the response arrives.
     """
-    done = pyqtSignal(str, object)   # (path, data_dict | Exception)
+    done = Signal(str, object)   # (path, data_dict | Exception)
 
     # Persistent session shared across all workers — keeps the TCP+TLS
     # connection alive so subsequent fetches skip the handshake entirely.

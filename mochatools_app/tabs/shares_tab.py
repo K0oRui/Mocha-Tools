@@ -13,9 +13,9 @@ both the tree and the cache store before the worker confirms.
 
 import requests as _req
 
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QSize
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QHBoxLayout, QLabel, QMenu,
     QMessageBox, QPushButton, QSizePolicy, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
@@ -110,7 +110,7 @@ class SharesTab(QWidget):
         except Exception:
             pass
 
-        from PyQt6.QtWidgets import QHeaderView
+        from PySide6.QtWidgets import QHeaderView
         hdr = self.tree.header()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         hdr.setHighlightSections(False)

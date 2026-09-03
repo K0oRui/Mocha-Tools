@@ -36,9 +36,9 @@ import os
 import time
 from typing import Callable
 
-from PyQt6.QtCore import Qt, QSize, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QSize, QThread, QTimer, Signal
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QFileDialog, QHBoxLayout, QLabel,
     QMenu, QMessageBox, QPushButton, QSizePolicy, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -70,7 +70,7 @@ class _ScanWorker(QThread):
     than the manifest entry (or are absent from the manifest entirely).
     Runs off the main thread so large trees don't block the UI.
     """
-    found = pyqtSignal(str, list)   # (pair_id, [(local_path, rel_path), ...])
+    found = Signal(str, list)   # (pair_id, [(local_path, rel_path), ...])
 
     def __init__(self, pair_id: str, local_root: str, manifest: dict):
         super().__init__()
@@ -192,7 +192,7 @@ class SyncTab(QWidget):
         self.tree.customContextMenuRequested.connect(self._context_menu)
         self.tree.setAnimated(True)
 
-        from PyQt6.QtWidgets import QHeaderView
+        from PySide6.QtWidgets import QHeaderView
         hdr = self.tree.header()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         hdr.setStretchLastSection(True)
@@ -961,7 +961,7 @@ class SyncTab(QWidget):
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def _load_pairs(self):
-        from PyQt6.QtCore import QSettings
+        from PySide6.QtCore import QSettings
         s   = QSettings(ORG_NAME, APP_NAME)
         raw = s.value("sync_pairs", None)
         if not raw:
@@ -1000,7 +1000,7 @@ class SyncTab(QWidget):
         )
 
     def _save_pairs(self):
-        from PyQt6.QtCore import QSettings
+        from PySide6.QtCore import QSettings
         s    = QSettings(ORG_NAME, APP_NAME)
         data = []
         for pair_id, pair in self._pairs.items():

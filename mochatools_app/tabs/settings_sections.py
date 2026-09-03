@@ -1,7 +1,7 @@
 import os
 
-from PyQt6.QtCore import Qt, QObject, QEvent
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QObject, QEvent
+from PySide6.QtWidgets import (
 	QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
 	QProgressBar, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 	QAbstractButton, QSizePolicy, QLayout,
@@ -61,8 +61,8 @@ def _spinbox(min_val: int, max_val: int, default: int,
 		# differences in internal button types and ensures arrows render on
 		# Windows.
 		from ..ui.icons import lucide_icon
-		from PyQt6.QtCore import QSize, QTimer, QBuffer, QIODevice
-		from PyQt6.QtGui import QPixmap
+		from PySide6.QtCore import QSize, QTimer, QBuffer, QIODevice
+		from PySide6.QtGui import QPixmap
 
 		def _inject_arrow_images():
 			try:
@@ -109,7 +109,7 @@ def _spinbox(min_val: int, max_val: int, default: int,
 				ico_dn = lucide_icon("chevron-down", "#f0ece6", 16)
 				pm_up = ico_up.pixmap(12, 12)
 				pm_dn = ico_dn.pixmap(12, 12)
-				from PyQt6.QtGui import QIcon
+				from PySide6.QtGui import QIcon
 				icon_up = QIcon(pm_up)
 				icon_dn = QIcon(pm_dn)
 				# Order by vertical position so we map up/down correctly
@@ -179,8 +179,8 @@ def _add_spin_row(card_lay: QVBoxLayout, label: str, spinbox: QSpinBox):
 	# SVG or PNG pitfalls on Windows and keeps icons crisp at small sizes.
 	try:
 		from ..ui.icons import lucide_icon
-		from PyQt6.QtCore import QTimer, QSize, QEvent
-		from PyQt6.QtWidgets import QToolButton
+		from PySide6.QtCore import QTimer, QSize, QEvent
+		from PySide6.QtWidgets import QToolButton
 
 		class _SpinOverlayHandler(QObject):
 			def __init__(self, sb: QSpinBox):
@@ -200,7 +200,7 @@ def _add_spin_row(card_lay: QVBoxLayout, label: str, spinbox: QSpinBox):
 					up.setIcon(ico_up); dn.setIcon(ico_dn)
 					sz = QSize(12, 12)
 					up.setIconSize(sz); dn.setIconSize(sz)
-					from PyQt6.QtCore import Qt
+					from PySide6.QtCore import Qt
 					up.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
 					dn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
 					up.setStyleSheet('background: transparent; border: none;')
@@ -490,7 +490,7 @@ def build_updates_tab(win, lay: QVBoxLayout):
 def build_sounds_tab(win, lay: QVBoxLayout):
 	"""
 	Build the Sounds settings section. Each event gets an optional audio
-	file (any format PyQt6 Multimedia can play), a Browse… button to pick
+	file (any format PySide6 Multimedia can play), a Browse… button to pick
 	one, and a Reset button to clear it. Events with no file assigned are
 	silent — nothing plays.
 	"""
@@ -503,7 +503,7 @@ def build_sounds_tab(win, lay: QVBoxLayout):
 
 	note = QLabel(
 		"Optionally play a sound for each of these events. Leave one unset "
-		"and nothing plays for it. Any audio format PyQt6 Multimedia can "
+		"and nothing plays for it. Any audio format PySide6 Multimedia can "
 		"decode is supported (WAV, MP3, OGG, FLAC, M4A, and more)."
 	)
 	note.setObjectName("field_label")

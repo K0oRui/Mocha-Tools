@@ -7,9 +7,9 @@ Starts server-side remote downloads and displays transfer jobs.
 import os
 from urllib.parse import urlparse, unquote
 
-from PyQt6.QtCore import Qt, QSize, QTimer
-from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QSize, QTimer
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QFrame, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget, QAbstractScrollArea, QSizePolicy,

@@ -7,9 +7,9 @@ Embedded into the Upload tab of MochaTools; not a standalone tab.
 import os
 import itertools
 
-from PyQt6.QtCore import Qt, QSize, QTimer
-from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QSize, QTimer
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
     QAbstractItemView, QFrame, QHBoxLayout, QHeaderView, QInputDialog,
     QLabel, QLineEdit, QMenu, QProgressBar, QPushButton, QScrollArea,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,

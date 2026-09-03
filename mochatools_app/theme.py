@@ -1,5 +1,5 @@
-from PyQt6.QtCore import QSettings, QObject, pyqtSignal
-from PyQt6.QtGui import QColor
+from PySide6.QtCore import QSettings, QObject, Signal
+from PySide6.QtGui import QColor
 from .constants import ORG_NAME, APP_NAME
 
 # Default accent color used across the app
@@ -157,11 +157,11 @@ def accent_qcolor() -> QColor:
 
 class _AccentNotifier(QObject):
 	# emit (old_hex, new_hex)
-	accent_changed = pyqtSignal(str, str)
+	accent_changed = Signal(str, str)
 	# emit (family, size)
-	font_changed = pyqtSignal(str, int)
+	font_changed = Signal(str, int)
 	# emit (old_theme_key, new_theme_key)
-	background_changed = pyqtSignal(str, str)
+	background_changed = Signal(str, str)
 
 
 _notifier = _AccentNotifier()

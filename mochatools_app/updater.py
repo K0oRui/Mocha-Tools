@@ -40,20 +40,36 @@ import zipfile
 from packaging.version import Version
 
 import requests
-from PyQt6.QtCore import QThread, pyqtSignal
+from PySide6.QtCore import QThread, Signal
 
 from .constants import APP_VERSION, UPDATE_CHECK_URL
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
+
+def _is_compiled() -> bool:
+    """Return True when running as a compiled/bundled app.
+
+    PyInstaller sets ``sys.frozen``; Nuitka provides the ``__compiled__``
+    builtin. Checking both keeps the updater working regardless of which
+    packager produced the running binary.
+    """
+    if getattr(sys, "frozen", False):
+        return True
+    try:
+        return bool(__compiled__)  # type: ignore[name-defined]  # Nuitka builtin
+    except NameError:
+        return False
+
+
 def _current_exe() -> str:
     """Return the path to the running executable (or .app bundle on macOS)."""
-    if getattr(sys, "frozen", False):
+    if _is_compiled():
         exe = sys.executable
         if platform.system() == "Darwin":
             contents = os.path.dirname(os.path.dirname(exe))
-            bundle   = os.path.dirname(contents)
+            bundle = os.path.dirname(contents)
             if bundle.endswith(".app"):
                 return bundle
         return exe
@@ -149,12 +165,13 @@ def _ensure_admin_windows() -> bool:
 
 # ── Update check ─────────────────────────────────────────────────────────────
 
+
 class UpdateCheckWorker(QThread):
     """Checks GitHub Releases API; emits update_available if a newer tag exists."""
 
-    update_available = pyqtSignal(str, str, str)   # (tag, download_url, release_notes)
-    up_to_date       = pyqtSignal()
-    error            = pyqtSignal(str)
+    update_available = Signal(str, str, str)  # (tag, download_url, release_notes)
+    up_to_date = Signal()
+    error = Signal(str)
 
     def run(self):
         try:
@@ -166,7 +183,9 @@ class UpdateCheckWorker(QThread):
             resp.raise_for_status()
             data = resp.json()
         except requests.exceptions.Timeout:
-            self.error.emit("Connection to GitHub timed out. Check your network and try again.")
+            self.error.emit(
+                "Connection to GitHub timed out. Check your network and try again."
+            )
             return
         except requests.exceptions.ConnectionError:
             self.error.emit("Could not reach GitHub. Check your internet connection.")
@@ -179,9 +198,9 @@ class UpdateCheckWorker(QThread):
             self.error.emit(f"Update check failed: {e}")
             return
 
-        latest_tag   = data.get("tag_name", "")
+        latest_tag = data.get("tag_name", "")
         release_body = data.get("body", "")
-        assets       = data.get("assets", [])
+        assets = data.get("assets", [])
 
         if not _is_newer(latest_tag, APP_VERSION):
             self.up_to_date.emit()
@@ -199,13 +218,18 @@ class UpdateCheckWorker(QThread):
             return
 
         url = next(
-            (a.get("browser_download_url", "") for a in assets if a.get("name") == want),
+            (
+                a.get("browser_download_url", "")
+                for a in assets
+                if a.get("name") == want
+            ),
             "",
         )
         self.update_available.emit(latest_tag, url, release_body)
 
 
 # ── Download & install ───────────────────────────────────────────────────────
+
 
 def launch_update_batch(bat_path: str, test_mode: bool = False) -> None:
     """
@@ -231,7 +255,7 @@ def launch_update_batch(bat_path: str, test_mode: bool = False) -> None:
         # a child of this process.  Without this, `taskkill /F /T` in the batch
         # kills the batch script itself before it can copy the new exe and
         # relaunch.
-        DETACHED_PROCESS         = 0x00000008
+        DETACHED_PROCESS = 0x00000008
         CREATE_NEW_PROCESS_GROUP = 0x00000200
         flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
 
@@ -277,20 +301,23 @@ def launch_update_terminal(script_path: str) -> bool:
     if not script_path or not os.path.exists(script_path):
         return False
 
-    os.chmod(script_path, os.stat(script_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    os.chmod(
+        script_path,
+        os.stat(script_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH,
+    )
 
     # Try common terminal emulators in order of preference. Each needs a
     # slightly different "run this command and keep the window open" syntax.
     candidates = [
         ("x-terminal-emulator", ["-e", "bash", script_path]),
-        ("gnome-terminal",      ["--", "bash", script_path]),
-        ("konsole",             ["-e", "bash", script_path]),
-        ("xfce4-terminal",      ["-e", f"bash {script_path}"]),
-        ("mate-terminal",       ["-e", f"bash {script_path}"]),
-        ("tilix",               ["-e", f"bash {script_path}"]),
-        ("alacritty",           ["-e", "bash", script_path]),
-        ("kitty",               ["bash", script_path]),
-        ("xterm",               ["-hold", "-e", "bash", script_path]),
+        ("gnome-terminal", ["--", "bash", script_path]),
+        ("konsole", ["-e", "bash", script_path]),
+        ("xfce4-terminal", ["-e", f"bash {script_path}"]),
+        ("mate-terminal", ["-e", f"bash {script_path}"]),
+        ("tilix", ["-e", f"bash {script_path}"]),
+        ("alacritty", ["-e", "bash", script_path]),
+        ("kitty", ["bash", script_path]),
+        ("xterm", ["-hold", "-e", "bash", script_path]),
     ]
 
     for terminal, args in candidates:
@@ -316,13 +343,13 @@ def launch_update_terminal(script_path: str) -> bool:
 class UpdateDownloadWorker(QThread):
     """Downloads the update asset and replaces the running binary."""
 
-    progress = pyqtSignal(int)          # 0–100
-    status   = pyqtSignal(str)          # human-readable status text
-    done     = pyqtSignal()             # update installed; caller should prompt restart
-    ready_to_restart = pyqtSignal(str)  # path to a script ready to launch on restart
-                                          # (Windows: .bat that launches the installer exe;
-                                          #  Linux: .sh launched in a terminal that runs installer.sh)
-    error    = pyqtSignal(str)
+    progress = Signal(int)  # 0–100
+    status = Signal(str)  # human-readable status text
+    done = Signal()  # update installed; caller should prompt restart
+    ready_to_restart = Signal(str)  # path to a script ready to launch on restart
+    # (Windows: .bat that launches the installer exe;
+    #  Linux: .sh launched in a terminal that runs installer.sh)
+    error = Signal(str)
 
     def __init__(self, download_url: str, tag: str = "", parent=None):
         super().__init__(parent)
@@ -341,9 +368,9 @@ class UpdateDownloadWorker(QThread):
             self.error.emit(str(e))
 
     def _download_and_install(self):
-        system     = platform.system()
-        _test_mode = "--test-update" in sys.argv and not getattr(sys, "frozen", False)
-        target     = _current_exe_override() if _test_mode else _current_exe()
+        system = platform.system()
+        _test_mode = "--test-update" in sys.argv and not _is_compiled()
+        target = _current_exe_override() if _test_mode else _current_exe()
         if not target:
             self.error.emit(
                 "Cannot auto-update when running from source. "
@@ -401,7 +428,9 @@ class UpdateDownloadWorker(QThread):
             self.error.emit("Download timed out. Check your connection and try again.")
             return
         except requests.exceptions.ConnectionError:
-            self.error.emit("Could not reach the download server. Check your internet connection.")
+            self.error.emit(
+                "Could not reach the download server. Check your internet connection."
+            )
             return
         except requests.exceptions.HTTPError as e:
             code = e.response.status_code if e.response is not None else "?"
@@ -411,7 +440,7 @@ class UpdateDownloadWorker(QThread):
             self.error.emit(f"Download failed: {e}")
             return
 
-        total   = int(resp.headers.get("content-length", 0))
+        total = int(resp.headers.get("content-length", 0))
         fetched = 0
         tmp_dir = tempfile.mkdtemp(prefix="mochatools_update_")
         tmp_asset = os.path.join(tmp_dir, asset_name)
@@ -462,9 +491,9 @@ class UpdateDownloadWorker(QThread):
         if not os.path.exists(installer_path):
             raise RuntimeError(f"Downloaded installer not found: {installer_path}")
 
-        bat        = os.path.join(tmp_dir, "update.bat")
-        _test_mode = "--test-update" in sys.argv and not getattr(sys, "frozen", False)
-        log        = os.path.join(os.path.dirname(target), "update.log")
+        bat = os.path.join(tmp_dir, "update.bat")
+        _test_mode = "--test-update" in sys.argv and not _is_compiled()
+        log = os.path.join(os.path.dirname(target), "update.log")
 
         lines = [
             "@echo off",
@@ -478,9 +507,13 @@ class UpdateDownloadWorker(QThread):
             "timeout /t 3 /nobreak >NUL",
             "",
             f'call :log "Launching installer: {installer_path}"',
-            *([] if _test_mode else [
-                f'start "" "{installer_path}"',
-            ]),
+            *(
+                []
+                if _test_mode
+                else [
+                    f'start "" "{installer_path}"',
+                ]
+            ),
             "",
             f'call :log "Done."',
             "goto end",
@@ -490,7 +523,7 @@ class UpdateDownloadWorker(QThread):
             "goto end",
             "",
             ":log",
-            r'echo %~1',
+            r"echo %~1",
             r'echo %~1 >>"%LOG%"',
             "exit /b",
             "",
@@ -514,8 +547,11 @@ class UpdateDownloadWorker(QThread):
             zf.extractall(extract_dir)
 
         new_app = next(
-            (os.path.join(extract_dir, e)
-             for e in os.listdir(extract_dir) if e.endswith(".app")),
+            (
+                os.path.join(extract_dir, e)
+                for e in os.listdir(extract_dir)
+                if e.endswith(".app")
+            ),
             None,
         )
         if not new_app:
@@ -550,8 +586,8 @@ class UpdateDownloadWorker(QThread):
             raise RuntimeError(f"Downloaded update not found: {tarball_path}")
 
         extract_dir = os.path.join(tmp_dir, "extracted")
-        _test_mode  = "--test-update" in sys.argv and not getattr(sys, "frozen", False)
-        log         = os.path.join(tempfile.gettempdir(), "mochatools_update.log")
+        _test_mode = "--test-update" in sys.argv and not _is_compiled()
+        log = os.path.join(tempfile.gettempdir(), "mochatools_update.log")
 
         script_path = os.path.join(tmp_dir, "update.sh")
 
@@ -566,16 +602,16 @@ class UpdateDownloadWorker(QThread):
             'if pgrep -x "mochatools" > /dev/null 2>&1; then',
             '  echo "Stopping running mochatools..." | tee -a "$LOG"',
             '  pkill -x "mochatools" 2>/dev/null || true',
-            '  sleep 2',
-            '  # Force kill if still running',
+            "  sleep 2",
+            "  # Force kill if still running",
             '  if pgrep -x "mochatools" > /dev/null 2>&1; then',
             '    pkill -9 -x "mochatools" 2>/dev/null || true',
-            '    sleep 1',
-            '  fi',
+            "    sleep 1",
+            "  fi",
             '  echo "Process stopped." | tee -a "$LOG"',
-            'else',
+            "else",
             '  echo "No running instance found." | tee -a "$LOG"',
-            'fi',
+            "fi",
             "",
             f'mkdir -p "{extract_dir}"',
             f'echo "Extracting update..." | tee -a "$LOG"',
@@ -593,15 +629,19 @@ class UpdateDownloadWorker(QThread):
             # installer.sh handles its own sudo escalation via exec sudo
             'echo "Running installer..." | tee -a "$LOG"',
             "echo",
-            *([] if _test_mode else [
-                "./installer.sh",
-            ]),
+            *(
+                []
+                if _test_mode
+                else [
+                    "./installer.sh",
+                ]
+            ),
             "",
             # Cleanup temp directory
             'echo "Cleaning up..." | tee -a "$LOG"',
             f'rm -rf "$TMP_DIR"',
             "",
-            'echo',
+            "echo",
             'echo "Update complete. You can close this window and relaunch Mocha Tools."',
             'read -n 1 -s -r -p "Press any key to close..."',
         ]
@@ -609,6 +649,9 @@ class UpdateDownloadWorker(QThread):
         script = "\n".join(lines) + "\n"
         with open(script_path, "w", encoding="utf-8") as fh:
             fh.write(script)
-        os.chmod(script_path, os.stat(script_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        os.chmod(
+            script_path,
+            os.stat(script_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH,
+        )
 
         return script_path

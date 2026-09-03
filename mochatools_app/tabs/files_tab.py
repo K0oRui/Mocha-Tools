@@ -20,9 +20,9 @@ import os
 
 import requests
 
-from PyQt6.QtCore import Qt, QSize, QTimer, QUrl, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QIcon, QPixmap, QMovie, QFont, QTextCharFormat, QSyntaxHighlighter, QPainter
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QSize, QTimer, QUrl, QThread, Signal
+from PySide6.QtGui import QColor, QIcon, QPixmap, QMovie, QFont, QTextCharFormat, QSyntaxHighlighter, QPainter
+from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QDialog, QFileDialog, QFrame,
     QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMenu,
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSlider,
@@ -246,8 +246,8 @@ class _PygmentsHighlighter(QSyntaxHighlighter):
 
 class _FetchWorker(QThread):
     """Downloads a URL into memory on a background thread."""
-    finished = pyqtSignal(bytes)
-    error    = pyqtSignal(str)
+    finished = Signal(bytes)
+    error    = Signal(str)
 
     def __init__(self, url: str, parent=None):
         super().__init__(parent)
@@ -505,8 +505,8 @@ class PreviewDialog(MochaDialog):
     def _show_video(self, data: bytes):
         try:
             import tempfile as _tf, os as _os
-            from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
-            from PyQt6.QtMultimediaWidgets import QVideoWidget
+            from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+            from PySide6.QtMultimediaWidgets import QVideoWidget
 
             suffix = _os.path.splitext(self._name)[1] or ".mp4"
             tmp = _tf.NamedTemporaryFile(delete=False, suffix=suffix)
@@ -530,8 +530,8 @@ class PreviewDialog(MochaDialog):
 
         except ImportError:
             self._loading_lbl.setText(
-                "Video preview requires PyQt6-Qt6-Multimedia.\n"
-                "Install with:  pip install PyQt6-Qt6-Multimedia"
+                "Video preview requires PySide6 Multimedia.\n"
+                "Install with:  pip install PySide6 Multimedia"
             )
             self._loading_lbl.show()
         except Exception as exc:
@@ -543,7 +543,7 @@ class PreviewDialog(MochaDialog):
     def _show_audio(self, data: bytes):
         try:
             import tempfile as _tf, os as _os
-            from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+            from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
             suffix = _os.path.splitext(self._name)[1] or ".mp3"
             tmp = _tf.NamedTemporaryFile(delete=False, suffix=suffix)
@@ -591,8 +591,8 @@ class PreviewDialog(MochaDialog):
 
         except ImportError:
             self._loading_lbl.setText(
-                "Audio preview requires PyQt6-Qt6-Multimedia.\n"
-                "Install with:  pip install PyQt6-Qt6-Multimedia"
+                "Audio preview requires PySide6 Multimedia.\n"
+                "Install with:  pip install PySide6 Multimedia"
             )
             self._loading_lbl.show()
         except Exception as exc:
@@ -623,7 +623,7 @@ class PreviewDialog(MochaDialog):
         return QIcon(canvas)
 
     def _make_transport(self, player) -> QHBoxLayout:
-        from PyQt6.QtMultimedia import QMediaPlayer
+        from PySide6.QtMultimedia import QMediaPlayer
 
         row = QHBoxLayout()
         row.setSpacing(8)
