@@ -41,7 +41,7 @@ fi
 # Icon — look for a bundled png
 ICON_SRC=""
 for candidate in \
-    "$SCRIPT_DIR/builditems/debian_ubuntu/icon.png" \
+    "$SCRIPT_DIR/build/debian_ubuntu/icon.png" \
     "$SCRIPT_DIR/icon.png"; do
     if [[ -f "$candidate" ]]; then
         ICON_SRC="$candidate"

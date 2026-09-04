@@ -42,11 +42,11 @@ RequestExecutionLevel admin
 
 ; ── UI Pages ─────────────────────────────────────────────────────────────────
 !define MUI_ABORTWARNING
-!define MUI_ICON    "builditems\windows\icon.ico"
-!define MUI_UNICON  "builditems\windows\icon.ico"
+!define MUI_ICON    "build\windows\icon.ico"
+!define MUI_UNICON  "build\windows\icon.ico"
 
 !insertmacro MUI_PAGE_WELCOME
-!insertmacro MUI_PAGE_LICENSE "LICENSE"
+!insertmacro MUI_PAGE_LICENSE "..\..\LICENSE"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 
@@ -83,7 +83,7 @@ Section "Install" SecInstall
   File '/oname=${APP_EXE}' "dist\Mocha Tools.exe"
 
   ; Optional: icon file for shortcuts
-  File "builditems\windows\icon.ico"
+  File "build\windows\icon.ico"
 
   ; Start Menu shortcut
   CreateDirectory "$SMPROGRAMS\${APP_NAME}"

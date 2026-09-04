@@ -10,14 +10,17 @@ builditems/windows/version.txt for PyInstaller's --version-file.
 Usage:
     python builditems/stamp_version.py v4.0.0
 """
+
 import re
 import sys
 from pathlib import Path
+
 
 def make_tuple(version: str) -> str:
     """Convert '4.1.3' -> '4, 1, 3, 0'"""
     parts = (version.lstrip("v").split(".") + ["0", "0", "0", "0"])[:4]
     return ", ".join(p.zfill(1) for p in parts)
+
 
 def main():
     if len(sys.argv) != 2:
@@ -56,7 +59,7 @@ def main():
         nsi_text = nsi.read_text(encoding="utf-8")
         nsi_new, n = re.subn(
             r'(!define APP_VERSION\s+")([\d.]+)(")',
-            rf'\g<1>{version}\3',
+            rf"\g<1>{version}\3",
             nsi_text,
         )
         if n:
@@ -71,7 +74,7 @@ def main():
         sh_text = installer_sh.read_text(encoding="utf-8")
         sh_new, n = re.subn(
             r'^(APP_VERSION=")v?[\d.]+(")',
-            rf'\g<1>v{version}\2',
+            rf"\g<1>v{version}\2",
             sh_text,
             flags=re.MULTILINE,
         )
@@ -83,10 +86,11 @@ def main():
 
     # ── 4. builditems/windows/version.txt (generated for PyInstaller) ────────
     ver_tuple = make_tuple(version)
-    ver_dir = root / "builditems" / "windows"
+    ver_dir = root / "build" / "windows"
     ver_dir.mkdir(parents=True, exist_ok=True)
     ver_file = ver_dir / "version.txt"
-    ver_file.write_text(f"""\
+    ver_file.write_text(
+        f"""\
 # UTF-8
 VSVersionInfo(
   ffi=FixedFileInfo(
@@ -120,8 +124,11 @@ VSVersionInfo(
     VarFileInfo([VarStruct(u'Translation', [0x0409, 1200])])
   ]
 )
-""", encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
     print(f"Generated {ver_file}")
+
 
 if __name__ == "__main__":
     main()
