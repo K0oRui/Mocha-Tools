@@ -57,7 +57,8 @@ from .dialogs import FolderBrowserDialog
 from .logging_utils import write_debug_log
 from .theme import get_accent
 from .ui import lucide_icon
-from .workers import StorageWorker, UploadWorker
+from .upload_pipeline import UploadJob
+from .workers import StorageWorker
 
 # ── Small reusable section-header / card helpers (self-contained) ────────────
 
@@ -516,43 +517,23 @@ def install_upload(win, ctx):
                     pass
         ctx.upload_grand_total = grand_total
 
-        w = UploadWorker(
-            ctx.client,
-            file_pairs,
-            win.create_share_cb.isChecked(),
-            expiry_hours,
-            max_dl,
+        job = UploadJob(
+            file_pairs=file_pairs,
+            create_share=win.create_share_cb.isChecked(),
+            share_expiry_hours=expiry_hours,
+            share_max_downloads=max_dl,
             chunk_size_mb=win.chunk_size_spin.value(),
             max_chunks=win.max_chunks_spin.value(),
+            source="single",
         )
-        w.progress.connect(win._on_progress)
-        w.speed.connect(win._on_speed)
-        w.status.connect(win._log)
-        w.finished.connect(win._on_finished)
-        w.error.connect(win._on_error)
-        if hasattr(w, "bytes_progress"):
-            w.bytes_progress.connect(win._on_bytes_progress)
-        w.start()
-        ctx.upload_worker = w
+        ctx.upload_job_id = ctx.upload_manager.enqueue(job)
 
     win._start_upload = _start_upload
 
     def _cancel_upload():
-        if ctx.upload_worker:
-            ctx.upload_worker.cancel()
-            try:
-                ctx.upload_worker.progress.disconnect()
-                ctx.upload_worker.speed.disconnect()
-                ctx.upload_worker.status.disconnect()
-                ctx.upload_worker.finished.disconnect()
-                ctx.upload_worker.error.disconnect()
-                if hasattr(ctx.upload_worker, "bytes_progress"):
-                    try:
-                        ctx.upload_worker.bytes_progress.disconnect()
-                    except RuntimeError:
-                        pass
-            except RuntimeError:
-                pass
+        if ctx.upload_job_id is not None:
+            ctx.upload_manager.cancel(ctx.upload_job_id)
+            ctx.upload_job_id = None
         win._set_uploading(False)
         win._badge("Cancelled", "#9ca3af")
         win.progress_bar.setValue(0)
@@ -591,6 +572,7 @@ def install_upload(win, ctx):
 
     def _on_finished(result: dict):
         ctx.is_uploading = False
+        ctx.upload_job_id = None
         win._badge("Complete", "#4ade80")
         win.transferred_label.setText("")
         win._log(f"✓ Done! File ID: {result.get('file_id', '')}")
@@ -617,6 +599,7 @@ def install_upload(win, ctx):
 
     def _on_error(msg: str):
         ctx.is_uploading = False
+        ctx.upload_job_id = None
         win._badge("Error", "#f87171")
         win.transferred_label.setText("")
         win._log(f"✗ Error: {msg}")
@@ -684,3 +667,40 @@ def install_upload(win, ctx):
         pass  # keep last shown text
 
     win._on_storage_error = _on_storage_error
+
+    # ── Shared pipeline wiring ─────────────────────────────────────────────
+    # The single-file tab has at most one active job, so handlers filter on
+    # the current job ID.  Mass/sync tabs will subscribe to the same signals
+    # with their own job-ID routing.
+    mgr = ctx.upload_manager
+    if mgr is not None:
+        mgr.job_progress.connect(
+            lambda jid, ref, pct: (
+                win._on_progress(pct) if jid == ctx.upload_job_id else None
+            )
+        )
+        mgr.job_speed.connect(
+            lambda jid, ref, bps: (
+                win._on_speed(bps) if jid == ctx.upload_job_id else None
+            )
+        )
+        mgr.job_bytes.connect(
+            lambda jid, ref, done, total: (
+                win._on_bytes_progress(done, total)
+                if jid == ctx.upload_job_id
+                else None
+            )
+        )
+        mgr.job_status.connect(
+            lambda jid, ref, msg: win._log(msg) if jid == ctx.upload_job_id else None
+        )
+        mgr.job_done.connect(
+            lambda jid, ref, result: (
+                win._on_finished(result) if jid == ctx.upload_job_id else None
+            )
+        )
+        mgr.job_error.connect(
+            lambda jid, ref, msg: (
+                win._on_error(msg) if jid == ctx.upload_job_id else None
+            )
+        )

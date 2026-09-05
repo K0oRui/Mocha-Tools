@@ -61,6 +61,7 @@ from ..constants import (
     ORG_NAME,
 )
 from ..ui.icons import lucide_icon
+from ..upload_pipeline import PRIORITY_SYNC, UploadJob
 from ..workers import UploadWorker
 
 # Seconds between filesystem scans per pair
@@ -130,9 +131,11 @@ class SyncTab(QWidget):
         ],  # (conc, chunk_mb, max_chunks)
         get_debug: Callable[[], bool] = lambda: False,
         parent=None,
+        upload_manager=None,
     ):
         super().__init__(parent)
         self._client = client
+        self._manager = upload_manager
         self.get_sync_settings = get_sync_settings
         self.get_debug = get_debug
 
@@ -140,9 +143,8 @@ class SyncTab(QWidget):
         #             tree_item, file_items, paused, error_msg}
         self._pairs: dict[str, dict] = {}
         self._workers: list[QThread] = []
-        self._pending_queue: list[
-            tuple
-        ] = []  # (pair_id, abs_path, rel_path, remote_dest)
+        # job_id → (pair_id, rel_path) for routing manager signals
+        self._job_map: dict[int, tuple[str, str]] = {}
 
         self._scan_timer = QTimer(self)
         self._scan_timer.setInterval(SCAN_INTERVAL * 1000)
@@ -150,6 +152,7 @@ class SyncTab(QWidget):
 
         self._build_ui()
         self._load_pairs()
+        self._connect_manager()
         self._scan_timer.start()
 
     # ── UI construction ───────────────────────────────────────────────────────
@@ -332,14 +335,12 @@ class SyncTab(QWidget):
             "remote": remote,
             "status": _ST_PAUSED if paused else _ST_IDLE,
             "manifest": manifest,  # {rel_path: mtime_float}
-            "worker": [],
             "scan_worker": None,
             "tree_item": root_item,
             "file_items": {},  # rel_path → QTreeWidgetItem
             "folder_items": {},  # rel_folder_path → QTreeWidgetItem
             "paused": paused,
             "error_msg": "",
-            "pending_iter": iter([]),
         }
         self._refresh_pair_badge(pair_id)
         # Populate initial folder/file tree from disk so the user sees a
@@ -390,79 +391,16 @@ class SyncTab(QWidget):
         pair = self._pairs.get(pair_id)
         if not pair:
             return
-        w = pair.get("worker")
-        # worker may be a list of workers
-        workers = w if isinstance(w, list) else ([w] if w is not None else [])
-        for _w in list(workers):
-            if not _w:
-                continue
-            try:
-                # signal-disconnect to avoid callbacks after cancel
-                for sig_name in ("progress", "speed", "status", "finished", "error"):
-                    try:
-                        getattr(_w, sig_name).disconnect()
-                    except Exception:
-                        pass
-                if hasattr(_w, "bytes_progress"):
-                    try:
-                        _w.bytes_progress.disconnect()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            try:
-                if hasattr(_w, "cancel"):
-                    _w.cancel()
-            except Exception:
-                pass
-            try:
-                if _w in self._workers:
-                    self._workers.remove(_w)
-            except Exception:
-                pass
-        pair["worker"] = []
+        # Cancel any queued/running uploads for this pair
+        if self._manager is not None:
+            for job_id in [
+                jid for jid, (pid, _rel) in self._job_map.items() if pid == pair_id
+            ]:
+                self._manager.cancel(job_id)
+                self._job_map.pop(job_id, None)
         sw = pair.get("scan_worker")
         if sw and not sw.isFinished():
             sw.terminate()
-        # drop any pending files
-        pair["pending_iter"] = iter([])
-        # Also remove pending items from global pending queue for this pair
-        self._pending_queue = [it for it in self._pending_queue if it[0] != pair_id]
-        # Also cancel any running workers that may not have been in pair["worker"]
-        for _w in list(self._workers):
-            try:
-                if getattr(_w, "_sync_pair_id", None) == pair_id:
-                    try:
-                        for sig_name in (
-                            "progress",
-                            "speed",
-                            "status",
-                            "finished",
-                            "error",
-                        ):
-                            try:
-                                getattr(_w, sig_name).disconnect()
-                            except Exception:
-                                pass
-                        if hasattr(_w, "bytes_progress"):
-                            try:
-                                _w.bytes_progress.disconnect()
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-                    try:
-                        if hasattr(_w, "cancel"):
-                            _w.cancel()
-                    except Exception:
-                        pass
-                    try:
-                        if _w in self._workers:
-                            self._workers.remove(_w)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
 
     # ── Pause / resume ────────────────────────────────────────────────────────
 
@@ -547,21 +485,12 @@ class SyncTab(QWidget):
         pair = self._pairs.get(pair_id)
         if not pair:
             return
+        assert self._manager is not None
 
-        conc, chunk_mb, max_chunks = self.get_sync_settings()
-
-        # Respect the concurrent-files limit across all active pairs (count files)
-        active_files = sum(len(p.get("worker") or []) for p in self._pairs.values())
-        if active_files >= conc:
-            # Already at the limit — leave the pair in SCANNING state so the
-            # next scan cycle will retry once a slot opens up.
-            pair["status"] = _ST_SCANNING
-            self._refresh_pair_badge(pair_id)
-            return
-
+        _conc, chunk_mb, max_chunks = self.get_sync_settings()
         remote_root = pair["remote"].rstrip("/")
 
-        # Enqueue per-file uploads into a global pending queue
+        # Enqueue per-file uploads through the shared pipeline
         pair["status"] = _ST_UPLOADING
         self._refresh_pair_badge(pair_id)
 
@@ -569,10 +498,16 @@ class SyncTab(QWidget):
         for abs_path, rel_path in changed:
             self._ensure_file_item(pair_id, rel_path, "Queued")
             remote_dest = remote_root + "/" + rel_path
-            self._pending_queue.append((pair_id, abs_path, rel_path, remote_dest))
-
-        # Try to schedule uploads up to the global concurrency
-        self._schedule_uploads()
+            job = UploadJob(
+                file_pairs=[(abs_path, remote_dest)],
+                chunk_size_mb=chunk_mb,
+                max_chunks=max_chunks,
+                source="sync",
+                ref=(pair_id, rel_path),
+                priority=PRIORITY_SYNC,
+            )
+            job_id = self._manager.enqueue(job)
+            self._job_map[job_id] = (pair_id, rel_path)
 
     def _on_upload_status(self, pair_id: str, rel_path: str, msg: str):
         pair = self._pairs.get(pair_id)
@@ -673,13 +608,9 @@ class SyncTab(QWidget):
                 pair["file_state"].pop(rel_path, None)
             play_sound_event("sound_sync_file")
 
-        # Try to schedule more uploads
-        self._schedule_uploads()
-
         # If nothing left for this pair mark idle
-        still_pending = any(item[0] == pair_id for item in self._pending_queue if item)
-        active_count = len(pair.get("worker") or [])
-        if not still_pending and active_count == 0:
+        still_pending = any(pid == pair_id for pid, _rel in self._job_map.values())
+        if not still_pending:
             pair["status"] = _ST_IDLE
             pair["_active_rel"] = None
             self._refresh_pair_badge(pair_id)
@@ -694,113 +625,51 @@ class SyncTab(QWidget):
         pair["error_msg"] = msg
         self._refresh_pair_badge(pair_id)
 
-    def _launch_next_file(self, pair_id: str, chunk_mb: int, max_chunks: int):
-        """Start the next file upload for the pair, if any pending."""
+    def _connect_manager(self):
+        if self._manager is None:
+            return
+        mgr = self._manager
+        mgr.job_status.connect(self._on_job_status)
+        mgr.job_speed.connect(self._on_job_speed)
+        mgr.job_bytes.connect(self._on_job_bytes)
+        mgr.job_done.connect(self._on_job_done)
+        mgr.job_error.connect(self._on_job_error)
+
+    def _on_job_status(self, job_id: int, ref, msg: str):
+        if ref is None:
+            return
+        pair_id, rel_path = ref
+        self._on_upload_status(pair_id, rel_path, msg)
+
+    def _on_job_speed(self, job_id: int, ref, bps: float):
+        if ref is None:
+            return
+        pair_id, rel_path = ref
+        self._on_upload_speed(pair_id, bps, rel_path)
+
+    def _on_job_bytes(self, job_id: int, ref, done: int, total: int):
+        if ref is None:
+            return
+        pair_id, rel_path = ref
+        self._on_upload_bytes(pair_id, done, total, rel_path)
+
+    def _on_job_done(self, job_id: int, ref, result: dict):
+        if ref is None:
+            return
+        pair_id, rel_path = ref
+        self._job_map.pop(job_id, None)
         pair = self._pairs.get(pair_id)
         if not pair:
             return
-        # Pop from global pending queue the next item for this pair
-        next_item = None
-        for idx, item in enumerate(list(self._pending_queue)):
-            p_id, abs_path, rel_path, remote_dest = item
-            if p_id == pair_id:
-                next_item = self._pending_queue.pop(idx)
-                break
-        if not next_item:
+        abs_path = os.path.join(pair["local"], rel_path)
+        self._on_upload_done(pair_id, [(abs_path, rel_path)], result)
+
+    def _on_job_error(self, job_id: int, ref, msg: str):
+        if ref is None:
             return
-        _, abs_path, rel_path, remote_dest = next_item
-        if not self._client.has_api_key:
-            pair["status"] = _ST_ERROR
-            pair["error_msg"] = "Missing API key"
-            self._refresh_pair_badge(pair_id)
-            return
-
-        # Create a single-file UploadWorker
-        w = UploadWorker(
-            self._client,
-            [(abs_path, remote_dest)],
-            False,
-            None,
-            None,
-            chunk_size_mb=chunk_mb,
-            max_chunks=max_chunks,
-        )
-
-        # Connect signals to update this file's UI (pass rel_path so handlers
-        # update the correct child row when multiple concurrent uploads run)
-        w.status.connect(
-            lambda msg, pid=pair_id, rel=rel_path: self._on_upload_status(pid, rel, msg)
-        )
-        w.speed.connect(
-            lambda bps, pid=pair_id, rel=rel_path: self._on_upload_speed(pid, bps, rel)
-        )
-        w.bytes_progress.connect(
-            lambda done, total, pid=pair_id, rel=rel_path: self._on_upload_bytes(
-                pid, done, total, rel
-            )
-        )
-
-        def _on_finished_and_cleanup(
-            result, pid=pair_id, ch=[(abs_path, rel_path)], worker_ref=w
-        ):
-            # remove from per-pair worker list and global list then call done
-            p = self._pairs.get(pid)
-            if p and isinstance(p.get("worker"), list) and worker_ref in p["worker"]:
-                try:
-                    p["worker"].remove(worker_ref)
-                except ValueError:
-                    pass
-            try:
-                if worker_ref in self._workers:
-                    self._workers.remove(worker_ref)
-            except Exception:
-                pass
-            self._on_upload_done(pid, ch, result)
-
-        w.finished.connect(_on_finished_and_cleanup)
-        w.error.connect(lambda msg, pid=pair_id: self._on_upload_error(pid, msg))
-        w.status.connect(self._log)
-        w.error.connect(lambda msg: self._log(f"✗ {msg}"))
-        # finished cleanup removed from here; _on_finished_and_cleanup handles removals
-
-        # Track worker in per-pair list
-        if not isinstance(pair.get("worker"), list):
-            pair["worker"] = []
-        pair["worker"].append(w)
-        # tag worker with pair/rel so stop/remove can find it reliably
-        try:
-            setattr(w, "_sync_pair_id", pair_id)
-            setattr(w, "_sync_rel_path", rel_path)
-        except Exception:
-            pass
-        pair["_active_rel"] = rel_path
-        pair["status"] = _ST_UPLOADING
-        self._refresh_pair_badge(pair_id)
-        self._workers.append(w)
-        w.start()
-
-    def _schedule_uploads(self):
-        """Schedule pending uploads from the global pending queue up to concurrency."""
-        conc, chunk_mb, max_chunks = self.get_sync_settings()
-        # Count only active upload workers (scan workers are also tracked in
-        # self._workers so len(self._workers) is not a reliable measure).
-        active_uploads = sum(
-            1 for w in self._workers if getattr(w, "_sync_pair_id", None) is not None
-        )
-        # Launch until we hit the concurrency limit
-        while self._pending_queue and active_uploads < conc:
-            # Peek at first pending entry and attempt to launch for that pair
-            p_id = self._pending_queue[0][0]
-            pair = self._pairs.get(p_id)
-            if not pair or pair.get("paused"):
-                # drop or skip paused/removed pairs
-                # remove all pending items for that pair
-                self._pending_queue = [
-                    it for it in self._pending_queue if it[0] != p_id
-                ]
-                continue
-            self._launch_next_file(p_id, chunk_mb, max_chunks)
-            active_uploads += 1
+        pair_id, rel_path = ref
+        self._job_map.pop(job_id, None)
+        self._on_upload_error(pair_id, msg)
 
     # ── Tree helpers ──────────────────────────────────────────────────────────
 

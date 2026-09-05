@@ -5,7 +5,6 @@ Embedded into the Upload tab of MochaTools; not a standalone tab.
 """
 
 import os
-import itertools
 
 from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtGui import QColor
@@ -29,7 +28,7 @@ from PySide6.QtWidgets import (
 
 from ..constants import DEFAULT_CHUNK_SIZE_MB, DEFAULT_MAX_CHUNKS
 from ..logging_utils import write_debug_log
-from ..workers import UploadWorker
+from ..upload_pipeline import PRIORITY_MASS, UploadJob
 from ..dialogs import FolderBrowserDialog
 from ..ui import lucide_icon
 from ..theme import get_accent, accent_qcolor, get_font, notifier
@@ -49,9 +48,11 @@ class MassUploadSection(QWidget):
         on_upload_done=None,
         parent=None,
         embedded: bool = True,
+        upload_manager=None,
     ):
         super().__init__(parent)
         self._client = client
+        self._manager = upload_manager
         self.get_mass_settings = get_mass_settings or (
             lambda: (1, DEFAULT_CHUNK_SIZE_MB, DEFAULT_MAX_CHUNKS)
         )
@@ -59,12 +60,12 @@ class MassUploadSection(QWidget):
         # on_upload_done(remote_dest: str) — called when each file finishes
         self._on_upload_done_cb = on_upload_done
         self._queue: list[dict] = []
-        self._active_workers: list = []
-        self._pending_iter = iter([])
+        self._job_map: dict[int, dict] = {}
         self._cancelled = False
         self._embedded = embedded
         self._last_speed_bps: float = 0.0
         self._build_ui()
+        self._connect_manager()
 
     def _build_ui(self):
         # If embedded into another scroll area (the main Upload tab), avoid
@@ -354,15 +355,6 @@ class MassUploadSection(QWidget):
         self._prog_bar.setValue(int(pct * 1000))
         self._pct_lbl.setText(f"{pct:.3f}%")
 
-    def _on_file_progress(self, pct: int, entry: dict):
-        if entry not in self._queue or entry.get("item") is None:
-            return
-        entry["_pct"] = float(pct)
-        entry["item"].setText(
-            self._COL_STATUS, f"{pct:.3f}%  ·  {entry.get('_xfr', '')}"
-        )
-        self._update_overall_progress()
-
     # ── Queue management ───────────────────────────────────────────────────
 
     def _on_drop(self, file_list: list[str], root: str):
@@ -400,14 +392,6 @@ class MassUploadSection(QWidget):
 
         self._update_queue_label()
 
-        # Feed new entries into a live iterator if uploads are already running
-        if self._active_workers:
-            pending_new = [e for e in new_entries if e["status"] == "pending"]
-            self._pending_iter = itertools.chain(self._pending_iter, iter(pending_new))
-            conc, _cm, _mc = self.get_mass_settings()
-            for _ in range(max(0, conc - len(self._active_workers))):
-                self._launch_next()
-
         # Offer a destination-folder picker for this batch
         if self._client.has_api_key:
             dlg = FolderBrowserDialog(
@@ -428,6 +412,12 @@ class MassUploadSection(QWidget):
                             else f"/{rel_filename}"
                         )
                         entry["item"].setText(self._COL_DEST, entry["dest"])
+
+        # Feed new entries into the running upload
+        if self._job_map:
+            for entry in new_entries:
+                if entry["status"] == "pending":
+                    self._enqueue_entry(entry)
 
     def _browse_default_dest(self):
         if not self._client.has_api_key:
@@ -561,36 +551,20 @@ class MassUploadSection(QWidget):
     # ── Row removal ───────────────────────────────────────────────────────
 
     def _detach_entry(self, entry: dict):
-        """Disconnect all worker signals and clear the item ref before removal."""
-        w = entry.get("worker")
-        if w is not None:
-            for sig_name in (
-                "progress",
-                "speed",
-                "status",
-                "finished",
-                "error",
-                "bytes_progress",
-            ):
-                sig = getattr(w, sig_name, None)
-                if sig is not None:
-                    try:
-                        sig.disconnect()
-                    except RuntimeError:
-                        pass
+        """Clear the item ref before removal."""
         entry["item"] = None
 
     def _remove_selected(self):
+        assert self._manager is not None
         for item in list(self._tree.selectedItems()):
             row = next((e for e in self._queue if e.get("item") is item), None)
             if row:
-                w = row.get("worker")
-                if w is not None:
-                    w.cancel()
-                    if w in self._active_workers:
-                        self._active_workers.remove(w)
-                    if row.get("status") == "uploading":
-                        row["status"] = "cancelled"
+                if row.get("status") == "uploading":
+                    for job_id, entry in list(self._job_map.items()):
+                        if entry is row:
+                            self._manager.cancel(job_id)
+                            self._job_map.pop(job_id, None)
+                    row["status"] = "cancelled"
                 self._detach_entry(row)
                 self._queue.remove(row)
             idx = self._tree.indexOfTopLevelItem(item)
@@ -611,7 +585,7 @@ class MassUploadSection(QWidget):
         self._update_queue_label()
 
     def _clear_all(self):
-        if self._active_workers:
+        if self._job_map:
             self._cancel()
         for entry in list(self._queue):
             self._detach_entry(entry)
@@ -627,6 +601,39 @@ class MassUploadSection(QWidget):
 
     # ── Upload engine ──────────────────────────────────────────────────────
 
+    def _connect_manager(self):
+        if self._manager is None:
+            return
+        mgr = self._manager
+        mgr.job_progress.connect(self._on_job_progress)
+        mgr.job_speed.connect(self._on_job_speed)
+        mgr.job_status.connect(self._on_job_status)
+        mgr.job_done.connect(self._on_job_done)
+        mgr.job_error.connect(self._on_job_error)
+
+    def _enqueue_entry(self, entry: dict):
+        assert self._manager is not None
+        if entry.get("item") is None:
+            return
+        entry["status"] = "uploading"
+        entry["_bytes_done"] = 0
+        if not entry.get("_bytes_total"):
+            entry["_bytes_total"] = entry.get("size", 0)
+        entry["_xfr"] = f"0 B / {self._fmt(entry['_bytes_total'])}"
+        entry["item"].setText(self._COL_STATUS, f"Uploading…  ·  {entry['_xfr']}")
+        entry["item"].setForeground(3, accent_qcolor())
+        _conc, chunk_mb, max_chunks = self.get_mass_settings()
+        job = UploadJob(
+            file_pairs=[(entry["local"], entry["dest"])],
+            chunk_size_mb=chunk_mb,
+            max_chunks=max_chunks,
+            source="mass",
+            ref=entry,
+            priority=PRIORITY_MASS,
+        )
+        job_id = self._manager.enqueue(job)
+        self._job_map[job_id] = entry
+
     def _start(self):
         if not self._client.has_api_key:
             self._log("⚠ Enter API key in Settings first.")
@@ -640,65 +647,24 @@ class MassUploadSection(QWidget):
         self._cancel_btn.show()
         self._set_badge("Uploading", get_accent())
         self._log(f"Starting {len(pending)} upload{'s' if len(pending) != 1 else ''}…")
-        self._pending_iter = iter(pending)
-        conc, _cm, _mc = self.get_mass_settings()
-        total_slots = min(conc, len(pending))
-        for slot in range(total_slots):
-            if slot == 0:
-                self._launch_next()
-            else:
-                t = QTimer(self)
-                t.setSingleShot(True)
-                t.timeout.connect(lambda: self._launch_next())
-                t.start(slot * 1500)
-
-    def _launch_next(self):
-        if self._cancelled:
-            return
-        while True:
-            try:
-                entry = next(self._pending_iter)
-            except StopIteration:
-                return
-            if entry not in self._queue:
-                continue
-            if entry.get("item") is None:
-                continue
-            break
-
-        entry["status"] = "uploading"
-        entry["_bytes_done"] = 0
-        if not entry.get("_bytes_total"):
-            entry["_bytes_total"] = entry.get("size", 0)
-        entry["_xfr"] = f"0 B / {self._fmt(entry['_bytes_total'])}"
-        entry["item"].setText(self._COL_STATUS, f"Uploading…  ·  {entry['_xfr']}")
-        entry["item"].setForeground(3, accent_qcolor())
-
-        w = UploadWorker(
-            self._client,
-            [(entry["local"], entry["dest"])],
-            False,
-            None,
-            0,
-            chunk_size_mb=self.get_mass_settings()[1],
-            max_chunks=self.get_mass_settings()[2],
-        )
-        entry["worker"] = w
-        self._active_workers.append(w)
-        w.progress.connect(lambda pct, e=entry: self._on_file_progress(pct, e))
-        w.speed.connect(self._on_speed)
-        w.status.connect(lambda msg, e=entry: self._log(msg))
-        w.finished.connect(lambda result, e=entry: self._on_file_done(e))
-        w.error.connect(lambda msg, e=entry: self._on_file_error(msg, e))
-        if hasattr(w, "bytes_progress"):
-            w.bytes_progress.connect(
-                lambda done, total, e=entry: self._on_file_bytes(done, total, e)
-            )
-        w.start()
+        for entry in pending:
+            self._enqueue_entry(entry)
 
     # ── Signal handlers ────────────────────────────────────────────────────
 
-    def _on_speed(self, bps: float):
+    def _on_job_progress(self, job_id: int, ref, pct: float):
+        entry = self._job_map.get(job_id)
+        if entry is None or entry not in self._queue or entry.get("item") is None:
+            return
+        entry["_pct"] = float(pct)
+        entry["item"].setText(
+            self._COL_STATUS, f"{pct:.3f}%  ·  {entry.get('_xfr', '')}"
+        )
+        self._update_overall_progress()
+
+    def _on_job_speed(self, job_id: int, ref, bps: float):
+        if self._job_map.get(job_id) is None:
+            return
         self._last_speed_bps = bps
         if bps < 1024:
             txt = f"{bps:.0f} B/s"
@@ -708,8 +674,13 @@ class MassUploadSection(QWidget):
             txt = f"{bps / 1024**2:.2f} MB/s"
         self._speed_lbl.setText(txt)
 
-    def _on_file_bytes(self, done_bytes: int, total_bytes: int, entry: dict):
-        if entry not in self._queue:
+    def _on_job_status(self, job_id: int, ref, msg: str):
+        if self._job_map.get(job_id) is not None:
+            self._log(msg)
+
+    def _on_job_bytes(self, job_id: int, ref, done_bytes: int, total_bytes: int):
+        entry = self._job_map.get(job_id)
+        if entry is None or entry not in self._queue:
             return
         if entry.get("status") in ("done", "error", "cancelled"):
             return
@@ -728,7 +699,10 @@ class MassUploadSection(QWidget):
                 f"{self._fmt(all_done)} / {self._fmt(all_total)}"
             )
 
-    def _on_file_done(self, entry: dict):
+    def _on_job_done(self, job_id: int, ref, result: dict):
+        entry = self._job_map.pop(job_id, None)
+        if entry is None:
+            return
         entry["status"] = "done"
         entry["_bytes_done"] = entry.get("_bytes_total", entry.get("size", 0))
         if entry in self._queue and entry.get("item") is not None:
@@ -737,8 +711,6 @@ class MassUploadSection(QWidget):
         from ..sound_player import play_sound_event
 
         play_sound_event("sound_mass_file")
-        if entry.get("worker") in self._active_workers:
-            self._active_workers.remove(entry.get("worker"))
         if self._on_upload_done_cb is not None:
             dest = entry.get("dest", "")
             if dest:
@@ -746,25 +718,24 @@ class MassUploadSection(QWidget):
                 self._on_upload_done_cb(folder)
         self._update_queue_label()
         self._update_overall_progress()
-        self._launch_next()
         self._check_all_done()
 
-    def _on_file_error(self, msg: str, entry: dict):
+    def _on_job_error(self, job_id: int, ref, msg: str):
+        entry = self._job_map.pop(job_id, None)
+        if entry is None:
+            return
         entry["status"] = "error"
         if entry in self._queue and entry.get("item") is not None:
             entry["item"].setText(self._COL_STATUS, "✗ Failed")
             entry["item"].setForeground(3, QColor("#f87171"))
             entry["item"].setToolTip(self._COL_STATUS, msg)
-        if entry.get("worker") in self._active_workers:
-            self._active_workers.remove(entry.get("worker"))
         self._log(f"✗ {os.path.basename(entry.get('local', 'unknown'))}: {msg}")
         self._update_queue_label()
         self._update_overall_progress()
-        self._launch_next()
         self._check_all_done()
 
     def _check_all_done(self):
-        if self._active_workers:
+        if self._job_map:
             return
         if any(e.get("status") == "pending" for e in self._queue):
             return
@@ -784,25 +755,11 @@ class MassUploadSection(QWidget):
         play_sound_event("sound_mass_all")
 
     def _cancel(self):
+        assert self._manager is not None
         self._cancelled = True
-        for w in list(self._active_workers):
-            try:
-                w.cancel()
-                for sig_name in ("progress", "speed", "status", "finished", "error"):
-                    sig = getattr(w, sig_name, None)
-                    if sig is not None:
-                        try:
-                            sig.disconnect()
-                        except (RuntimeError, TypeError):
-                            pass
-                if hasattr(w, "bytes_progress"):
-                    try:
-                        w.bytes_progress.disconnect()
-                    except (RuntimeError, TypeError):
-                        pass
-            except RuntimeError:
-                pass
-        self._active_workers.clear()
+        for job_id in list(self._job_map.keys()):
+            self._manager.cancel(job_id)
+        self._job_map.clear()
         for entry in self._queue:
             if entry.get("status") == "uploading":
                 entry["status"] = "cancelled"

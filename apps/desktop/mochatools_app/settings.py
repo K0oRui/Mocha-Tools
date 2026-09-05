@@ -59,6 +59,7 @@ from .constants import (
     DEFAULT_MAX_CHUNKS,
     ORG_NAME,
 )
+from .upload_pipeline import DEFAULT_GLOBAL_CONCURRENCY
 from .theme import (
     BACKGROUND_LABELS,
     DEFAULT_ACCENT,
@@ -470,20 +471,27 @@ def build_basic_tab(win, lay: QVBoxLayout):
 def build_upload_tab(win, lay: QVBoxLayout):
     lay.setAlignment(Qt.AlignmentFlag.AlignTop)
     lay.setSpacing(0)
-    lay.addWidget(_sh("Mass Upload"))
+    lay.addWidget(_sh("Global"))
     card = _card()
     card_lay = QVBoxLayout(card)
     card_lay.setSpacing(10)
 
-    win.mass_conc_spin = _spinbox(
+    win.global_conc_spin = _spinbox(
         1,
         10,
-        2,
-        " files",
-        "How many files upload at the same time."
-        "\nHigher values can saturate slower connections.",
+        DEFAULT_GLOBAL_CONCURRENCY,
+        " uploads",
+        "How many files upload at the same time across all uploads "
+        "(single, mass, and sync).\n"
+        "Higher values can saturate slower connections.",
     )
-    _add_spin_row(card_lay, "Concurrent files", win.mass_conc_spin)
+    _add_spin_row(card_lay, "Concurrent uploads", win.global_conc_spin)
+    lay.addWidget(card)
+
+    lay.addWidget(_sh("Mass Upload"))
+    card = _card()
+    card_lay = QVBoxLayout(card)
+    card_lay.setSpacing(10)
 
     win.mass_chunk_spin = _spinbox(
         1,
@@ -510,16 +518,6 @@ def build_upload_tab(win, lay: QVBoxLayout):
     card = _card()
     card_lay = QVBoxLayout(card)
     card_lay.setSpacing(10)
-
-    win.sync_conc_spin = _spinbox(
-        1,
-        10,
-        2,
-        " files",
-        "How many files the sync watcher uploads at the same time.\n"
-        "Higher values can saturate slower connections.",
-    )
-    _add_spin_row(card_lay, "Concurrent files", win.sync_conc_spin)
 
     win.sync_chunk_spin = _spinbox(
         1,
@@ -1308,14 +1306,15 @@ def load_settings(win):
         s.value("chunk_size_mb", DEFAULT_CHUNK_SIZE_MB, type=int)
     )
     win.max_chunks_spin.setValue(s.value("max_chunks", DEFAULT_MAX_CHUNKS, type=int))
-    win.mass_conc_spin.setValue(s.value("mass_conc", 2, type=int))
+    win.global_conc_spin.setValue(
+        s.value("global_conc", DEFAULT_GLOBAL_CONCURRENCY, type=int)
+    )
     win.mass_chunk_spin.setValue(
         s.value("mass_chunk_mb", DEFAULT_CHUNK_SIZE_MB, type=int)
     )
     win.mass_maxchunk_spin.setValue(
         s.value("mass_max_chunks", DEFAULT_MAX_CHUNKS, type=int)
     )
-    win.sync_conc_spin.setValue(s.value("sync_conc", 2, type=int))
     win.sync_chunk_spin.setValue(
         s.value("sync_chunk_mb", DEFAULT_CHUNK_SIZE_MB, type=int)
     )
@@ -1397,10 +1396,9 @@ def save_settings(win):
     s.setValue("minimize_to_tray", win.minimize_to_tray_cb.isChecked())
     s.setValue("chunk_size_mb", win.chunk_size_spin.value())
     s.setValue("max_chunks", win.max_chunks_spin.value())
-    s.setValue("mass_conc", win.mass_conc_spin.value())
+    s.setValue("global_conc", win.global_conc_spin.value())
     s.setValue("mass_chunk_mb", win.mass_chunk_spin.value())
     s.setValue("mass_max_chunks", win.mass_maxchunk_spin.value())
-    s.setValue("sync_conc", win.sync_conc_spin.value())
     s.setValue("sync_chunk_mb", win.sync_chunk_spin.value())
     s.setValue("sync_max_chunks", win.sync_maxchunk_spin.value())
     s.setValue("browser_download", win.browser_download_cb.isChecked())
