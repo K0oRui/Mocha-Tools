@@ -1,5 +1,4 @@
-"""
-updater.py — Auto-update support for Mocha Tools
+"""updater.py — Auto-update support for Mocha Tools.
 
 Flow:
   1. UpdateCheckWorker runs on startup (background thread).
@@ -28,8 +27,9 @@ Asset naming convention (must match build.yml):
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
-import os
+import pathlib
 import platform
 import shutil
 import stat
@@ -37,13 +37,13 @@ import subprocess
 import sys
 import tempfile
 import zipfile
-from packaging.version import Version
 
 import requests
-from PySide6.QtCore import QThread, Signal
+from packaging.version import Version
+from PySide6.QtCore import QObject, QThread, Signal
 
 from .constants import APP_VERSION, UPDATE_CHECK_URL
-
+from .logging_utils import write_debug_log
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -68,8 +68,8 @@ def _current_exe() -> str:
     if _is_compiled():
         exe = sys.executable
         if platform.system() == "Darwin":
-            contents = os.path.dirname(os.path.dirname(exe))
-            bundle = os.path.dirname(contents)
+            contents = pathlib.Path(exe).parent.parent
+            bundle = str(contents.parent)
             if bundle.endswith(".app"):
                 return bundle
         return exe
@@ -77,8 +77,7 @@ def _current_exe() -> str:
 
 
 def _current_exe_override() -> str:
-    """
-    Returns a fake frozen install path for --test-update when running from source.
+    """Returns a fake frozen install path for --test-update when running from source.
     Creates a dummy onefile layout under the system temp dir so the batch script
     has a real file to back up and replace.
 
@@ -86,20 +85,18 @@ def _current_exe_override() -> str:
       <tmp>/mochatools_test_install/
           Mocha Tools.exe     ← placeholder — will be overwritten by the update
     """
-    dummy_dir = os.path.join(tempfile.gettempdir(), "mochatools_test_install")
-    dummy_exe = os.path.join(dummy_dir, "Mocha Tools.exe")
-    os.makedirs(dummy_dir, exist_ok=True)
+    dummy_dir = str(pathlib.Path(tempfile.gettempdir()) / "mochatools_test_install")
+    dummy_exe = str(pathlib.Path(dummy_dir) / "Mocha Tools.exe")
+    pathlib.Path(dummy_dir).mkdir(exist_ok=True, parents=True)
     # Only create if it doesn't exist — don't overwrite if a previous test run
     # already placed a real binary here (e.g. from a successful update test).
-    if not os.path.exists(dummy_exe):
-        with open(dummy_exe, "w") as fh:
-            fh.write("placeholder - old version")
+    if not pathlib.Path(dummy_exe).exists():
+        pathlib.Path(dummy_exe).write_text("placeholder - old version")
     return dummy_exe
 
 
 def _asset_prefix() -> str:
-    """
-    Return the macOS arch-specific filename prefix used in GitHub release
+    """Return the macOS arch-specific filename prefix used in GitHub release
     assets, e.g. "macos-arm64-3.0.1.zip". Windows and Linux assets use their
     own naming schemes handled directly in _asset_name().
     """
@@ -116,7 +113,8 @@ def _asset_name(tag: str) -> str:
     # Guard: if tag is not a string (e.g. accidentally passed a QObject), coerce it
     tag = str(tag).strip() if tag else ""
     if not tag:
-        raise ValueError("_asset_name() called with an empty tag")
+        msg = "_asset_name() called with an empty tag"
+        raise ValueError(msg)
 
     if platform.system() == "Windows":
         # Windows installer asset filename matches build.yml's ${{ env.VERSION }},
@@ -133,20 +131,24 @@ def _asset_name(tag: str) -> str:
 def _is_newer(latest: str, current: str) -> bool:
     try:
         return Version(latest.lstrip("v")) > Version(current.lstrip("v"))
-    except Exception:
+    except (AttributeError, TypeError, RuntimeError, ValueError) as e:
+        write_debug_log(f"[Silenced] _is_newer: {e}")
         return latest != current
 
 
 def _ensure_admin_windows() -> bool:
-    """
-    On Windows, re-launch the current process with UAC elevation if we are not
+    """On Windows, re-launch the current process with UAC elevation if we are not
     already running as administrator.  Returns True if already elevated (caller
     should proceed), False if we requested elevation and the caller should exit
     (the elevated copy will take over).
     """
-    try:
-        is_admin = ctypes.windll.shell32.IsUserAnAdmin()
-    except Exception:
+    if sys.platform == "win32":
+        try:
+            is_admin = ctypes.windll.shell32.IsUserAnAdmin()
+        except OSError as e:
+            write_debug_log(f"Admin check failed: {e}")
+            is_admin = False
+    else:
         is_admin = False
 
     if is_admin:
@@ -154,12 +156,15 @@ def _ensure_admin_windows() -> bool:
 
     # Re-launch with 'runas' verb (triggers UAC prompt)
     params = " ".join(f'"{a}"' for a in sys.argv)
-    try:
+    with contextlib.suppress(Exception):
         ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", sys.executable, params, None, 1
+            None,
+            "runas",
+            sys.executable,
+            params,
+            None,
+            1,
         )
-    except Exception:
-        pass
     return False  # caller should sys.exit() or abort
 
 
@@ -173,7 +178,7 @@ class UpdateCheckWorker(QThread):
     up_to_date = Signal()
     error = Signal(str)
 
-    def run(self):
+    def run(self) -> None:
         try:
             resp = requests.get(
                 UPDATE_CHECK_URL,
@@ -184,7 +189,7 @@ class UpdateCheckWorker(QThread):
             data = resp.json()
         except requests.exceptions.Timeout:
             self.error.emit(
-                "Connection to GitHub timed out. Check your network and try again."
+                "Connection to GitHub timed out. Check your network and try again.",
             )
             return
         except requests.exceptions.ConnectionError:
@@ -194,7 +199,7 @@ class UpdateCheckWorker(QThread):
             code = e.response.status_code if e.response is not None else "?"
             self.error.emit(f"GitHub returned an error (HTTP {code}). Try again later.")
             return
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self.error.emit(f"Update check failed: {e}")
             return
 
@@ -231,9 +236,8 @@ class UpdateCheckWorker(QThread):
 # ── Download & install ───────────────────────────────────────────────────────
 
 
-def launch_update_batch(bat_path: str, test_mode: bool = False) -> None:
-    """
-    Launch a previously-prepared update script (see
+def launch_update_batch(bat_path: str, _test_mode: bool = False) -> None:
+    """Launch a previously-prepared update script (see
     UpdateDownloadWorker.ready_to_restart).
 
     - Windows : runs the .bat via cmd.exe with DETACHED_PROCESS so it survives
@@ -245,7 +249,7 @@ def launch_update_batch(bat_path: str, test_mode: bool = False) -> None:
     - macOS   : update is applied in-place by _install_macos; this function is
                 not normally called on that platform.
     """
-    if not bat_path or not os.path.exists(bat_path):
+    if not bat_path or not pathlib.Path(bat_path).exists():
         return
 
     system = platform.system()
@@ -275,9 +279,11 @@ def launch_update_batch(bat_path: str, test_mode: bool = False) -> None:
         if not launched:
             # No graphical terminal found — run headlessly as a last resort.
             # The user won't see output, but the update will still proceed.
-            os.chmod(
-                bat_path,
-                os.stat(bat_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH,
+            pathlib.Path(bat_path).chmod(
+                pathlib.Path(bat_path).stat().st_mode
+                | stat.S_IEXEC
+                | stat.S_IXGRP
+                | stat.S_IXOTH
             )
             subprocess.Popen(
                 ["bash", bat_path],
@@ -290,20 +296,21 @@ def launch_update_batch(bat_path: str, test_mode: bool = False) -> None:
 
 
 def launch_update_terminal(script_path: str) -> bool:
-    """
-    Launch a previously-prepared update shell script (see
+    """Launch a previously-prepared update shell script (see
     UpdateDownloadWorker._install_linux) inside a terminal emulator so the
     user can see output and respond to any sudo/password prompts.
 
     Returns True if a terminal was launched, False if none could be found
     (caller should show an error pointing the user at the script path).
     """
-    if not script_path or not os.path.exists(script_path):
+    if not script_path or not pathlib.Path(script_path).exists():
         return False
 
-    os.chmod(
-        script_path,
-        os.stat(script_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH,
+    pathlib.Path(script_path).chmod(
+        pathlib.Path(script_path).stat().st_mode
+        | stat.S_IEXEC
+        | stat.S_IXGRP
+        | stat.S_IXOTH
     )
 
     # Try common terminal emulators in order of preference. Each needs a
@@ -333,9 +340,11 @@ def launch_update_terminal(script_path: str) -> bool:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            return True
-        except Exception:
+        except (AttributeError, TypeError, RuntimeError, OSError) as e:
+            write_debug_log(f"[Silenced] launch_update_terminal: {e}")
             continue
+        else:
+            return True
 
     return False
 
@@ -343,7 +352,7 @@ def launch_update_terminal(script_path: str) -> bool:
 class UpdateDownloadWorker(QThread):
     """Downloads the update asset and replaces the running binary."""
 
-    progress = Signal(int)  # 0–100
+    progress = Signal(int)  # 0-100
     status = Signal(str)  # human-readable status text
     done = Signal()  # update installed; caller should prompt restart
     ready_to_restart = Signal(str)  # path to a script ready to launch on restart
@@ -351,7 +360,12 @@ class UpdateDownloadWorker(QThread):
     #  Linux: .sh launched in a terminal that runs installer.sh)
     error = Signal(str)
 
-    def __init__(self, download_url: str, tag: str = "", parent=None):
+    def __init__(
+        self,
+        download_url: str,
+        tag: str = "",
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent)
         self.download_url = str(download_url).strip()
         # Sanitise tag — must be a plain version string, never an object repr
@@ -361,47 +375,48 @@ class UpdateDownloadWorker(QThread):
             raw_tag = ""
         self.tag = raw_tag
 
-    def run(self):
+    def run(self) -> None:
         try:
             self._download_and_install()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self.error.emit(str(e))
 
-    def _download_and_install(self):
+    def _download_and_install(self) -> None:
         system = platform.system()
-        _test_mode = "--test-update" in sys.argv and not _is_compiled()
-        target = _current_exe_override() if _test_mode else _current_exe()
+        test_mode = "--test-update" in sys.argv and not _is_compiled()
+        target = _current_exe_override() if test_mode else _current_exe()
         if not target:
             self.error.emit(
                 "Cannot auto-update when running from source. "
-                "Pull the latest code manually."
+                "Pull the latest code manually.",
             )
             return
-        if _test_mode:
-            self.status.emit(f"[TEST] Fake install dir: {os.path.dirname(target)}")
+        if test_mode:
+            self.status.emit(
+                f"[TEST] Fake install dir: {pathlib.Path(target).parent!s}"
+            )
 
         # On Windows, ensure we have write permission (UAC elevation if needed).
         # Probe the install directory rather than the target exe itself — the
         # exe may be locked by the OS even though the directory is writable.
         if system == "Windows":
             try:
-                probe = os.path.join(os.path.dirname(target), ".mocha_write_test")
-                with open(probe, "w") as fh:
-                    fh.write("ok")
-                os.remove(probe)
+                probe = str(pathlib.Path(target).parent / ".mocha_write_test")
+                pathlib.Path(probe).write_text("ok")
+                pathlib.Path(probe).unlink()
             except PermissionError:
                 # We don't have write access — request elevation and bail
                 elevated = _ensure_admin_windows()
                 if not elevated:
                     self.error.emit(
                         "Administrator privileges are required to install the update.\n"
-                        "The app will re-launch with elevated permissions."
+                        "The app will re-launch with elevated permissions.",
                     )
                     return
                 # If we somehow are elevated but still can't write, report it
                 self.error.emit(
                     "Cannot write to the installation directory even as administrator.\n"
-                    "Try running the updater manually."
+                    "Try running the updater manually.",
                 )
                 return
 
@@ -429,31 +444,31 @@ class UpdateDownloadWorker(QThread):
             return
         except requests.exceptions.ConnectionError:
             self.error.emit(
-                "Could not reach the download server. Check your internet connection."
+                "Could not reach the download server. Check your internet connection.",
             )
             return
         except requests.exceptions.HTTPError as e:
             code = e.response.status_code if e.response is not None else "?"
             self.error.emit(f"Download failed: server returned HTTP {code}.")
             return
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self.error.emit(f"Download failed: {e}")
             return
 
         total = int(resp.headers.get("content-length", 0))
         fetched = 0
         tmp_dir = tempfile.mkdtemp(prefix="mochatools_update_")
-        tmp_asset = os.path.join(tmp_dir, asset_name)
+        tmp_asset = str(pathlib.Path(tmp_dir) / asset_name)
 
         try:
-            with open(tmp_asset, "wb") as fh:
+            with pathlib.Path(tmp_asset).open("wb") as fh:
                 for chunk in resp.iter_content(chunk_size=65536):
                     if chunk:
                         fh.write(chunk)
                         fetched += len(chunk)
                         if total:
                             self.progress.emit(int(fetched / total * 90))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self.error.emit(f"Failed writing download: {e}")
             return
 
@@ -467,59 +482,58 @@ class UpdateDownloadWorker(QThread):
             self.status.emit("Update ready. Restart to apply.")
             self.ready_to_restart.emit(bat)
             return
-        elif system == "Darwin":
+        if system == "Darwin":
             self._install_macos(tmp_asset, target, tmp_dir)
             self.progress.emit(100)
             self.status.emit("Update installed. Restart to apply.")
             self.done.emit()
             return
-        else:
-            script = self._install_linux(tmp_asset, target, tmp_dir)
-            self.progress.emit(100)
-            self.status.emit("Update ready. Quit to continue in terminal.")
-            self.ready_to_restart.emit(script)
-            return
+        script = self._install_linux(tmp_asset, target, tmp_dir)
+        self.progress.emit(100)
+        self.status.emit("Update ready. Quit to continue in terminal.")
+        self.ready_to_restart.emit(script)
+        return
 
     # ── Platform installers ──────────────────────────────────────────────────
 
-    def _install_windows(self, installer_path: str, target: str, tmp_dir: str):
-        """
-        The downloaded asset IS the NSIS setup installer (MochaTools-Setup-x.x.x.exe)
+    def _install_windows(self, installer_path: str, target: str, tmp_dir: str) -> str:
+        """The downloaded asset IS the NSIS setup installer (MochaTools-Setup-x.x.x.exe)
         — no zip, no extraction needed. We just need to wait for our process to
         exit, then launch the installer.
         """
-        if not os.path.exists(installer_path):
-            raise RuntimeError(f"Downloaded installer not found: {installer_path}")
+        if not pathlib.Path(installer_path).exists():
+            msg = f"Downloaded installer not found: {installer_path}"
+            raise RuntimeError(msg)
 
-        bat = os.path.join(tmp_dir, "update.bat")
-        _test_mode = "--test-update" in sys.argv and not _is_compiled()
-        log = os.path.join(os.path.dirname(target), "update.log")
+        bat = str(pathlib.Path(tmp_dir) / "update.bat")
+        test_mode = "--test-update" in sys.argv and not _is_compiled()
+        log = str(pathlib.Path(target).parent / "update.log")
 
         lines = [
             "@echo off",
             f'set "LOG={log}"',
             "setlocal",
-            f'call :log "=== Mocha Tools updater started ==="',
+            'call :log "=== Mocha Tools updater started ==="',
             "",
-            f'call :log "App already exited, proceeding..."',
+            'call :log "App already exited, proceeding..."',
             "",
-            f'call :log "Waiting 3s for file locks to clear..."',
+            'call :log "Waiting 3s for file locks to clear..."',
             "timeout /t 3 /nobreak >NUL",
             "",
             f'call :log "Launching installer: {installer_path}"',
             *(
                 []
-                if _test_mode
+                if test_mode
                 else [
                     f'start "" "{installer_path}"',
                 ]
             ),
             "",
-            f'call :log "Done."',
+            'call :log "Done."',
             "goto end",
             "",
             ":fail",
-            f'call :log "FAILED - see %LOG%"',
+            'call :log "FAILED - see %LOG%"',
             "goto end",
             "",
             ":log",
@@ -532,33 +546,33 @@ class UpdateDownloadWorker(QThread):
         ]
 
         script = "\r\n".join(lines) + "\r\n"
-        with open(bat, "w", newline="", encoding="utf-8") as fh:
-            fh.write(script)
+        pathlib.Path(bat).write_text(script, newline="", encoding="utf-8")
 
         # Don't launch yet — the batch script will be spawned when the user
         # clicks "Restart".
         return bat
 
-    def _install_macos(self, zip_path: str, target: str, tmp_dir: str):
-        extract_dir = os.path.join(tmp_dir, "extracted")
-        os.makedirs(extract_dir, exist_ok=True)
+    def _install_macos(self, zip_path: str, target: str, tmp_dir: str) -> None:
+        extract_dir = str(pathlib.Path(tmp_dir) / "extracted")
+        pathlib.Path(extract_dir).mkdir(exist_ok=True, parents=True)
 
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(extract_dir)
 
         new_app = next(
             (
-                os.path.join(extract_dir, e)
-                for e in os.listdir(extract_dir)
-                if e.endswith(".app")
+                str(e)
+                for e in pathlib.Path(extract_dir).iterdir()
+                if e.name.endswith(".app")
             ),
             None,
         )
         if not new_app:
-            raise RuntimeError("No .app bundle found inside the downloaded zip.")
+            msg = "No .app bundle found inside the downloaded zip."
+            raise RuntimeError(msg)
 
         backup = target + ".bak"
-        if os.path.exists(backup):
+        if pathlib.Path(backup).exists():
             shutil.rmtree(backup)
         shutil.move(target, backup)
         shutil.move(new_app, target)
@@ -568,9 +582,8 @@ class UpdateDownloadWorker(QThread):
             check=False,
         )
 
-    def _install_linux(self, tarball_path: str, target: str, tmp_dir: str) -> str:
-        """
-        Write a small shell script that, once this app has quit, extracts the
+    def _install_linux(self, tarball_path: str, _target: str, tmp_dir: str) -> str:
+        """Write a small shell script that, once this app has quit, extracts the
         downloaded tarball and runs its installer.sh. The script is launched
         in a terminal window (see launch_update_terminal) so the user can
         watch progress and respond to any sudo password prompts.
@@ -582,14 +595,15 @@ class UpdateDownloadWorker(QThread):
 
         Returns the path to the generated shell script.
         """
-        if not os.path.exists(tarball_path):
-            raise RuntimeError(f"Downloaded update not found: {tarball_path}")
+        if not pathlib.Path(tarball_path).exists():
+            msg = f"Downloaded update not found: {tarball_path}"
+            raise RuntimeError(msg)
 
-        extract_dir = os.path.join(tmp_dir, "extracted")
-        _test_mode = "--test-update" in sys.argv and not _is_compiled()
-        log = os.path.join(tempfile.gettempdir(), "mochatools_update.log")
+        extract_dir = str(pathlib.Path(tmp_dir) / "extracted")
+        test_mode = "--test-update" in sys.argv and not _is_compiled()
+        log = str(pathlib.Path(tempfile.gettempdir()) / "mochatools_update.log")
 
-        script_path = os.path.join(tmp_dir, "update.sh")
+        script_path = str(pathlib.Path(tmp_dir) / "update.sh")
 
         lines = [
             "#!/bin/bash",
@@ -614,10 +628,12 @@ class UpdateDownloadWorker(QThread):
             "fi",
             "",
             f'mkdir -p "{extract_dir}"',
-            f'echo "Extracting update..." | tee -a "$LOG"',
+            'echo "Extracting update..." | tee -a "$LOG"',
             f'tar -xzf "{tarball_path}" -C "{extract_dir}"',
             "",
-            'if [ ! -f "' + os.path.join(extract_dir, "installer.sh") + '" ]; then',
+            'if [ ! -f "'
+            + str(pathlib.Path(extract_dir) / "installer.sh")
+            + '" ]; then',
             '  echo "ERROR: installer.sh not found in update archive." | tee -a "$LOG"',
             '  read -n 1 -s -r -p "Press any key to close..."',
             "  exit 1",
@@ -631,7 +647,7 @@ class UpdateDownloadWorker(QThread):
             "echo",
             *(
                 []
-                if _test_mode
+                if test_mode
                 else [
                     "./installer.sh",
                 ]
@@ -639,7 +655,7 @@ class UpdateDownloadWorker(QThread):
             "",
             # Cleanup temp directory
             'echo "Cleaning up..." | tee -a "$LOG"',
-            f'rm -rf "$TMP_DIR"',
+            'rm -rf "$TMP_DIR"',
             "",
             "echo",
             'echo "Update complete. You can close this window and relaunch Mocha Tools."',
@@ -647,11 +663,12 @@ class UpdateDownloadWorker(QThread):
         ]
 
         script = "\n".join(lines) + "\n"
-        with open(script_path, "w", encoding="utf-8") as fh:
-            fh.write(script)
-        os.chmod(
-            script_path,
-            os.stat(script_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH,
+        pathlib.Path(script_path).write_text(script, encoding="utf-8")
+        pathlib.Path(script_path).chmod(
+            pathlib.Path(script_path).stat().st_mode
+            | stat.S_IEXEC
+            | stat.S_IXGRP
+            | stat.S_IXOTH
         )
 
         return script_path

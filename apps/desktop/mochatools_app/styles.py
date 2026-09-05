@@ -1,3 +1,5 @@
+from .logging_utils import write_debug_log
+
 # styles.py — Mocha Tools stylesheet
 # Colors are theme-tokenized so the app can switch between background
 # themes (Mocha / White / Black) without touching this template.
@@ -11,13 +13,13 @@
 # render as grey rectangles.  All arrows use base64-encoded PNG data URIs,
 # which Qt does support.
 
-# ── Arrow PNGs (base64, 7×5 px) ──────────────────────────────────────────────
+# ── Arrow PNGs (base64, 7x5 px) ──────────────────────────────────────────────
 # Generated via Python's zlib/struct PNG encoder; colors:
 #   muted = #9c9484   gold = #c8a96e
-_UP_MUTED   = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAcAAAAFCAYAAACJmvbYAAAAJElEQVR4nGNgQAJzprT8R+YzoUsgK2BiwAOYsBkH4zOiSyADALY2EDrtBW3AAAAAAElFTkSuQmCC"
+_UP_MUTED = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAcAAAAFCAYAAACJmvbYAAAAJElEQVR4nGNgQAJzprT8R+YzoUsgK2BiwAOYsBkH4zOiSyADALY2EDrtBW3AAAAAAElFTkSuQmCC"
 _DOWN_MUTED = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAcAAAAFCAYAAACJmvbYAAAAK0lEQVR4nGOcM6XlPwMOwJSSU8OITSIlp4aRCcZAl2BgYGBgwmUkBkC3HwBw5QqiywRfCwAAAABJRU5ErkJggg=="
-_UP_GOLD    = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAcAAAAFCAYAAACJmvbYAAAAJElEQVR4nGNgQAInVub9R+YzoUsgK2BiwAOYsBkH4zOiSyADAANnETwTPeAsAAAAAElFTkSuQmCC"
-_DOWN_GOLD  = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAcAAAAFCAYAAACJmvbYAAAAK0lEQVR4nGM8sTLvPwMOwGQRPokRm4RF+CRGJhgDXYKBgYGBCZeRGADdfgBQIQpM9BJ+bwAAAABJRU5ErkJggg=="
+_UP_GOLD = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAcAAAAFCAYAAACJmvbYAAAAJElEQVR4nGNgQAInVub9R+YzoUsgK2BiwAOYsBkH4zOiSyADAANnETwTPeAsAAAAAElFTkSuQmCC"
+_DOWN_GOLD = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAcAAAAFCAYAAACJmvbYAAAAK0lEQVR4nGM8sTLvPwMOwGQRPokRm4RF+CRGJhgDXYKBgYGBCZeRGADdfgBQIQpM9BJ+bwAAAABJRU5ErkJggg=="
 
 STYLESHEET = f"""
 QMainWindow, QWidget#root {{
@@ -497,8 +499,8 @@ QPushButton:pressed {{ background: __BG7__; }}
 
 
 def _hex_to_rgb(h: str) -> tuple[int, int, int]:
-    h = h.lstrip('#')
-    return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+    h = h.lstrip("#")
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
 
 def _rgb_to_hex(r: int, g: int, b: int) -> str:
@@ -514,7 +516,11 @@ def _mix(hex1: str, hex2: str, t: float) -> str:
     return _rgb_to_hex(r, g, b)
 
 
-def _apply_background_tokens(s: str, background_key: str | None, accent_hex: str | None) -> str:
+def _apply_background_tokens(
+    s: str,
+    background_key: str | None,
+    accent_hex: str | None,
+) -> str:
     """Substitute __BG*__/__BORDER*__/__TEXT*__ tokens with the values from
     the selected background theme palette (theme.py:BACKGROUND_THEMES).
 
@@ -525,51 +531,65 @@ def _apply_background_tokens(s: str, background_key: str | None, accent_hex: str
     """
     try:
         from .theme import get_background_palette
+
         pal = get_background_palette(background_key)
-    except Exception:
+    except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+        write_debug_log(f"[Silenced] _apply_background_tokens: {e}")
         pal = {
-            "bg0": "#111010", "bg1": "#181614", "bg2": "#181614", "bg3": "#1e1c19",
-            "bg4": "#222018", "bg5": "#252320", "bg6": "#3d3a35", "bg7": "#141210",
-            "border": "#2e2b27", "border2": "#3d3a35",
-            "text": "#f0ece6", "text_muted": "#9c9484", "text_dim": "#5a5650",
+            "bg0": "#111010",
+            "bg1": "#181614",
+            "bg2": "#181614",
+            "bg3": "#1e1c19",
+            "bg4": "#222018",
+            "bg5": "#252320",
+            "bg6": "#3d3a35",
+            "bg7": "#141210",
+            "border": "#2e2b27",
+            "border2": "#3d3a35",
+            "text": "#f0ece6",
+            "text_muted": "#9c9484",
+            "text_dim": "#5a5650",
         }
 
-    s = s.replace('__BG0__', pal["bg0"])
-    s = s.replace('__BG1__', pal["bg1"])
-    s = s.replace('__BG2__', pal["bg2"])
-    s = s.replace('__BG3__', pal["bg3"])
-    s = s.replace('__BG4__', pal["bg4"])
-    s = s.replace('__BG5__', pal["bg5"])
-    s = s.replace('__BG6__', pal["bg6"])
-    s = s.replace('__BG7__', pal["bg7"])
-    s = s.replace('__BORDER__', pal["border"])
-    s = s.replace('__BORDER2__', pal["border2"])
-    s = s.replace('__TEXT__', pal["text"])
-    s = s.replace('__TEXT_MUTED__', pal["text_muted"])
-    s = s.replace('__TEXT_DIM__', pal["text_dim"])
+    s = s.replace("__BG0__", pal["bg0"])
+    s = s.replace("__BG1__", pal["bg1"])
+    s = s.replace("__BG2__", pal["bg2"])
+    s = s.replace("__BG3__", pal["bg3"])
+    s = s.replace("__BG4__", pal["bg4"])
+    s = s.replace("__BG5__", pal["bg5"])
+    s = s.replace("__BG6__", pal["bg6"])
+    s = s.replace("__BG7__", pal["bg7"])
+    s = s.replace("__BORDER__", pal["border"])
+    s = s.replace("__BORDER2__", pal["border2"])
+    s = s.replace("__TEXT__", pal["text"])
+    s = s.replace("__TEXT_MUTED__", pal["text_muted"])
+    s = s.replace("__TEXT_DIM__", pal["text_dim"])
 
     # Text sitting on top of the solid gold/accent buttons should stay dark
     # regardless of theme, for contrast against the warm accent color.
-    s = s.replace('__ON_ACCENT_TEXT__', "#111010")
+    s = s.replace("__ON_ACCENT_TEXT__", "#111010")
 
     # Drag-active drop-zone background: blend a touch of the accent into
     # the theme's elevated background so it reads as "lit up" in every theme.
     try:
         from .theme import DEFAULT_ACCENT
+
         a = accent_hex or DEFAULT_ACCENT
         tint = _mix(pal["bg7"], a, 0.12)
-        s = s.replace('__BG_ACCENT_TINT__', tint)
-    except Exception:
-        s = s.replace('__BG_ACCENT_TINT__', pal["bg7"])
+        s = s.replace("__BG_ACCENT_TINT__", tint)
+    except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+        write_debug_log(f"[Silenced] _apply_background_tokens: {e}")
+        s = s.replace("__BG_ACCENT_TINT__", pal["bg7"])
 
     # Horizontal scrollbar handle rgba colors, derived from border2.
     try:
         r, g, b = _hex_to_rgb(pal["border2"])
-        s = s.replace('__BORDER2_RGBA75__', f"rgba({r}, {g}, {b}, 0.75)")
-        s = s.replace('__BORDER2_RGBA95__', f"rgba({r}, {g}, {b}, 0.95)")
-    except Exception:
-        s = s.replace('__BORDER2_RGBA75__', "rgba(61,58,53,0.75)")
-        s = s.replace('__BORDER2_RGBA95__', "rgba(61,58,53,0.95)")
+        s = s.replace("__BORDER2_RGBA75__", f"rgba({r}, {g}, {b}, 0.75)")
+        s = s.replace("__BORDER2_RGBA95__", f"rgba({r}, {g}, {b}, 0.95)")
+    except (AttributeError, TypeError, RuntimeError) as e:
+        write_debug_log(f"[Silenced] _apply_background_tokens: {e}")
+        s = s.replace("__BORDER2_RGBA75__", "rgba(61,58,53,0.75)")
+        s = s.replace("__BORDER2_RGBA95__", "rgba(61,58,53,0.95)")
 
     return s
 
@@ -590,19 +610,22 @@ def build_stylesheet(accent_hex: str | None, background_key: str | None = None) 
     # only the font was changed (and accent_hex may be None).
     try:
         from .theme import get_font
+
         fam, fsz = get_font()
         # ensure family is quoted for QSS and provide a sensible fallback
         fam_q = f'"{fam}"'
-        s = s.replace('__FONT_FAMILY__', fam_q)
-        s = s.replace('__FONT_SIZE__', str(int(fsz)))
-    except Exception:
+        s = s.replace("__FONT_FAMILY__", fam_q)
+        s = s.replace("__FONT_SIZE__", str(int(fsz)))
+    except (AttributeError, TypeError, RuntimeError, ImportError, ValueError) as e:
         # fallback to defaults
+        write_debug_log(f"[Silenced] build_stylesheet: {e}")
         try:
             from .theme import DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE
-            s = s.replace('__FONT_FAMILY__', f'"{DEFAULT_FONT_FAMILY}"')
-            s = s.replace('__FONT_SIZE__', str(int(DEFAULT_FONT_SIZE)))
-        except Exception:
-            pass
+
+            s = s.replace("__FONT_FAMILY__", f'"{DEFAULT_FONT_FAMILY}"')
+            s = s.replace("__FONT_SIZE__", str(int(DEFAULT_FONT_SIZE)))
+        except (AttributeError, TypeError, RuntimeError, ImportError, ValueError) as e:
+            write_debug_log(f"[Silenced] build_stylesheet: {e}")
 
     # Background theme tokens always get substituted, accent or not.
     s = _apply_background_tokens(s, background_key, accent_hex)
@@ -613,6 +636,7 @@ def build_stylesheet(accent_hex: str | None, background_key: str | None = None) 
     hover = _mix(accent_hex, "#ffffff", 0.12)
     pressed = _mix(accent_hex, "#000000", 0.22)
     from .theme import DEFAULT_ACCENT
+
     # compute semi-transparent variant and replace its placeholder first
     # NOTE: Qt's QSS parser does not support 8-digit #rrggbbaa hex colors,
     # so we must use rgba(r, g, b, a) instead or the border silently falls
@@ -620,19 +644,18 @@ def build_stylesheet(accent_hex: str | None, background_key: str | None = None) 
     try:
         r, g, b = _hex_to_rgb(accent_hex)
         hover_alpha = f"rgba({r}, {g}, {b}, 51)"  # 0x33 == 51 (~20% opacity)
-        s = s.replace('__ACCENT__33', hover_alpha)
-    except Exception:
-        pass
+        s = s.replace("__ACCENT__33", hover_alpha)
+    except (AttributeError, TypeError, RuntimeError) as e:
+        write_debug_log(f"[Silenced] build_stylesheet: {e}")
     # replace canonical/default accent token
     s = s.replace(DEFAULT_ACCENT, accent_hex)
     # also support legacy/plain placeholders used in some templates
-    s = s.replace('__ACCENT__', accent_hex)
+    s = s.replace("__ACCENT__", accent_hex)
     # replace hover/pressed canonical placeholders and their token equivalents
-    s = s.replace('#d4b87a', hover)
-    s = s.replace('__ACCENT_HOVER__', hover)
-    s = s.replace('#a88950', pressed)
-    s = s.replace('__ACCENT_PRESSED__', pressed)
-    return s
+    s = s.replace("#d4b87a", hover)
+    s = s.replace("__ACCENT_HOVER__", hover)
+    s = s.replace("#a88950", pressed)
+    return s.replace("__ACCENT_PRESSED__", pressed)
 
 
 def compute_accent_variants(accent_hex: str | None) -> tuple[str, str, str]:

@@ -1,5 +1,4 @@
-"""
-window_chrome.py — Frameless-window resize, rounding, and cursor logic.
+"""window_chrome.py — Frameless-window resize, rounding, and cursor logic.
 
 Extracted from the former MochaTools God-Object in app.py.
 
@@ -12,12 +11,18 @@ Public API (free functions that receive a QMainWindow subclass instance):
   event_global_pos(event)                — compat shim for globalPosition
 """
 
-from PySide6.QtCore import QEvent, QRectF, Qt
-from PySide6.QtGui import QPainterPath, QRegion
+from __future__ import annotations
+
+import contextlib
+
+from PySide6.QtCore import QEvent, QObject, QPoint, QRectF, Qt
+from PySide6.QtGui import QHoverEvent, QMouseEvent, QPainterPath, QRegion
 from PySide6.QtWidgets import QApplication, QWidget
 
+from .logging_utils import write_debug_log
 
-def _qapp():
+
+def _qapp() -> QApplication | None:
     """Return the running QApplication (typed correctly for static analysers)."""
     a = QApplication.instance()
     if isinstance(a, QApplication):
@@ -28,21 +33,25 @@ def _qapp():
 # ── Internal helpers ─────────────────────────────────────────────────────────
 
 
-def event_global_pos(event):
+def event_global_pos(event: QMouseEvent | QHoverEvent) -> QPoint | None:
     """QMouseEvent / QHoverEvent → QPoint, cross-version."""
     try:
         return event.globalPosition().toPoint()
-    except Exception:
-        try:
-            return event.globalPos()
-        except Exception:
-            return None
+    except (AttributeError, TypeError, RuntimeError) as e:
+        write_debug_log(f"[Silenced] event_global_pos: {e}")
+        if isinstance(event, QMouseEvent):
+            try:
+                return event.globalPos()
+            except (AttributeError, TypeError, RuntimeError) as e:
+                write_debug_log(f"[Silenced] event_global_pos: {e}")
+        return None
 
 
-def resize_edges_at(win, global_pos):
+def resize_edges_at(win: QWidget, global_pos: QPoint | None) -> Qt.Edge | None:
     """Return Qt.Edges flags if *global_pos* is within the resize margin
     of *win*, or ``None`` if the window is maximised/minimised or the
-    position is outside the resize zone."""
+    position is outside the resize zone.
+    """
     if global_pos is None or win.isMaximized() or win.isMinimized():
         return None
     try:
@@ -63,12 +72,14 @@ def resize_edges_at(win, global_pos):
             edges = Qt.Edge.TopEdge if edges is None else edges | Qt.Edge.TopEdge
         elif bottom:
             edges = Qt.Edge.BottomEdge if edges is None else edges | Qt.Edge.BottomEdge
-        return edges
-    except Exception:
+    except (AttributeError, TypeError, RuntimeError, ValueError) as e:
+        write_debug_log(f"[Silenced] resize_edges_at: {e}")
         return None
+    else:
+        return edges
 
 
-def cursor_for_edges(edges):
+def cursor_for_edges(edges: Qt.Edge | None) -> Qt.CursorShape | None:
     """Map a combination of Qt.Edges to the standard resize cursor shape."""
     try:
         if edges in (
@@ -85,12 +96,12 @@ def cursor_for_edges(edges):
             return Qt.CursorShape.SizeHorCursor
         if edges in (Qt.Edge.TopEdge, Qt.Edge.BottomEdge):
             return Qt.CursorShape.SizeVerCursor
-    except Exception:
-        pass
+    except (AttributeError, TypeError, RuntimeError) as e:
+        write_debug_log(f"[Silenced] cursor_for_edges: {e}")
     return None
 
 
-def set_resize_cursor(win, edges):
+def set_resize_cursor(win: QWidget, edges: Qt.Edge | None) -> None:
     """Push / swap / pop the override cursor based on the current hit edge."""
     cursor = cursor_for_edges(edges) if edges else None
     try:
@@ -109,14 +120,14 @@ def set_resize_cursor(win, edges):
             if app is not None:
                 app.restoreOverrideCursor()
             win._resize_cursor_active = False
-    except Exception:
-        pass
+    except (AttributeError, TypeError, RuntimeError) as e:
+        write_debug_log(f"[Silenced] set_resize_cursor: {e}")
 
 
 # ── Corner rounding ──────────────────────────────────────────────────────────
 
 
-def apply_window_rounding(win):
+def apply_window_rounding(win: QWidget) -> None:
     """Apply a corner-radius mask on the frameless window.
 
     Maximised / full-screen windows get an unmasked rectangle so there are
@@ -130,18 +141,17 @@ def apply_window_rounding(win):
         path = QPainterPath()
         path.addRoundedRect(QRectF(win.rect()), radius, radius)
         win.setMask(QRegion(path.toFillPolygon().toPolygon()))
-    except Exception:
-        try:
+    except (AttributeError, TypeError, RuntimeError, ValueError) as e:
+        write_debug_log(f"[Silenced] apply_window_rounding: {e}")
+        with contextlib.suppress(Exception):
             win.clearMask()
-        except Exception:
-            pass
 
 
 # ── eventFilter (installed on the main window) ──────────────────────────────
 
 
-def event_filter(win, obj, event):
-    """QWidget.eventFilter – resize cursor / edge-drag logic.
+def event_filter(win: QWidget, obj: QObject, event: QEvent) -> bool:
+    """QWidget.eventFilter - resize cursor / edge-drag logic.
 
     Install on the main window with::
 
@@ -158,10 +168,14 @@ def event_filter(win, obj, event):
     try:
         if isinstance(obj, QWidget) and obj.window() is win:
             et = event.type()
-            if et == QEvent.Type.MouseMove:
+            if et == QEvent.Type.MouseMove and isinstance(
+                event,
+                (QMouseEvent, QHoverEvent),
+            ):
                 set_resize_cursor(win, resize_edges_at(win, event_global_pos(event)))
             elif (
                 et == QEvent.Type.MouseButtonPress
+                and isinstance(event, QMouseEvent)
                 and event.button() == Qt.MouseButton.LeftButton
             ):
                 edges = resize_edges_at(win, event_global_pos(event))
@@ -173,10 +187,10 @@ def event_filter(win, obj, event):
                             if wh.startSystemResize(edges):
                                 event.accept()
                                 return True
-                        except Exception:
-                            pass
-            elif et == QEvent.Type.MouseButtonRelease or et == QEvent.Type.Leave:
+                        except (AttributeError, TypeError, RuntimeError) as e:
+                            write_debug_log(f"[Silenced] event_filter: {e}")
+            elif et in (QEvent.Type.MouseButtonRelease, QEvent.Type.Leave):
                 set_resize_cursor(win, None)
-    except Exception:
-        pass
+    except (AttributeError, TypeError, RuntimeError) as e:
+        write_debug_log(f"[Silenced] event_filter: {e}")
     return False

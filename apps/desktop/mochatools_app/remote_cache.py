@@ -1,5 +1,4 @@
-"""
-remote_cache.py — Shared in-memory cache for all remote API data.
+"""remote_cache.py — Shared in-memory cache for all remote API data.
 
 Keyed by (op, **kwargs) so each unique list path / shares / jobs
 gets its own cache slot.  The background poller refreshes every
@@ -10,12 +9,18 @@ fresh fetch runs behind the scenes.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 from functools import partial
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QThread, Signal, QObject
+from PySide6.QtCore import QObject, QThread, Signal
+
+from .logging_utils import write_debug_log
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 POLL_INTERVAL = 5  # seconds between refreshes
 _CACHE_VERSION = 0  # bumped on invalidation so stale renders never block
@@ -25,33 +30,33 @@ _CACHE_VERSION = 0  # bumped on invalidation so stale renders never block
 class _CacheStore:
     """Thread-safe key → {data, ts, version} dictionary."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._lock = threading.Lock()
         self._data: dict[str, dict] = {}
 
-    def _key(self, op: str, **kwargs) -> str:
+    def _key(self, op: str, **kwargs: Any) -> str:
         parts = [op] + [f"{k}={v}" for k, v in sorted(kwargs.items())]
         return "|".join(parts)
 
-    def get(self, op: str, **kwargs) -> Any | None:
+    def get(self, op: str, **kwargs: Any) -> Any | None:
         """Return cached data or None if never fetched."""
         with self._lock:
             entry = self._data.get(self._key(op, **kwargs))
             return entry["data"] if entry else None
 
-    def set(self, op: str, data: Any, **kwargs):
+    def set(self, op: str, data: Any, **kwargs: Any) -> None:
         with self._lock:
             self._data[self._key(op, **kwargs)] = {
                 "data": data,
                 "ts": time.monotonic(),
             }
 
-    def invalidate(self, op: str, **kwargs):
+    def invalidate(self, op: str, **kwargs: Any) -> None:
         """Remove one entry so the next poll fetches it immediately."""
         with self._lock:
             self._data.pop(self._key(op, **kwargs), None)
 
-    def invalidate_op(self, op: str):
+    def invalidate_op(self, op: str) -> None:
         """Remove all entries for an op (e.g. invalidate all 'list' paths)."""
         prefix = f"{op}|"
         with self._lock:
@@ -59,7 +64,7 @@ class _CacheStore:
             for k in stale:
                 del self._data[k]
 
-    def age(self, op: str, **kwargs) -> float:
+    def age(self, op: str, **kwargs: Any) -> float:
         """Seconds since last fetch, or inf if never fetched."""
         with self._lock:
             entry = self._data.get(self._key(op, **kwargs))
@@ -72,42 +77,39 @@ cache = _CacheStore()
 
 # ── Subscriber registry ───────────────────────────────────────────────────────
 class _SubscriberRegistry:
-    """
-    Maps (op, kwargs_key) → list of callables.
+    """Maps (op, kwargs_key) → list of callables.
     Each callable is called with (op, data) whenever the cache for that
     key is refreshed.  Callables are held weakly so dead tabs don't leak.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._lock = threading.Lock()
         self._subs: dict[str, list[Callable]] = {}
 
-    def _key(self, op: str, **kwargs) -> str:
+    def _key(self, op: str, **kwargs: Any) -> str:
         return cache._key(op, **kwargs)
 
-    def subscribe(self, op: str, callback: Callable, **kwargs):
+    def subscribe(self, op: str, callback: Callable, **kwargs: Any) -> None:
         k = self._key(op, **kwargs)
         with self._lock:
             self._subs.setdefault(k, [])
             if callback not in self._subs[k]:
                 self._subs[k].append(callback)
 
-    def unsubscribe(self, op: str, callback: Callable, **kwargs):
+    def unsubscribe(self, op: str, callback: Callable, **kwargs: Any) -> None:
         k = self._key(op, **kwargs)
         with self._lock:
             lst = self._subs.get(k, [])
             if callback in lst:
                 lst.remove(callback)
 
-    def notify(self, op: str, data: Any, **kwargs):
+    def notify(self, op: str, data: Any, **kwargs: Any) -> None:
         k = self._key(op, **kwargs)
         with self._lock:
             cbs = list(self._subs.get(k, []))
         for cb in cbs:
-            try:
+            with contextlib.suppress(Exception):
                 cb(data)
-            except Exception:
-                pass
 
 
 registry = _SubscriberRegistry()
@@ -115,20 +117,19 @@ registry = _SubscriberRegistry()
 
 # ── Poll worker ───────────────────────────────────────────────────────────────
 class CachePollWorker(QThread):
-    """
-    Fetches one (op, kwargs) slot and emits refreshed(op, data, kwargs_tuple).
+    """Fetches one (op, kwargs) slot and emits refreshed(op, data, kwargs_tuple).
     Used by the poller to do network I/O off the main thread.
     """
 
     refreshed = Signal(str, object, object)  # op, data, kwargs_dict
 
-    def __init__(self, op: str, client, kwargs: dict):
+    def __init__(self, op: str, client: Any, kwargs: dict) -> None:
         super().__init__()
         self.op = op
         self._client = client
         self.kwargs = kwargs
 
-    def run(self):
+    def run(self) -> None:
         try:
             if self.op == "list":
                 path = self.kwargs.get("path", "/")
@@ -147,15 +148,14 @@ class CachePollWorker(QThread):
             cache.set(self.op, data, **self.kwargs)
             self.refreshed.emit(self.op, data, self.kwargs)
 
-        except Exception:
+        except (AttributeError, TypeError, RuntimeError) as e:
             # Network error: keep old cache data, don't notify
-            pass
+            write_debug_log(f"[Silenced] run: {e}")
 
 
 # ── Background poller ─────────────────────────────────────────────────────────
 class CachePoller(QObject):
-    """
-    Keeps a set of (op, api_key_getter, base_url, kwargs) subscriptions and
+    """Keeps a set of (op, api_key_getter, base_url, kwargs) subscriptions and
     re-fetches each one every POLL_INTERVAL seconds.
 
     Usage:
@@ -166,7 +166,7 @@ class CachePoller(QObject):
         poller.stop()
     """
 
-    def __init__(self, client, parent=None):
+    def __init__(self, client: Any, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._client: object = client
         self._slots: list[dict] = []
@@ -174,7 +174,7 @@ class CachePoller(QObject):
         self._timer = None
         self._lock = threading.Lock()
 
-    def add(self, op: str, **kwargs):
+    def add(self, op: str, **kwargs: Any) -> None:
         """Register a slot to be polled.  Idempotent."""
         with self._lock:
             for s in self._slots:
@@ -184,16 +184,16 @@ class CachePoller(QObject):
                 {
                     "op": op,
                     "kwargs": kwargs,
-                }
+                },
             )
 
-    def remove(self, op: str, **kwargs):
+    def remove(self, op: str, **kwargs: Any) -> None:
         with self._lock:
             self._slots = [
                 s for s in self._slots if not (s["op"] == op and s["kwargs"] == kwargs)
             ]
 
-    def start(self):
+    def start(self) -> None:
         from PySide6.QtCore import QTimer
 
         if self._timer is None:
@@ -204,11 +204,11 @@ class CachePoller(QObject):
         # Immediate first fetch
         self._poll()
 
-    def stop(self):
+    def stop(self) -> None:
         if self._timer:
             self._timer.stop()
 
-    def force_refresh(self, op: str | None = None, **kwargs):
+    def force_refresh(self, op: str | None = None, **kwargs: Any) -> None:
         """Invalidate cache and trigger an immediate poll."""
         if op:
             if kwargs:
@@ -217,7 +217,7 @@ class CachePoller(QObject):
                 cache.invalidate_op(op)
         self._poll()
 
-    def _poll(self):
+    def _poll(self) -> None:
         with self._lock:
             slots = list(self._slots)
 
@@ -231,9 +231,9 @@ class CachePoller(QObject):
             self._workers.append(w)
             w.start()
 
-    def _remove_worker(self, w):
+    def _remove_worker(self, w: CachePollWorker) -> None:
         if w in self._workers:
             self._workers.remove(w)
 
-    def _on_refreshed(self, op: str, data: object, kwargs: dict):
+    def _on_refreshed(self, op: str, data: object, kwargs: dict) -> None:
         registry.notify(op, data, **kwargs)

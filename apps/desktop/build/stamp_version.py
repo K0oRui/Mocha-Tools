@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-builditems/stamp_version.py
+"""builditems/stamp_version.py
 Called by build.yml before PyInstaller runs.
 Rewrites the APP_VERSION line in mochatools_app/constants.py,
 patches !define APP_VERSION in installer.nsi,
@@ -17,13 +16,13 @@ from pathlib import Path
 
 
 def make_tuple(version: str) -> str:
-    """Convert '4.1.3' -> '4, 1, 3, 0'"""
-    parts = (version.lstrip("v").split(".") + ["0", "0", "0", "0"])[:4]
+    """Convert '4.1.3' -> '4, 1, 3, 0'."""
+    parts = ([*version.lstrip("v").split("."), "0", "0", "0", "0"])[:4]
     return ", ".join(p.zfill(1) for p in parts)
 
 
-def main():
-    if len(sys.argv) != 2:
+def main() -> None:
+    if len(sys.argv) != 2:  # noqa: PLR2004
         print("Usage: stamp_version.py <version>", file=sys.stderr)
         sys.exit(1)
 

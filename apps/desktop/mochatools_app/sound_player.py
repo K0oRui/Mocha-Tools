@@ -1,5 +1,4 @@
-"""
-sound_player.py — Optional per-event sound playback for MochaTools.
+"""sound_player.py — Optional per-event sound playback for MochaTools.
 
 Six events can each be assigned an audio file (any format PySide6 Multimedia
 can decode — wav, mp3, ogg, flac, m4a, etc.). If an event has no file
@@ -10,22 +9,25 @@ Settings are stored directly in QSettings (not gated behind the
 size) so file paths persist across restarts as soon as they're picked.
 """
 
-import os
+from __future__ import annotations
+
+import pathlib
 
 from PySide6.QtCore import QSettings, QUrl
 
-from .constants import ORG_NAME, APP_NAME
+from .constants import APP_NAME, ORG_NAME
+from .logging_utils import write_debug_log
 
 # (settings_key, human-readable label) — drives both the Settings → Sounds
 # UI and the lookup used by play_sound_event(). Keep the key stable; it's
 # used as a QSettings key suffix.
 SOUND_EVENTS = [
     ("sound_single_upload", "Single file upload completion"),
-    ("sound_mass_file",     "Each file completed in mass upload"),
-    ("sound_mass_all",      "All files complete in mass upload"),
+    ("sound_mass_file", "Each file completed in mass upload"),
+    ("sound_mass_all", "All files complete in mass upload"),
     ("sound_remote_ingest", "Remote ingest completion"),
-    ("sound_sync_file",     "Individual file synced"),
-    ("sound_sync_folder",   "Folder up to date after syncing"),
+    ("sound_sync_file", "Individual file synced"),
+    ("sound_sync_folder", "Folder up to date after syncing"),
 ]
 
 # Keep references to in-flight players alive until playback stops; QMediaPlayer
@@ -37,7 +39,7 @@ _active_players: list = []
 def sound_path(event_key: str) -> str:
     """Return the configured file path for an event, or '' if unset."""
     s = QSettings(ORG_NAME, APP_NAME)
-    return s.value(f"{event_key}_path", "", type=str) or ""
+    return str(s.value(f"{event_key}_path", "", type=str) or "")
 
 
 def set_sound_path(event_key: str, path: str) -> None:
@@ -50,19 +52,19 @@ def set_sound_path(event_key: str, path: str) -> None:
 
 
 def play_sound_event(event_key: str) -> None:
-    """
-    Play the sound configured for `event_key`, if any.
+    """Play the sound configured for `event_key`, if any.
 
     Does nothing (no error, no sound) if the event has no file assigned,
     the file no longer exists, or QtMultimedia isn't available.
     """
     path = sound_path(event_key)
-    if not path or not os.path.isfile(path):
+    if not path or not pathlib.Path(path).is_file():
         return
 
     try:
-        from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
-    except Exception:
+        from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+    except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+        write_debug_log(f"[Silenced] play_sound_event: {e}")
         return
 
     try:
@@ -74,15 +76,20 @@ def play_sound_event(event_key: str) -> None:
         entry = (player, audio_out)
         _active_players.append(entry)
 
-        def _on_state_changed(state, _entry=entry):
+        def _on_state_changed(
+            state: QMediaPlayer.PlaybackState,
+            _entry: tuple[object, object] = entry,
+        ) -> None:
             try:
-                if state == QMediaPlayer.PlaybackState.StoppedState:
-                    if _entry in _active_players:
-                        _active_players.remove(_entry)
-            except Exception:
-                pass
+                if (
+                    state == QMediaPlayer.PlaybackState.StoppedState
+                    and _entry in _active_players
+                ):
+                    _active_players.remove(_entry)
+            except (AttributeError, TypeError, RuntimeError) as e:
+                write_debug_log(f"[Silenced] _on_state_changed: {e}")
 
         player.playbackStateChanged.connect(_on_state_changed)
         player.play()
-    except Exception:
-        pass
+    except (AttributeError, TypeError, RuntimeError) as e:
+        write_debug_log(f"[Silenced] play_sound_event: {e}")

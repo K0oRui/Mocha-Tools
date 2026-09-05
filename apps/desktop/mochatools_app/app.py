@@ -1,17 +1,16 @@
-"""
-app.py — MochaTools main window and orchestrator.
+"""app.py — MochaTools main window and orchestrator.
 
 MochaTools is the application shell.  Tab content lives in
 mochatools_app/tabs/, shared widgets in mochatools_app/ui/,
 and subsystems are factored out to:
 
-  settings.py        – Settings tab UI + persistence
-  upload_manager.py  – Upload tab construction + single-file upload flow
-  tray_manager.py    – System tray icon, context menu, live tooltip
-  update_controller.py – Check / download / install / restart
-  window_chrome.py   – Frameless resize, rounding, cursor logic
-  entrypoint.py      – main(), palette, theme/signal wiring
-  utils.py           – Pure helper functions
+  settings.py        - Settings tab UI + persistence
+  upload_manager.py  - Upload tab construction + single-file upload flow
+  tray_manager.py    - System tray icon, context menu, live tooltip
+  update_controller.py - Check / download / install / restart
+  window_chrome.py   - Frameless resize, rounding, cursor logic
+  entrypoint.py      - main(), palette, theme/signal wiring
+  utils.py           - Pure helper functions
 
 Shared mutable state between modules lives in the ``AppContext``
 dataclass (``self.ctx``), avoiding the need for every module to
@@ -20,10 +19,12 @@ reach into ``win`` for cross-cutting state.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
 from functools import partial
+from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QEvent, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QThread, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -67,10 +68,17 @@ from .upload_manager import build_upload_tab, install_upload
 from .upload_pipeline import UploadManager
 from .window_chrome import apply_window_rounding
 from .window_chrome import event_filter as _chrome_event_filter
-from .workers import StorageWorker
 
+if TYPE_CHECKING:
+    from PySide6.QtGui import QCloseEvent, QResizeEvent, QShowEvent
+
+    from .workers import StorageWorker
 
 # ── Shared mutable state ─────────────────────────────────────────────────────
+
+# Main window tab indices (order set in _build_tabs)
+_TAB_FILES = 2
+_TAB_SHARES = 3
 
 
 @dataclass
@@ -92,13 +100,13 @@ class AppContext:
     share_result_url: str = ""
 
     # Shared API client (all HTTP goes through this)
-    client: object | None = None
+    client: MochaClient | None = None
 
     # Worker references (transient — set during operations)
     storage_worker: StorageWorker | None = None
 
     # Shared upload pipeline (queue + concurrency + worker lifecycle)
-    upload_manager: object | None = None
+    upload_manager: UploadManager | None = None
 
     # Update state (set by update_controller)
     update_tag: str = ""
@@ -113,9 +121,12 @@ class AppContext:
     quitting: bool = False
     tray_tooltip_timer: QTimer | None = None
 
+    # Test-update fetch thread (--test-update flag only)
+    _test_fetch_thread: QThread | None = None
+
 
 class MochaTools(QMainWindow):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Mocha Tools")
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
@@ -150,12 +161,12 @@ class MochaTools(QMainWindow):
             app = QApplication.instance()
             if app:
                 app.installEventFilter(self)
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] __init__: {e}")
 
     # ── UI construction ─────────────────────────────────────────────────────
 
-    def _build_ui(self):
+    def _build_ui(self) -> None:
         root = QWidget()
         root.setObjectName("root")
         self.setCentralWidget(root)
@@ -174,7 +185,7 @@ class MochaTools(QMainWindow):
         upload_tab = build_upload_tab(self)
         settings_tab = build_settings_tab(self)
         self.global_conc_spin.valueChanged.connect(
-            self.ctx.upload_manager.set_concurrency
+            self.ctx.upload_manager.set_concurrency,
         )
 
         self.files_tab = FilesBrowserTab(
@@ -212,13 +223,12 @@ class MochaTools(QMainWindow):
         )
         try:
             self._upload_main_layout.addWidget(self.mass_upload_section)
-        except Exception:
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _build_ui: {e}")
             upload_tab.layout().addWidget(self.mass_upload_section)
 
-        try:
+        with contextlib.suppress(Exception):
             self._set_upload_mode("single")
-        except Exception:
-            pass
 
         self.tabs.addTab(upload_tab, "Upload")
         self.tabs.addTab(self.remote_tab, "Remote")
@@ -241,7 +251,7 @@ class MochaTools(QMainWindow):
         self._storage_timer.start()
         QTimer.singleShot(300, self._refresh_storage)
 
-        _tab_icons = [
+        tab_icons = [
             ("upload", get_accent()),
             ("download-cloud", get_accent()),
             ("folder", get_accent()),
@@ -249,77 +259,71 @@ class MochaTools(QMainWindow):
             ("refresh-cw", get_accent()),
             ("settings", get_accent()),
         ]
-        for i, (icon_name, color) in enumerate(_tab_icons):
+        for i, (icon_name, color) in enumerate(tab_icons):
             self.tabs.setTabIcon(i, lucide_icon(icon_name, color, 14))
         self.tabs.setIconSize(QSize(14, 14))
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
     # ── Settings passthrough ────────────────────────────────────────────────
 
-    def _load_settings(self):
+    def _load_settings(self) -> None:
         load_settings(self)
 
-    def _save_settings(self):
+    def _save_settings(self) -> None:
         save_settings(self)
 
     # ── Tab switching ───────────────────────────────────────────────────────
 
-    def _on_tab_changed(self, index: int):
+    def _on_tab_changed(self, index: int) -> None:
         self.remote_tab.set_active(index == 1)
         if not self.ctx.client.has_api_key:
             return
-        if index in (2, 3) and self._poller:
+        if index in (_TAB_FILES, _TAB_SHARES) and self._poller:
             self._poller.start()
-        if index == 2:
+        if index == _TAB_FILES:
             self.files_tab._navigate(self.files_tab.current_path)
-        elif index == 3:
+        elif index == _TAB_SHARES:
             stale = cache.get("shares")
             if stale is not None:
                 self.shares_tab._cache = stale
                 self.shares_tab._render(stale)
                 self.shares_tab._status("Refreshing…")
-        elif index != 2 and index != 6:
+        elif index not in {2, 6}:
             save_settings(self)
 
     # ── Window chrome (delegate to window_chrome.py) ────────────────────────
 
-    def eventFilter(self, obj, event):
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if _chrome_event_filter(self, obj, event):
             return True
         return super().eventFilter(obj, event)
 
-    def resizeEvent(self, event):
-        try:
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        with contextlib.suppress(Exception):
             apply_window_rounding(self)
-        except Exception:
-            pass
         super().resizeEvent(event)
 
-    def showEvent(self, event):
-        try:
+    def showEvent(self, event: QShowEvent) -> None:
+        with contextlib.suppress(Exception):
             apply_window_rounding(self)
-        except Exception:
-            pass
         super().showEvent(event)
 
-    def changeEvent(self, event):
+    def changeEvent(self, event: QEvent) -> None:
         if event.type() == QEvent.Type.WindowStateChange:
             try:
                 if getattr(self, "titlebar", None):
                     self.titlebar._sync_max_icon()
-            except Exception:
-                pass
-            try:
+            except (AttributeError, TypeError, RuntimeError) as e:
+                write_debug_log(f"[Silenced] changeEvent: {e}")
+            with contextlib.suppress(Exception):
                 QTimer.singleShot(0, partial(apply_window_rounding, self))
-            except Exception:
-                pass
             if self.isMinimized() and self._tray_enabled():
                 QTimer.singleShot(0, self.hide)
         super().changeEvent(event)
 
     # ── Lifecycle ───────────────────────────────────────────────────────────
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         if self._tray_enabled() and not self.ctx.quitting:
             event.ignore()
             self.hide()

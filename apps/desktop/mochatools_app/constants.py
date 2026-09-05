@@ -7,11 +7,11 @@ RELAY_DEFAULT_CONCURRENCY = 1
 RELAY_MAX_CONCURRENCY = 1
 
 DEFAULT_CHUNK_SIZE_MB = 50
-DEFAULT_MAX_CHUNKS    = 20
+DEFAULT_MAX_CHUNKS = 20
 APP_NAME = "MochaTools"
 ORG_NAME = "Mocha"
 HARDCODED_BASE_URL = "https://api.mocha.my"
-SHARE_BASE_URL     = "https://mocha.my"
+SHARE_BASE_URL = "https://mocha.my"
 
 # Stamped at build time by builditems/stamp_version.py — do not edit manually.
 APP_VERSION = "7.0.0"

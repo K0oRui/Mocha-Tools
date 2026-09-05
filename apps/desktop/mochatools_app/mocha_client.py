@@ -8,13 +8,33 @@ handling have a single home.
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import time
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import quote
 
 import requests
 
 from .constants import HARDCODED_BASE_URL, PART_UPLOAD_TIMEOUT, SHARE_BASE_URL
+from .logging_utils import write_debug_log
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from .providers import ApiKeyProvider
+
+
+_HTTP_ERROR_MIN = 400
+_LOG_BODY_TRUNC = 400
+
+
+class StreamingBody(Protocol):
+    """File-like object accepted as request data (has ``read`` and ``fed``)."""
+
+    def read(self, size: int = -1) -> bytes: ...
+
+    fed: int
 
 
 class MochaAPIError(Exception):
@@ -25,9 +45,16 @@ class MochaAPIError(Exception):
         response_text: Raw response body when the server responded, else None.
         kind: "http" (non-2xx response), "connection" (network/timeout),
               or "protocol" (unexpected response shape).
+
     """
 
-    def __init__(self, message, status_code=None, response_text=None, kind="http"):
+    def __init__(
+        self,
+        message: str,
+        status_code: int | None = None,
+        response_text: str | None = None,
+        kind: str = "http",
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.response_text = response_text
@@ -46,11 +73,11 @@ class MochaClient:
 
     def __init__(
         self,
-        api_key_provider,
-        base_url=HARDCODED_BASE_URL,
-        timeout=_TIMEOUT,
-        logger=None,
-    ):
+        api_key_provider: ApiKeyProvider,
+        base_url: str = HARDCODED_BASE_URL,
+        timeout: float | tuple[float, float] = _TIMEOUT,
+        logger: Callable[[str], None] | None = None,
+    ) -> None:
         self._api_key_provider = api_key_provider
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
@@ -59,7 +86,7 @@ class MochaClient:
         self._req_ids = itertools.count(1)
 
     @property
-    def base_url(self):
+    def base_url(self) -> str:
         return self._base_url
 
     @property
@@ -67,18 +94,17 @@ class MochaClient:
         """True when the current API key is non-empty."""
         try:
             return bool(self._api_key_provider.get_api_key())
-        except Exception:
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] has_api_key: {e}")
             return False
 
-    def _log(self, msg, logger=None):
+    def _log(self, msg: str, logger: Callable[[str], None] | None = None) -> None:
         log = logger or self._logger
         if log is not None:
-            try:
+            with contextlib.suppress(Exception):
                 log(msg)
-            except Exception:
-                pass
 
-    def _headers(self, file_name=None):
+    def _headers(self, file_name: str | None = None) -> dict[str, str]:
         headers = {"Authorization": f"Bearer {self._api_key_provider.get_api_key()}"}
         if file_name:
             # RFC 5987 encode so apostrophes/accents/etc don't corrupt the header
@@ -87,17 +113,17 @@ class MochaClient:
 
     def _request(
         self,
-        method,
-        path,
+        method: str,
+        path: str,
         *,
-        params=None,
-        json=None,
-        data=None,
-        headers=None,
-        timeout=None,
-        auth=True,
-        logger=None,
-    ):
+        params: dict[str, str] | None = None,
+        json: dict | None = None,
+        data: StreamingBody | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: float | tuple[float, float] | None = None,
+        auth: bool = True,
+        logger: Callable[[str], None] | None = None,
+    ) -> requests.Response:
         url = f"{self._base_url}{path}"
         hdrs = self._headers() if auth else {}
         if headers:
@@ -132,7 +158,8 @@ class MochaClient:
         except requests.RequestException as e:
             elapsed_ms = (time.perf_counter() - started) * 1000
             self._log(
-                f"[DEBUG] #{req_id} Exception after {elapsed_ms:.0f}ms: {e}", logger
+                f"[DEBUG] #{req_id} Exception after {elapsed_ms:.0f}ms: {e}",
+                logger,
             )
             raise MochaAPIError(str(e), kind="connection") from e
 
@@ -145,31 +172,53 @@ class MochaClient:
         )
         if body:
             self._log(
-                f"[DEBUG] #{req_id} Body: {body[:400]!r}"
-                f"{'...' if len(body) > 400 else ''}",
+                f"[DEBUG] #{req_id} Body: {body[:_LOG_BODY_TRUNC]!r}"
+                f"{'...' if len(body) > _LOG_BODY_TRUNC else ''}",
                 logger,
             )
-        if resp.status_code >= 400:
+        if resp.status_code >= _HTTP_ERROR_MIN:
+            msg = f"HTTP {resp.status_code}: {resp.text[:200]}"
             raise MochaAPIError(
-                f"HTTP {resp.status_code}: {resp.text[:200]}",
+                msg,
                 status_code=resp.status_code,
                 response_text=resp.text,
             )
         return resp
 
-    def _json(self, method, path, **kwargs):
-        resp = self._request(method, path, **kwargs)
+    def _json(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, str] | None = None,
+        json: dict | None = None,
+        timeout: float | tuple[float, float] | None = None,
+        logger: Callable[[str], None] | None = None,
+    ) -> dict:
+        resp = self._request(
+            method,
+            path,
+            params=params,
+            json=json,
+            timeout=timeout,
+            logger=logger,
+        )
         try:
             return resp.json()
         except ValueError as e:
+            msg = f"Invalid JSON response from {path}: {e}"
             raise MochaAPIError(
-                f"Invalid JSON response from {path}: {e}",
+                msg,
                 kind="protocol",
             ) from e
 
     # ── Files ──────────────────────────────────────────────────────────────
 
-    def list_files(self, path="/", timeout=None):
+    def list_files(
+        self,
+        path: str = "/",
+        timeout: float | tuple[float, float] | None = None,
+    ) -> dict:
         return self._json(
             "GET",
             "/api/files",
@@ -177,12 +226,22 @@ class MochaClient:
             timeout=timeout,
         )
 
-    def delete_file(self, file_name, timeout=None):
+    def delete_file(
+        self,
+        file_name: str,
+        timeout: float | tuple[float, float] | None = None,
+    ) -> None:
         # Strip leading slash — API path is /api/files/{fileName}
         encoded = quote(file_name.lstrip("/"), safe="")
         self._request("DELETE", f"/api/files/{encoded}", timeout=timeout)
 
-    def create_folder(self, parent, name, timeout=None, logger=None):
+    def create_folder(
+        self,
+        parent: str,
+        name: str,
+        timeout: float | tuple[float, float] | None = None,
+        logger: Callable[[str], None] | None = None,
+    ) -> dict:
         return self._json(
             "POST",
             "/api/files/folders",
@@ -191,7 +250,13 @@ class MochaClient:
             logger=logger,
         )
 
-    def delete_folder(self, parent, name, timeout=None, logger=None):
+    def delete_folder(
+        self,
+        parent: str,
+        name: str,
+        timeout: float | tuple[float, float] | None = None,
+        logger: Callable[[str], None] | None = None,
+    ) -> None:
         self._request(
             "DELETE",
             "/api/files/folders",
@@ -200,7 +265,13 @@ class MochaClient:
             logger=logger,
         )
 
-    def rename_folder(self, path, old_name, new_name, timeout=None):
+    def rename_folder(
+        self,
+        path: str,
+        old_name: str,
+        new_name: str,
+        timeout: float | tuple[float, float] | None = None,
+    ) -> None:
         self._request(
             "PATCH",
             "/api/files/folders",
@@ -211,13 +282,13 @@ class MochaClient:
     def move(
         self,
         *,
-        file_id=None,
-        folder_path=None,
-        source_path=None,
-        to_path,
-        timeout=30,
-        logger=None,
-    ):
+        file_id: str | None = None,
+        folder_path: str | None = None,
+        source_path: str | None = None,
+        to_path: str,
+        timeout: float | tuple[float, float] = 30,
+        logger: Callable[[str], None] | None = None,
+    ) -> dict:
         if folder_path:
             payload = {"folderPath": folder_path, "toPath": to_path}
         elif file_id:
@@ -232,7 +303,11 @@ class MochaClient:
             logger=logger,
         )
 
-    def presigned_url(self, file_id, timeout=15):
+    def presigned_url(
+        self,
+        file_id: str,
+        timeout: float | tuple[float, float] | None = 15,
+    ) -> str:
         data = self._json(
             "GET",
             "/api/files/presigned",
@@ -243,17 +318,24 @@ class MochaClient:
             data.get("url") or data.get("presignedUrl") or data.get("downloadUrl") or ""
         )
         if not url:
+            msg = f"No presigned URL in response: {data}"
             raise MochaAPIError(
-                f"No presigned URL in response: {data}", kind="protocol"
+                msg,
+                kind="protocol",
             )
         return url
 
     # ── Shares ─────────────────────────────────────────────────────────────
 
     def create_share(
-        self, file_id, expires_in_hours=None, max_downloads=0, timeout=30, logger=None
-    ):
-        payload = {"fileId": file_id}
+        self,
+        file_id: str,
+        expires_in_hours: int | None = None,
+        max_downloads: int = 0,
+        timeout: float | tuple[float, float] | None = 30,
+        logger: Callable[[str], None] | None = None,
+    ) -> dict:
+        payload: dict[str, Any] = {"fileId": file_id}
         if expires_in_hours is not None:
             payload["expiresInHours"] = expires_in_hours
         if max_downloads and max_downloads > 0:
@@ -266,21 +348,34 @@ class MochaClient:
             logger=logger,
         )
 
-    def list_shares(self, timeout=None):
+    def list_shares(
+        self,
+        timeout: float | tuple[float, float] | None = None,
+    ) -> dict:
         return self._json("GET", "/api/shares", timeout=timeout)
 
-    def get_share(self, token, timeout=None):
+    def get_share(
+        self,
+        token: str,
+        timeout: float | tuple[float, float] | None = None,
+    ) -> dict:
         # Share metadata is fetched without auth today; keep that behavior.
         resp = self._request("GET", f"/api/shares/{token}", auth=False, timeout=timeout)
         try:
             return resp.json()
         except ValueError as e:
+            msg = f"Invalid JSON response from /api/shares/{token}: {e}"
             raise MochaAPIError(
-                f"Invalid JSON response from /api/shares/{token}: {e}",
+                msg,
                 kind="protocol",
             ) from e
 
-    def set_share_active(self, token, is_active, timeout=15):
+    def set_share_active(
+        self,
+        token: str,
+        is_active: bool,
+        timeout: float | tuple[float, float] | None = 15,
+    ) -> None:
         self._request(
             "PATCH",
             f"/api/shares/{token}",
@@ -288,16 +383,28 @@ class MochaClient:
             timeout=timeout,
         )
 
-    def delete_share(self, token, timeout=15):
+    def delete_share(
+        self,
+        token: str,
+        timeout: float | tuple[float, float] | None = 15,
+    ) -> None:
         self._request("DELETE", f"/api/shares/{token}", timeout=timeout)
 
     @staticmethod
-    def share_url(token):
+    def share_url(token: str) -> str:
         return f"{SHARE_BASE_URL}/share/{token}" if token else ""
 
     # ── Multipart ──────────────────────────────────────────────────────────
 
-    def multipart_init(self, file_name, path, size, mime_type, timeout=30, logger=None):
+    def multipart_init(
+        self,
+        file_name: str,
+        path: str,
+        size: int,
+        mime_type: str,
+        timeout: float | tuple[float, float] | None = 30,
+        logger: Callable[[str], None] | None = None,
+    ) -> dict:
         return self._json(
             "POST",
             "/api/files/multipart/init",
@@ -311,7 +418,12 @@ class MochaClient:
             logger=logger,
         )
 
-    def multipart_complete(self, payload, timeout=180, logger=None):
+    def multipart_complete(
+        self,
+        payload: dict[str, Any],
+        timeout: float | tuple[float, float] | None = 180,
+        logger: Callable[[str], None] | None = None,
+    ) -> dict:
         return self._json(
             "POST",
             "/api/files/multipart/complete",
@@ -321,8 +433,13 @@ class MochaClient:
         )
 
     def multipart_part_relay(
-        self, session, part_num, body, timeout=PART_UPLOAD_TIMEOUT, logger=None
-    ):
+        self,
+        session: dict[str, Any],
+        part_num: int,
+        body: StreamingBody,
+        timeout: float | tuple[float, float] | None = PART_UPLOAD_TIMEOUT,
+        logger: Callable[[str], None] | None = None,
+    ) -> str:
         params = {
             "strategy": session["strategy"],
             "uploadId": session["uploadId"],
@@ -346,12 +463,20 @@ class MochaClient:
             data = {}
         etag = data.get("etag") or resp.headers.get("ETag", "")
         if not etag:
+            msg = f"No ETag returned for part {part_num}: {data}"
             raise MochaAPIError(
-                f"No ETag returned for part {part_num}: {data}", kind="protocol"
+                msg,
+                kind="protocol",
             )
         return etag
 
-    def multipart_presign(self, session, part_num, timeout=30, logger=None):
+    def multipart_presign(
+        self,
+        session: dict[str, Any],
+        part_num: int,
+        timeout: float | tuple[float, float] | None = 30,
+        logger: Callable[[str], None] | None = None,
+    ) -> str:
         data = self._json(
             "POST",
             "/api/files/multipart/presigned",
@@ -366,14 +491,21 @@ class MochaClient:
                     signed_url = entry["url"]
                     break
         if not signed_url:
+            msg = f"No presigned URL in response: {data}"
             raise MochaAPIError(
-                f"No presigned URL in response: {data}", kind="protocol"
+                msg,
+                kind="protocol",
             )
         return signed_url
 
     def multipart_part_s3(
-        self, signed_url, body, timeout=PART_UPLOAD_TIMEOUT, logger=None, part_num=None
-    ):
+        self,
+        signed_url: str,
+        body: StreamingBody,
+        timeout: float | tuple[float, float] | None = PART_UPLOAD_TIMEOUT,
+        logger: Callable[[str], None] | None = None,
+        part_num: int | None = None,
+    ) -> str:
         short_url = signed_url.split("?", 1)[0] if signed_url else signed_url
         label = f"part {part_num} " if part_num else ""
         started = time.perf_counter()
@@ -390,34 +522,45 @@ class MochaClient:
             f"({len(resp.content)} bytes)",
             logger,
         )
-        if resp.status_code >= 400:
+        if resp.status_code >= _HTTP_ERROR_MIN:
+            msg = f"HTTP {resp.status_code}: {resp.text[:200]}"
             raise MochaAPIError(
-                f"HTTP {resp.status_code}: {resp.text[:200]}",
+                msg,
                 status_code=resp.status_code,
                 response_text=resp.text,
             )
         etag = resp.headers.get("ETag", "")
         if not etag:
-            raise MochaAPIError("No ETag returned for S3 part", kind="protocol")
+            msg = "No ETag returned for S3 part"
+            raise MochaAPIError(msg, kind="protocol")
         return etag
 
-    def multipart_abort(self, session, part_numbers=None, logger=None):
+    def multipart_abort(
+        self,
+        session: dict[str, Any],
+        part_numbers: list[int] | None = None,
+        logger: Callable[[str], None] | None = None,
+    ) -> None:
         payload = dict(session)
         if part_numbers:
             payload["partNumbers"] = part_numbers
-        try:
+        with contextlib.suppress(MochaAPIError):
             self._request(
                 "POST",
                 "/api/files/multipart/abort",
                 json=payload,
                 logger=logger,
             )
-        except MochaAPIError:
-            pass
 
     # ── Remote ingest ──────────────────────────────────────────────────────
 
-    def remote_ingest(self, source_url, file_name, path, timeout=30):
+    def remote_ingest(
+        self,
+        source_url: str,
+        file_name: str,
+        path: str,
+        timeout: float | tuple[float, float] | None = 30,
+    ) -> dict:
         return self._json(
             "POST",
             "/api/files/remote-download",
@@ -425,13 +568,24 @@ class MochaClient:
             timeout=timeout,
         )
 
-    def list_transfer_jobs(self, active_only=True, timeout=None):
+    def list_transfer_jobs(
+        self,
+        active_only: bool = True,
+        timeout: float | tuple[float, float] | None = None,
+    ) -> dict:
         params = {"active": "true"} if active_only else {}
         return self._json(
-            "GET", "/api/admin/transfer-jobs", params=params, timeout=timeout
+            "GET",
+            "/api/admin/transfer-jobs",
+            params=params,
+            timeout=timeout,
         )
 
-    def cancel_transfer_job(self, job_id, timeout=None):
+    def cancel_transfer_job(
+        self,
+        job_id: str,
+        timeout: float | tuple[float, float] | None = None,
+    ) -> dict:
         return self._json(
             "DELETE",
             "/api/admin/transfer-jobs",
@@ -441,5 +595,8 @@ class MochaClient:
 
     # ── Storage ────────────────────────────────────────────────────────────
 
-    def storage_available(self, timeout=None):
+    def storage_available(
+        self,
+        timeout: float | tuple[float, float] | None = None,
+    ) -> dict:
         return self._json("GET", "/api/storage/available", timeout=timeout)

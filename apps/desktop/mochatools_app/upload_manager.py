@@ -1,5 +1,4 @@
-"""
-upload_manager.py — Single-file Upload tab: construction, flow, and signals.
+"""upload_manager.py — Single-file Upload tab: construction, flow, and signals.
 
 Extracted from the former MochaTools God-Object in app.py.
 
@@ -33,8 +32,13 @@ Attached on ``win`` during install_upload:
   win._on_files_selected(file_list, root)
 """
 
+from __future__ import annotations
+
+import contextlib
 import os
+import pathlib
 from functools import partial
+from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtWidgets import (
@@ -61,6 +65,9 @@ from .ui import lucide_icon
 from .upload_pipeline import UploadJob
 from .workers import StorageWorker
 
+if TYPE_CHECKING:
+    from .app import AppContext
+
 # ── Small reusable section-header / card helpers (self-contained) ────────────
 
 
@@ -81,7 +88,7 @@ def _card() -> QFrame:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def build_upload_tab(win) -> QWidget:
+def build_upload_tab(win: Any) -> QWidget:
     """Build the single-file Upload tab and return it as a QWidget."""
     upload_tab = QWidget()
     scroll = QScrollArea()
@@ -107,14 +114,14 @@ def build_upload_tab(win) -> QWidget:
 
     win._mode_single_btn = QPushButton("  Single file")
     win._mode_multi_btn = QPushButton("  Multiple files")
-    for _b, _icon in ((win._mode_single_btn, "upload"), (win._mode_multi_btn, "copy")):
-        _b.setCheckable(True)
-        _b.setObjectName("mode_btn")
-        _b.setIcon(lucide_icon(_icon, get_accent(), 15))
-        _b.setIconSize(QSize(15, 15))
-        _b.setMinimumHeight(40)
-        _b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        _b.setCursor(Qt.CursorShape.PointingHandCursor)
+    for b, icon in ((win._mode_single_btn, "upload"), (win._mode_multi_btn, "copy")):
+        b.setCheckable(True)
+        b.setObjectName("mode_btn")
+        b.setIcon(lucide_icon(icon, get_accent(), 15))
+        b.setIconSize(QSize(15, 15))
+        b.setMinimumHeight(40)
+        b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
 
     win._mode_single_btn.clicked.connect(partial(win._set_upload_mode, "single"))
     win._mode_multi_btn.clicked.connect(partial(win._set_upload_mode, "multi"))
@@ -182,14 +189,14 @@ def build_upload_tab(win) -> QWidget:
     win.speed_label = QLabel("")
     win.speed_label.setObjectName("status_label")
     win.speed_label.setStyleSheet(
-        "color: #9ca3af; font-size: 11px; background:transparent;"
+        "color: #9ca3af; font-size: 11px; background:transparent;",
     )
     speed_row.addWidget(speed_lbl)
     speed_row.addWidget(win.speed_label)
     speed_row.addStretch()
     win.transferred_label = QLabel("")
     win.transferred_label.setStyleSheet(
-        "color: #9ca3af; font-size: 11px; background:transparent;"
+        "color: #9ca3af; font-size: 11px; background:transparent;",
     )
     speed_row.addWidget(win.transferred_label)
     status_lay.addLayout(speed_row)
@@ -210,10 +217,11 @@ def build_upload_tab(win) -> QWidget:
     win.log_label.setWordWrap(True)
     win.log_label.setMinimumHeight(46)
     win.log_label.setAlignment(
-        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
+        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
     )
     win.log_label.setSizePolicy(
-        QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        QSizePolicy.Policy.Ignored,
+        QSizePolicy.Policy.Preferred,
     )
     status_lay.addWidget(win.log_label)
 
@@ -313,7 +321,7 @@ def build_upload_tab(win) -> QWidget:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def install_upload(win, ctx):
+def install_upload(win: Any, ctx: AppContext) -> None:
     """Attach all single-file-upload convenience methods to *win*.
 
     Uses *ctx* (AppContext) for cross-module mutable state.
@@ -321,43 +329,41 @@ def install_upload(win, ctx):
     from .settings import save_settings
 
     # ── Mode toggle ─────────────────────────────────────────────────────────
-    def _set_upload_mode(mode: str, _checked=False):
+    def _set_upload_mode(mode: str, _checked: bool = False) -> None:
         multi = mode == "multi"
-        try:
+        with contextlib.suppress(Exception):
             win._single_box.setVisible(not multi)
-        except Exception:
-            pass
         try:
             sec = getattr(win, "mass_upload_section", None)
             if sec is not None:
                 sec.setVisible(multi)
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _set_upload_mode: {e}")
         try:
             win._mode_single_btn.setChecked(not multi)
             win._mode_multi_btn.setChecked(multi)
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _set_upload_mode: {e}")
 
     win._set_upload_mode = _set_upload_mode
 
     # ── Widget helpers ──────────────────────────────────────────────────────
-    def _toggle_key_visibility(checked: bool):
+    def _toggle_key_visibility(checked: bool) -> None:
         mode = QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
         win.api_key_edit.setEchoMode(mode)
 
     win._toggle_key_visibility = _toggle_key_visibility
 
-    def _toggle_share_options(checked: bool):
+    def _toggle_share_options(checked: bool) -> None:
         win.share_opts_widget.setVisible(checked)
 
     win._toggle_share_options = _toggle_share_options
 
-    def _on_files_selected(file_list: list[str], root: str):
+    def _on_files_selected(file_list: list[str], root: str) -> None:
         ctx.selected_files = file_list
         ctx.selected_root = root
         if len(file_list) == 1:
-            win._log(f"[DEBUG] Selected: {os.path.basename(file_list[0])}")
+            win._log(f"[DEBUG] Selected: {pathlib.Path(file_list[0]).name}")
         else:
             win._log(f"[DEBUG] Selected folder: {len(file_list)} files")
         win._share_result_widget.hide()
@@ -365,7 +371,7 @@ def install_upload(win, ctx):
     win._on_files_selected = _on_files_selected
 
     # ── Browse destination ──────────────────────────────────────────────────
-    def _browse_upload_dest():
+    def _browse_upload_dest() -> None:
         if not ctx.client.has_api_key:
             win._log("⚠ Enter your API key in Settings before browsing folders.")
             return
@@ -379,13 +385,13 @@ def install_upload(win, ctx):
             write_debug_log(f"[BrowseDest] dlg.selected={dlg.selected!r}")
             win.upload_path_edit.setText(dlg.selected)
             write_debug_log(
-                f"[BrowseDest] upload_path_edit now={win.upload_path_edit.text()!r}"
+                f"[BrowseDest] upload_path_edit now={win.upload_path_edit.text()!r}",
             )
 
     win._browse_upload_dest = _browse_upload_dest
 
     # ── Status / log helpers ────────────────────────────────────────────────
-    def _log(msg: str):
+    def _log(msg: str) -> None:
         debug_enabled = getattr(win, "debug_cb", None) and win.debug_cb.isChecked()
         if msg.startswith("[DEBUG]") and not debug_enabled:
             return
@@ -395,7 +401,7 @@ def install_upload(win, ctx):
 
     win._log = _log
 
-    def _badge(text: str, color: str):
+    def _badge(text: str, color: str) -> None:
         from .theme import DEFAULT_ACCENT, get_accent, get_background_palette
 
         win._last_badge_args = (text, color)
@@ -405,7 +411,8 @@ def install_upload(win, ctx):
         try:
             pal = get_background_palette()
             neutral_bg, neutral_border = pal["bg3"], pal["border"]
-        except Exception:
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _badge: {e}")
             neutral_bg, neutral_border = "#1e1c19", "#2e2b27"
         bg_map = {
             "#c8a96e": "#2a2215",
@@ -424,29 +431,30 @@ def install_upload(win, ctx):
         win.status_badge.setStyleSheet(
             f"background-color: {bg}; border: 1px solid {bd}; "
             f"border-radius: 10px; color: {color}; font-size: 11px; "
-            f"font-weight: 600; padding: 2px 10px;"
+            f"font-weight: 600; padding: 2px 10px;",
         )
 
     win._badge = _badge
 
-    def _style_copy_share_btn():
+    def _style_copy_share_btn() -> None:
         from .theme import get_background_palette
 
         try:
             pal = get_background_palette()
             bg3, text, border2 = pal["bg3"], pal["text"], pal["border2"]
-        except Exception:
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _style_copy_share_btn: {e}")
             bg3, text, border2 = "#1e1c19", "#f0ece6", "#3d3a35"
         win.copy_share_result_btn.setStyleSheet(
             "min-height:0px; padding:0px 16px;"
             " font-size:13px; font-weight:600;"
             f"background:{bg3}; color:{text};"
-            f" border:1px solid {border2}; border-radius:7px;"
+            f" border:1px solid {border2}; border-radius:7px;",
         )
 
     win._style_copy_share_btn = _style_copy_share_btn
 
-    def _copy_share_result():
+    def _copy_share_result() -> None:
         cb = QApplication.clipboard()
         if cb is not None:
             cb.setText(ctx.share_result_url)
@@ -456,7 +464,7 @@ def install_upload(win, ctx):
     win._copy_share_result = _copy_share_result
 
     # ── Upload state toggle ─────────────────────────────────────────────────
-    def _set_uploading(active: bool):
+    def _set_uploading(active: bool) -> None:
         ctx.is_uploading = active
         win.upload_btn.setVisible(not active)
         win.cancel_btn.setVisible(active)
@@ -465,10 +473,10 @@ def install_upload(win, ctx):
     win._set_uploading = _set_uploading
 
     # ── Start / cancel ──────────────────────────────────────────────────────
-    _current_job_id: int | None = None
+    current_job_id: int | None = None
 
-    def _start_upload():
-        nonlocal _current_job_id
+    def _start_upload() -> None:
+        nonlocal current_job_id
 
         upload_path = win.upload_path_edit.text().strip() or "/"
         if not ctx.client.has_api_key:
@@ -501,24 +509,22 @@ def install_upload(win, ctx):
             try:
                 rel = os.path.relpath(local, ctx.selected_root).replace(os.sep, "/")
             except ValueError:
-                rel = os.path.basename(local)
+                rel = pathlib.Path(local).name
             if rel.startswith("/") or (len(rel) > 1 and rel[1] == ":"):
-                rel = os.path.basename(local)
+                rel = pathlib.Path(local).name
             dest = f"{base_remote}/{rel}" if base_remote != "/" else f"/{rel}"
             file_pairs.append((local, dest))
         win.upload_path_edit.setText(base_remote + "/")
 
         win._log(f"[DEBUG] Upload path: {upload_path!r} → base_remote: {base_remote!r}")
-        for local, dest in file_pairs[:3]:
+        for _local, dest in file_pairs[:3]:
             win._log(f"[DEBUG] Dest: {dest}")
 
         grand_total = 0
         for lp, _ in file_pairs:
-            if os.path.isfile(lp):
-                try:
-                    grand_total += os.path.getsize(lp)
-                except OSError:
-                    pass
+            if pathlib.Path(lp).is_file():
+                with contextlib.suppress(OSError):
+                    grand_total += pathlib.Path(lp).stat().st_size
         ctx.upload_grand_total = grand_total
 
         job = UploadJob(
@@ -530,9 +536,9 @@ def install_upload(win, ctx):
             max_chunks=win.max_chunks_spin.value(),
             source="single",
         )
-        _current_job_id = ctx.upload_manager.enqueue(job)
+        current_job_id = ctx.upload_manager.enqueue(job)
         ctx.upload_manager.subscribe(
-            _current_job_id,
+            current_job_id,
             {
                 "progress": _on_progress,
                 "speed": _on_speed,
@@ -545,12 +551,12 @@ def install_upload(win, ctx):
 
     win._start_upload = _start_upload
 
-    def _cancel_upload():
-        nonlocal _current_job_id
-        if _current_job_id is not None:
-            ctx.upload_manager.cancel(_current_job_id)
-            ctx.upload_manager.unsubscribe(_current_job_id)
-            _current_job_id = None
+    def _cancel_upload() -> None:
+        nonlocal current_job_id
+        if current_job_id is not None:
+            ctx.upload_manager.cancel(current_job_id)
+            ctx.upload_manager.unsubscribe(current_job_id)
+            current_job_id = None
         win._set_uploading(False)
         win._badge("Cancelled", "#9ca3af")
         win.progress_bar.setValue(0)
@@ -563,13 +569,13 @@ def install_upload(win, ctx):
     win._cancel_upload = _cancel_upload
 
     # ── Upload signal handlers ──────────────────────────────────────────────
-    def _on_progress(pct: float):
+    def _on_progress(pct: float) -> None:
         win.progress_bar.setValue(int(pct * 1000))
         win.pct_label.setText(f"{pct:.3f}%")
 
     win._on_progress = _on_progress
 
-    def _on_bytes_progress(done_bytes: int, total_bytes: int):
+    def _on_bytes_progress(done_bytes: int, total_bytes: int) -> None:
         from .utils import fmt_bytes
 
         grand = ctx.upload_grand_total or total_bytes
@@ -579,7 +585,7 @@ def install_upload(win, ctx):
 
     win._on_bytes_progress = _on_bytes_progress
 
-    def _on_speed(bps: float):
+    def _on_speed(bps: float) -> None:
         from .utils import fmt_speed
 
         ctx.last_speed_bps = bps
@@ -587,9 +593,9 @@ def install_upload(win, ctx):
 
     win._on_speed = _on_speed
 
-    def _on_finished(result: dict):
-        nonlocal _current_job_id
-        _current_job_id = None
+    def _on_finished(result: dict) -> None:
+        nonlocal current_job_id
+        current_job_id = None
         ctx.is_uploading = False
         win._badge("Complete", "#4ade80")
         win.transferred_label.setText("")
@@ -598,8 +604,8 @@ def install_upload(win, ctx):
             from .sound_player import play_sound_event
 
             play_sound_event("sound_single_upload")
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+            write_debug_log(f"[Silenced] _on_finished: {e}")
         upload_path = win.upload_path_edit.text().strip() or "/"
         win._on_upload_done(upload_path)
         if result.get("share_url"):
@@ -608,16 +614,16 @@ def install_upload(win, ctx):
             from .theme import get_accent
 
             win.share_result.setText(
-                f'<a href="{url}" style="color:{get_accent()};">{url}</a>'
+                f'<a href="{url}" style="color:{get_accent()};">{url}</a>',
             )
             win._share_result_widget.show()
             win._on_share_created()
 
     win._on_finished = _on_finished
 
-    def _on_error(msg: str):
-        nonlocal _current_job_id
-        _current_job_id = None
+    def _on_error(msg: str) -> None:
+        nonlocal current_job_id
+        current_job_id = None
         ctx.is_uploading = False
         win._badge("Error", "#f87171")
         win.transferred_label.setText("")
@@ -626,13 +632,12 @@ def install_upload(win, ctx):
     win._on_error = _on_error
 
     # ── Cache invalidation helpers ──────────────────────────────────────────
-    def _on_upload_done(remote_folder: str):
+    def _on_upload_done(remote_folder: str) -> None:
         if not win._poller:
             return
         folder = remote_folder.rstrip("/")
-        import os as _os
 
-        if "." in _os.path.basename(folder):
+        if "." in pathlib.Path(folder).name:
             folder = "/".join(folder.split("/")[:-1]) or "/"
         folder = folder or "/"
         from .remote_cache import cache as _cache
@@ -644,7 +649,7 @@ def install_upload(win, ctx):
 
     win._on_upload_done = _on_upload_done
 
-    def _on_share_created():
+    def _on_share_created() -> None:
         if not win._poller:
             return
         from .remote_cache import cache as _cache
@@ -655,7 +660,7 @@ def install_upload(win, ctx):
     win._on_share_created = _on_share_created
 
     # ── Storage capacity ────────────────────────────────────────────────────
-    def _refresh_storage():
+    def _refresh_storage() -> None:
 
         if not ctx.client.has_api_key:
             return
@@ -670,19 +675,16 @@ def install_upload(win, ctx):
 
     win._refresh_storage = _refresh_storage
 
-    def _on_storage_done(data: dict):
+    def _on_storage_done(data: dict) -> None:
         from .utils import fmt_bytes
 
         available = data.get("availableBytes")
-        if available is None:
-            text = "Unlimited"
-        else:
-            text = f"{fmt_bytes(available)} free"
+        text = "Unlimited" if available is None else f"{fmt_bytes(available)} free"
         win.titlebar.set_storage_text(text)
 
     win._on_storage_done = _on_storage_done
 
-    def _on_storage_error(msg: str):
+    def _on_storage_error(msg: str) -> None:
         pass  # keep last shown text
 
     win._on_storage_error = _on_storage_error

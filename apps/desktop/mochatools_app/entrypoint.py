@@ -1,19 +1,23 @@
-"""
-entrypoint.py — Application entry point and top-level palette / theme wiring.
+"""entrypoint.py — Application entry point and top-level palette / theme wiring.
 
 Public API
 ----------
   main()
 """
 
+from __future__ import annotations
+
+import contextlib
 import sys
 from functools import partial
+from typing import Any
 
 from PySide6.QtCore import QSize, QTimer
 from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import QApplication
 
 from .constants import APP_NAME, ORG_NAME
+from .logging_utils import write_debug_log
 from .styles import STYLESHEET, build_stylesheet
 from .theme import (
     accent_qcolor,
@@ -45,12 +49,13 @@ def _build_app_palette() -> QPalette:
 # ── Accent / background / font live-update wiring ────────────────────────────
 
 
-def _wire_theme_signals(win):
+def _wire_theme_signals(win: Any) -> None:
     """Connect the theme-notifier signals to the app-level stylesheet /
     palette / font refreshers.  Called once from main() after the window
-    is shown."""
+    is shown.
+    """
 
-    def _on_accent_changed(old_hx: str, hx: str):
+    def _on_accent_changed(_old_hx: str, hx: str) -> None:
         try:
             a = QApplication.instance()
             if a:
@@ -61,18 +66,18 @@ def _wire_theme_signals(win):
                 try:
                     if hasattr(win, "_refresh_accented_icons"):
                         win._refresh_accented_icons()
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] _on_accent_changed: {e}")
                 try:
                     fam, sz = get_font()
                     if fam:
                         a.setFont(QFont(fam, int(sz)))
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except (AttributeError, TypeError, RuntimeError, ValueError) as e:
+                    write_debug_log(f"[Silenced] _on_accent_changed: {e}")
+        except (AttributeError, TypeError, RuntimeError, ValueError) as e:
+            write_debug_log(f"[Silenced] _on_accent_changed: {e}")
 
-    def _on_background_changed(old_key: str, new_key: str):
+    def _on_background_changed(_old_key: str, new_key: str) -> None:
         try:
             a = QApplication.instance()
             if a:
@@ -81,69 +86,63 @@ def _wire_theme_signals(win):
                 try:
                     if hasattr(win, "_refresh_accented_icons"):
                         win._refresh_accented_icons()
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] _on_background_changed: {e}")
                 try:
                     if hasattr(win, "titlebar") and hasattr(
-                        win.titlebar, "_refresh_icons"
+                        win.titlebar,
+                        "_refresh_icons",
                     ):
                         win.titlebar._refresh_icons()
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] _on_background_changed: {e}")
                 try:
                     if hasattr(win, "_style_copy_share_btn"):
                         win._style_copy_share_btn()
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] _on_background_changed: {e}")
                 try:
                     if hasattr(win, "status_badge") and hasattr(
-                        win, "_last_badge_args"
+                        win,
+                        "_last_badge_args",
                     ):
                         win._badge(*win._last_badge_args)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] _on_background_changed: {e}")
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _on_background_changed: {e}")
 
-    def _on_font_change(fam, sz):
+    def _on_font_change(fam: str, sz: int) -> None:
         try:
             a = QApplication.instance()
             if a:
                 a.setFont(QFont(fam, int(sz)))
                 for w in a.topLevelWidgets():
-                    try:
+                    with contextlib.suppress(Exception):
                         a.style().unpolish(w)
-                    except Exception:
-                        pass
-                    try:
+                    with contextlib.suppress(Exception):
                         a.style().polish(w)
-                    except Exception:
-                        pass
-                try:
+                with contextlib.suppress(Exception):
                     a.setStyleSheet(
-                        build_stylesheet(get_accent(), background_key=get_background())
+                        build_stylesheet(get_accent(), background_key=get_background()),
                     )
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError, ValueError) as e:
+            write_debug_log(f"[Silenced] _on_font_change: {e}")
 
     notifier().accent_changed.connect(_on_accent_changed)
     notifier().background_changed.connect(_on_background_changed)
     notifier().font_changed.connect(_on_font_change)
 
-    try:
-        _on_accent_changed(None, get_accent())
-    except Exception:
-        pass
+    with contextlib.suppress(Exception):
+        _on_accent_changed("", get_accent())
     try:
         fam, sz = get_font()
         _on_font_change(fam, sz)
-    except Exception:
-        pass
+    except (AttributeError, TypeError, RuntimeError) as e:
+        write_debug_log(f"[Silenced] _wire_theme_signals: {e}")
 
 
-def _refresh_accented_icons(win):
+def _refresh_accented_icons(win: Any) -> None:
     """Re-apply accent-coloured icons after a theme change."""
     try:
         from .ui import lucide_icon
@@ -156,19 +155,20 @@ def _refresh_accented_icons(win):
             win.cancel_btn.setIconSize(QSize(13, 13))
         try:
             if hasattr(win, "mass_upload_section") and hasattr(
-                win.mass_upload_section, "_start_btn"
+                win.mass_upload_section,
+                "_start_btn",
             ):
                 win.mass_upload_section._start_btn.setIcon(
-                    lucide_icon("upload", "#111010", 15)
+                    lucide_icon("upload", "#111010", 15),
                 )
                 win.mass_upload_section._start_btn.setIconSize(QSize(15, 15))
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _refresh_accented_icons: {e}")
         try:
             if hasattr(win, "titlebar") and hasattr(win.titlebar, "_refresh_icons"):
                 win.titlebar._refresh_icons()
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _refresh_accented_icons: {e}")
         try:
             if hasattr(win, "install_update_btn"):
                 acc = get_accent()
@@ -176,12 +176,12 @@ def _refresh_accented_icons(win):
                     f"min-height:0px; padding:0px 16px;"
                     f" font-size:13px; font-weight:700;"
                     f" background:{acc}; color:#111010;"
-                    " border:none; border-radius:7px;"
+                    " border:none; border-radius:7px;",
                 )
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _refresh_accented_icons: {e}")
         try:
-            _tab_icons = [
+            tab_icons = [
                 ("upload", get_accent()),
                 ("download-cloud", get_accent()),
                 ("folder", get_accent()),
@@ -190,21 +190,19 @@ def _refresh_accented_icons(win):
                 ("settings", get_accent()),
             ]
             if hasattr(win, "tabs"):
-                for i, (icon_name, color) in enumerate(_tab_icons):
-                    try:
+                for i, (icon_name, color) in enumerate(tab_icons):
+                    with contextlib.suppress(Exception):
                         win.tabs.setTabIcon(i, lucide_icon(icon_name, color, 14))
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-    except Exception:
-        pass
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _refresh_accented_icons: {e}")
+    except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+        write_debug_log(f"[Silenced] _refresh_accented_icons: {e}")
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────
 
 
-def main():
+def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(ORG_NAME)
@@ -212,17 +210,18 @@ def main():
     app.setQuitOnLastWindowClosed(False)
     try:
         app.setStyleSheet(
-            build_stylesheet(get_accent(), background_key=get_background())
+            build_stylesheet(get_accent(), background_key=get_background()),
         )
-    except Exception:
+    except (AttributeError, TypeError, RuntimeError) as e:
+        write_debug_log(f"[Silenced] main: {e}")
         app.setStyleSheet(STYLESHEET)
 
     try:
         fam, sz = get_font()
         if fam:
             app.setFont(QFont(fam, int(sz)))
-    except Exception:
-        pass
+    except (AttributeError, TypeError, RuntimeError, ValueError) as e:
+        write_debug_log(f"[Silenced] main: {e}")
 
     app.setPalette(_build_app_palette())
 
@@ -239,7 +238,7 @@ def main():
     _wire_theme_signals(win)
 
     # Check API key + start poller
-    def _preload():
+    def _preload() -> None:
         if win.api_key_edit.text().strip():
             win._poller.start()
 

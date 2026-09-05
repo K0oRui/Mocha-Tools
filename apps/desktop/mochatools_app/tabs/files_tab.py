@@ -1,5 +1,4 @@
-"""
-tabs/files_tab.py — Remote file browser tab for MochaTools.
+"""tabs/files_tab.py — Remote file browser tab for MochaTools.
 
 Allows navigating folders, creating folders, deleting, moving,
 sharing files, and downloading files from the remote storage.
@@ -16,26 +15,30 @@ navigation we:
      poller confirm asynchronously.
 """
 
-import os
+from __future__ import annotations
+
+import contextlib
+import pathlib
 from functools import partial
+from typing import TYPE_CHECKING, Any
 
 import requests
-
-from PySide6.QtCore import Qt, QSize, QTimer, QUrl, QThread, Signal
+from PySide6.QtCore import QObject, QPoint, QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import (
+    QCloseEvent,
     QColor,
     QIcon,
-    QPixmap,
+    QMouseEvent,
     QMovie,
-    QFont,
-    QTextCharFormat,
-    QSyntaxHighlighter,
     QPainter,
+    QPixmap,
+    QSyntaxHighlighter,
+    QTextCharFormat,
+    QTextDocument,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
-    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -48,7 +51,6 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
     QSlider,
     QStyle,
     QTreeWidget,
@@ -60,17 +62,20 @@ from PySide6.QtWidgets import (
 from ..constants import SHARE_BASE_URL
 from ..dialogs import (
     FolderBrowserDialog,
-    ShareLinkDialog,
     MochaDialog,
-    _gold_btn,
-    _grey_btn,
+    ShareLinkDialog,
 )
 from ..logging_utils import write_debug_log
-from ..workers import FilesWorker, UploadWorker
-from ..ui.icons import lucide_icon
-from ..theme import get_accent, accent_qcolor, get_font
 from ..remote_cache import cache, registry
+from ..theme import accent_qcolor, get_accent, get_font
+from ..ui.icons import lucide_icon
+from ..workers import FilesWorker, UploadWorker
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from ..mocha_client import MochaClient
+    from ..providers import WidgetUploadPathProvider
 
 # ── File-type helpers ─────────────────────────────────────────────────────────
 
@@ -178,10 +183,13 @@ _TEXT_EXT = {
 # would freeze the UI; we truncate instead.
 _TEXT_PREVIEW_MAX_BYTES = 2 * 1024 * 1024  # 2 MB
 
+# Length of an ISO date string ("YYYY-MM-DD") used to truncate expiry labels
+_ISO_DATE_LEN = 10
+
 
 def _preview_type(name: str) -> str | None:
     """Return 'image', 'video', 'audio', 'text', or None."""
-    ext = os.path.splitext(name)[1].lower()
+    ext = pathlib.Path(name).suffix.lower()
     if ext in _IMAGE_EXT:
         return "image"
     if ext in _VIDEO_EXT:
@@ -194,26 +202,24 @@ def _preview_type(name: str) -> str | None:
 
 
 def _extract_album_art(file_path: str) -> bytes | None:
-    """
-    Best-effort extraction of embedded cover art from an audio file.
+    """Best-effort extraction of embedded cover art from an audio file.
     Supports MP3 (ID3 APIC), FLAC, and MP4/M4A (covr atom) via mutagen.
     Returns raw image bytes (jpeg/png) or None if unavailable.
     """
     try:
-        import mutagen
-        from mutagen.id3 import ID3
         from mutagen.flac import FLAC
+        from mutagen.id3 import ID3
         from mutagen.mp4 import MP4
     except ImportError:
         return None
 
     try:
-        ext = os.path.splitext(file_path)[1].lower()
+        ext = pathlib.Path(file_path).suffix.lower()
         if ext == ".flac":
             audio = FLAC(file_path)
             if audio.pictures:
                 return audio.pictures[0].data
-        elif ext == ".mp4" or ext == ".m4a":
+        elif ext in {".mp4", ".m4a"}:
             audio = MP4(file_path)
             covr = audio.tags.get("covr") if audio.tags else None
             if covr:
@@ -221,11 +227,11 @@ def _extract_album_art(file_path: str) -> bytes | None:
         else:
             # MP3 and most other tagged formats use ID3
             tags = ID3(file_path)
-            for key in tags.keys():
+            for key in tags:
                 if key.startswith("APIC"):
                     return tags[key].data
-    except Exception:
-        pass
+    except (AttributeError, TypeError, RuntimeError, OSError) as e:
+        write_debug_log(f"[Silenced] _extract_album_art: {e}")
     return None
 
 
@@ -235,35 +241,34 @@ def _extract_album_art(file_path: str) -> bytes | None:
 def _pygments_available() -> bool:
     try:
         import pygments  # noqa: F401
-
-        return True
     except ImportError:
         return False
+    else:
+        return True
 
 
 class _PygmentsHighlighter(QSyntaxHighlighter):
-    """
-    Lexes the full document with Pygments and re-applies token colors on
+    """Lexes the full document with Pygments and re-applies token colors on
     every change. This re-lexes the whole text each time rather than doing
     incremental per-block highlighting (Pygments lexers are generally not
     block-resumable), which is fine for the read-only, size-capped preview
     use case here but would be too slow for a real editor.
     """
 
-    def __init__(self, document, lexer, accent: str):
+    def __init__(self, document: QTextDocument, lexer: Any, accent: str) -> None:
         super().__init__(document)
         self._lexer = lexer
         from pygments.token import (
-            Token,
-            Keyword,
-            Name,
-            String,
-            Number,
             Comment,
-            Operator,
-            Literal,
-            Punctuation,
             Generic,
+            Keyword,
+            Literal,
+            Name,
+            Number,
+            Operator,
+            Punctuation,
+            String,
+            Token,
         )
 
         # A compact, dark-theme-friendly palette keyed by Pygments token type.
@@ -290,7 +295,7 @@ class _PygmentsHighlighter(QSyntaxHighlighter):
         # document on every block (which would be O(n^2) over n blocks).
         self._tokens_cache = None
 
-    def _color_for(self, token_type) -> str:
+    def _color_for(self, token_type: Any) -> str:
         # Walk up the token hierarchy (e.g. Token.Literal.String.Doc ->
         # ... -> Token.Literal.String -> Token.Literal) until a palette
         # match is found, since Pygments subtypes tokens heavily.
@@ -301,23 +306,25 @@ class _PygmentsHighlighter(QSyntaxHighlighter):
             t = t.parent
         return "#d4d4d4"
 
-    def highlightBlock(self, text):
+    def highlightBlock(self, text: str) -> None:
         if self._tokens_cache is None:
             self._build_token_buckets()
 
         block_num = self.currentBlock().blockNumber()
-        for rel_start, rel_end, tok_type in self._tokens_cache.get(block_num, []):
-            rel_start = max(0, rel_start)
-            rel_end = min(len(text), rel_end)
+        for raw_start, raw_end, tok_type in (self._tokens_cache or {}).get(
+            block_num,
+            [],
+        ):
+            rel_start = max(0, raw_start)
+            rel_end = min(len(text), raw_end)
             if rel_end <= rel_start:
                 continue
             fmt = QTextCharFormat()
             fmt.setForeground(QColor(self._color_for(tok_type)))
             self.setFormat(rel_start, rel_end - rel_start, fmt)
 
-    def _build_token_buckets(self):
-        """
-        Lex the full document once and bucket each token by the line(s)
+    def _build_token_buckets(self) -> None:
+        """Lex the full document once and bucket each token by the line(s)
         it falls on, so highlightBlock() only looks at tokens belonging
         to the current line instead of scanning the whole file every call.
 
@@ -342,7 +349,8 @@ class _PygmentsHighlighter(QSyntaxHighlighter):
 
         try:
             tokens = self._lexer.get_tokens_unprocessed(full_text)
-        except Exception:
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _build_token_buckets: {e}")
             tokens = []
 
         for start, tok_type, value in tokens:
@@ -356,7 +364,7 @@ class _PygmentsHighlighter(QSyntaxHighlighter):
                 rel_start = start - line_starts[start_line]
                 rel_end = end - line_starts[start_line]
                 buckets.setdefault(start_line, []).append(
-                    (rel_start, rel_end, tok_type)
+                    (rel_start, rel_end, tok_type),
                 )
             else:
                 # Token spans multiple lines — split at each newline
@@ -370,7 +378,7 @@ class _PygmentsHighlighter(QSyntaxHighlighter):
                     rel_end = seg_end - line_starts[ln]
                     if rel_end > rel_start:
                         buckets.setdefault(ln, []).append(
-                            (rel_start, rel_end, tok_type)
+                            (rel_start, rel_end, tok_type),
                         )
 
         self._tokens_cache = buckets
@@ -385,17 +393,17 @@ class _FetchWorker(QThread):
     finished = Signal(bytes)
     error = Signal(str)
 
-    def __init__(self, url: str, parent=None):
+    def __init__(self, url: str, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._url = url
 
-    def run(self):
+    def run(self) -> None:
         try:
             resp = requests.get(self._url, timeout=30, stream=True)
             resp.raise_for_status()
             data = b"".join(resp.iter_content(65536))
             self.finished.emit(data)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self.error.emit(str(e))
 
 
@@ -403,12 +411,11 @@ class _FetchWorker(QThread):
 
 
 class _ClickableSlider(QSlider):
-    """
-    QSlider subclass that seeks directly to the clicked track position
+    """QSlider subclass that seeks directly to the clicked track position
     instead of the default page-step increment behaviour.
     """
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             val = QStyle.sliderValueFromPosition(
                 self.minimum(),
@@ -427,8 +434,7 @@ class _ClickableSlider(QSlider):
 
 
 class PreviewDialog(MochaDialog):
-    """
-    In-app preview popup for images, video, and audio.
+    """In-app preview popup for images, video, and audio.
     Fetches the presigned URL in the background, then renders:
       - Images  -> QLabel with scaled pixmap
       - Video   -> QVideoWidget + transport controls (PyQt6.QtMultimediaWidgets)
@@ -443,7 +449,13 @@ class PreviewDialog(MochaDialog):
 
     _AUDIO_SIZE = (340, 360)
 
-    def __init__(self, name: str, presigned_url: str, media_type: str, parent=None):
+    def __init__(
+        self,
+        name: str,
+        presigned_url: str,
+        media_type: str,
+        parent: QWidget | None = None,
+    ) -> None:
         is_audio = media_type == "audio"
         min_size = self._AUDIO_SIZE if is_audio else (520, 400)
 
@@ -491,10 +503,10 @@ class PreviewDialog(MochaDialog):
         self._fetch_worker.error.connect(self._on_error)
         self._fetch_worker.start()
 
-    def _on_error(self, msg: str):
+    def _on_error(self, msg: str) -> None:
         self._loading_lbl.setText(f"Failed to load: {msg}")
 
-    def _on_data(self, data: bytes):
+    def _on_data(self, data: bytes) -> None:
         self._loading_lbl.hide()
         if self._media_type == "image":
             self._show_image(data)
@@ -507,7 +519,7 @@ class PreviewDialog(MochaDialog):
 
     # ── Image ──────────────────────────────────────────────────────────────────
 
-    def _show_image(self, data: bytes):
+    def _show_image(self, data: bytes) -> None:
         # Animated GIFs need QMovie (QPixmap only ever grabs one frame).
         if data[:6] in (b"GIF87a", b"GIF89a"):
             self._show_gif(data)
@@ -541,13 +553,13 @@ class PreviewDialog(MochaDialog):
         # Insert before the close-button row
         self._lay.insertWidget(self._lay.count() - 1, scroll, 1)
 
-    def _show_gif(self, data: bytes):
+    def _show_gif(self, data: bytes) -> None:
         import tempfile as _tf
 
         # QMovie streams frames from disk/QIODevice as it plays, so the
         # backing file needs to outlive the dialog — keep the path around
         # and clean it up in closeEvent alongside the audio/video temp files.
-        tmp = _tf.NamedTemporaryFile(delete=False, suffix=".gif")
+        tmp = _tf.NamedTemporaryFile(delete=False, suffix=".gif")  # noqa: SIM115
         tmp.write(data)
         tmp.flush()
         tmp.close()
@@ -591,7 +603,7 @@ class PreviewDialog(MochaDialog):
 
     # ── Text / code ────────────────────────────────────────────────────────────
 
-    def _show_text(self, data: bytes):
+    def _show_text(self, data: bytes) -> None:
         truncated = False
         if len(data) > _TEXT_PREVIEW_MAX_BYTES:
             data = data[:_TEXT_PREVIEW_MAX_BYTES]
@@ -616,7 +628,8 @@ class PreviewDialog(MochaDialog):
         editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         try:
             acc = get_accent()
-        except Exception:
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _show_text: {e}")
             acc = "#c8a96e"
         editor.setStyleSheet(
             "QPlainTextEdit {"
@@ -624,7 +637,7 @@ class PreviewDialog(MochaDialog):
             " border-radius:8px; padding:8px;"
             " font-family:'Consolas','Fira Code','Courier New',monospace;"
             " font-size:12px;"
-            "}"
+            "}",
         )
         editor.setPlainText(text)
 
@@ -638,25 +651,28 @@ class PreviewDialog(MochaDialog):
                 try:
                     lexer = get_lexer_for_filename(self._name, stripnl=False)
                     self._highlighter = _PygmentsHighlighter(
-                        editor.document(), lexer, acc
+                        editor.document(),
+                        lexer,
+                        acc,
                     )
                 except ClassNotFound:
                     pass
-            except Exception:
-                pass
+            except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+                write_debug_log(f"[Silenced] _show_text: {e}")
 
         self._lay.insertWidget(self._lay.count() - 1, editor, 1)
 
     # ── Video ──────────────────────────────────────────────────────────────────
 
-    def _show_video(self, data: bytes):
+    def _show_video(self, data: bytes) -> None:
         try:
-            import tempfile as _tf, os as _os
-            from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+            import tempfile as _tf
+
+            from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
             from PySide6.QtMultimediaWidgets import QVideoWidget
 
-            suffix = _os.path.splitext(self._name)[1] or ".mp4"
-            tmp = _tf.NamedTemporaryFile(delete=False, suffix=suffix)
+            suffix = pathlib.Path(self._name).suffix or ".mp4"
+            tmp = _tf.NamedTemporaryFile(delete=False, suffix=suffix)  # noqa: SIM115
             tmp.write(data)
             tmp.flush()
             tmp.close()
@@ -680,22 +696,24 @@ class PreviewDialog(MochaDialog):
         except ImportError:
             self._loading_lbl.setText(
                 "Video preview requires PySide6 Multimedia.\n"
-                "Install with:  pip install PySide6 Multimedia"
+                "Install with:  pip install PySide6 Multimedia",
             )
             self._loading_lbl.show()
-        except Exception as exc:
+        except (AttributeError, TypeError, RuntimeError) as exc:
+            write_debug_log(f"[Silenced] _show_video: {exc}")
             self._loading_lbl.setText(f"Video error: {exc}")
             self._loading_lbl.show()
 
     # ── Audio ──────────────────────────────────────────────────────────────────
 
-    def _show_audio(self, data: bytes):
+    def _show_audio(self, data: bytes) -> None:
         try:
-            import tempfile as _tf, os as _os
-            from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+            import tempfile as _tf
 
-            suffix = _os.path.splitext(self._name)[1] or ".mp3"
-            tmp = _tf.NamedTemporaryFile(delete=False, suffix=suffix)
+            from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+
+            suffix = pathlib.Path(self._name).suffix or ".mp3"
+            tmp = _tf.NamedTemporaryFile(delete=False, suffix=suffix)  # noqa: SIM115
             tmp.write(data)
             tmp.flush()
             tmp.close()
@@ -720,7 +738,8 @@ class PreviewDialog(MochaDialog):
                 try:
                     acc = get_accent()
                     note_icon = lucide_icon("music", acc, 56)
-                except Exception:
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] _show_audio: {e}")
                     note_icon = lucide_icon("music", "#c8a96e", 56)
                 art.setPixmap(note_icon.pixmap(56, 56))
 
@@ -743,10 +762,11 @@ class PreviewDialog(MochaDialog):
         except ImportError:
             self._loading_lbl.setText(
                 "Audio preview requires PySide6 Multimedia.\n"
-                "Install with:  pip install PySide6 Multimedia"
+                "Install with:  pip install PySide6 Multimedia",
             )
             self._loading_lbl.show()
-        except Exception as exc:
+        except (AttributeError, TypeError, RuntimeError) as exc:
+            write_debug_log(f"[Silenced] _show_audio: {exc}")
             self._loading_lbl.setText(f"Audio error: {exc}")
             self._loading_lbl.show()
 
@@ -754,8 +774,7 @@ class PreviewDialog(MochaDialog):
 
     @staticmethod
     def _nudged_icon(name: str, color: str, size: int, btn_size: int, dy: int) -> QIcon:
-        """
-        Build an icon for a fixed-size button with its artwork shifted up
+        """Build an icon for a fixed-size button with its artwork shifted up
         by dy pixels, without touching the button's own geometry/box model
         (a stylesheet padding/margin approach was tried and rejected since
         it perturbed the whole transport row's layout instead of just the
@@ -773,7 +792,7 @@ class PreviewDialog(MochaDialog):
         painter.end()
         return QIcon(canvas)
 
-    def _make_transport(self, player) -> QHBoxLayout:
+    def _make_transport(self, player: Any) -> QHBoxLayout:
         from PySide6.QtMultimedia import QMediaPlayer
 
         row = QHBoxLayout()
@@ -781,7 +800,8 @@ class PreviewDialog(MochaDialog):
 
         try:
             acc = get_accent()
-        except Exception:
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _make_transport: {e}")
             acc = "#c8a96e"
 
         play_btn = QPushButton()
@@ -791,23 +811,27 @@ class PreviewDialog(MochaDialog):
         play_btn.setStyleSheet(
             f"QPushButton {{ background:transparent; color:{acc}; border:1px solid {acc};"
             f" border-radius:6px; padding:0px; }}"
-            f"QPushButton:hover {{ background:rgba(200,169,110,0.12); }}"
+            f"QPushButton:hover {{ background:rgba(200,169,110,0.12); }}",
         )
 
         seek = _ClickableSlider(Qt.Orientation.Horizontal)
         seek.setRange(0, 0)
 
-        _VOL_BTN_SIZE = 28
-        _VOL_ICON_SIZE = 14
-        _VOL_NUDGE_Y = 3  # pixels to shift the icon up within the button
+        VOL_BTN_SIZE = 28
+        VOL_ICON_SIZE = 14
+        VOL_NUDGE_Y = 3  # pixels to shift the icon up within the button
 
         vol_btn = QPushButton()
-        vol_btn.setFixedSize(_VOL_BTN_SIZE, _VOL_BTN_SIZE)
-        vol_btn.setIconSize(QSize(_VOL_BTN_SIZE, _VOL_BTN_SIZE))
+        vol_btn.setFixedSize(VOL_BTN_SIZE, VOL_BTN_SIZE)
+        vol_btn.setIconSize(QSize(VOL_BTN_SIZE, VOL_BTN_SIZE))
         vol_btn.setIcon(
             self._nudged_icon(
-                "volume-2", "#9c9484", _VOL_ICON_SIZE, _VOL_BTN_SIZE, _VOL_NUDGE_Y
-            )
+                "volume-2",
+                "#9c9484",
+                VOL_ICON_SIZE,
+                VOL_BTN_SIZE,
+                VOL_NUDGE_Y,
+            ),
         )
         vol_btn.setStyleSheet("QPushButton { background:transparent; border:none; }")
         self._muted = False
@@ -816,7 +840,7 @@ class PreviewDialog(MochaDialog):
         time_lbl.setStyleSheet("color:#9c9484; background:transparent; font-size:11px;")
         time_lbl.setFixedWidth(78)
         time_lbl.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
         )
 
         # Grouped as [play] [seek ────] [time  volume], so time and the
@@ -831,37 +855,39 @@ class PreviewDialog(MochaDialog):
             s = max(0, ms) // 1000
             return f"{s // 60}:{s % 60:02d}"
 
-        def _on_duration(dur):
+        def _on_duration(dur: int) -> None:
             seek.setRange(0, dur)
             time_lbl.setText(f"0:00 / {_fmt(dur)}")
 
-        def _on_position(pos):
+        def _on_position(pos: int) -> None:
             if not seek.isSliderDown():
                 seek.setValue(pos)
             dur = player.duration()
             time_lbl.setText(f"{_fmt(pos)} / {_fmt(dur) if dur else '0:00'}")
 
-        def _on_state(state):
+        def _on_state(state: Any) -> None:
             playing = state == QMediaPlayer.PlaybackState.PlayingState
             play_btn.setIcon(lucide_icon("pause" if playing else "play", acc, 14))
 
-        def _toggle():
+        def _toggle() -> None:
             if player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
                 player.pause()
             else:
                 player.play()
 
-        def _toggle_mute():
+        def _toggle_mute() -> None:
             self._muted = not self._muted
-            try:
+            with contextlib.suppress(Exception):
                 player.audioOutput().setMuted(self._muted)
-            except Exception:
-                pass
             icon_name = "volume-x" if self._muted else "volume-2"
             vol_btn.setIcon(
                 self._nudged_icon(
-                    icon_name, "#9c9484", _VOL_ICON_SIZE, _VOL_BTN_SIZE, _VOL_NUDGE_Y
-                )
+                    icon_name,
+                    "#9c9484",
+                    VOL_ICON_SIZE,
+                    VOL_BTN_SIZE,
+                    VOL_NUDGE_Y,
+                ),
             )
 
         seek.sliderMoved.connect(player.setPosition)
@@ -875,20 +901,20 @@ class PreviewDialog(MochaDialog):
 
     # ── Cleanup ────────────────────────────────────────────────────────────────
 
-    def _stop_playback(self):
+    def _stop_playback(self) -> None:
         try:
             if self._player:
                 self._player.stop()
                 self._player.setSource(QUrl())
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _stop_playback: {e}")
         try:
             if self._movie:
                 self._movie.stop()
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _stop_playback: {e}")
 
-    def _cleanup(self):
+    def _cleanup(self) -> None:
         # Called from both done() (accept/reject — including the titlebar
         # close button) and closeEvent(), since depending on platform/Qt
         # version not every close path reliably triggers the other.
@@ -902,36 +928,40 @@ class PreviewDialog(MochaDialog):
             if self._fetch_worker and self._fetch_worker.isRunning():
                 self._fetch_worker.terminate()
                 self._fetch_worker.wait(500)
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _cleanup: {e}")
         try:
             tmp = getattr(self, "_tmp_path", None)
-            if tmp and os.path.exists(tmp):
-                os.unlink(tmp)
-        except Exception:
-            pass
+            if tmp and pathlib.Path(tmp).exists():
+                pathlib.Path(tmp).unlink()
+        except (AttributeError, TypeError, RuntimeError, OSError) as e:
+            write_debug_log(f"[Silenced] _cleanup: {e}")
 
-    def done(self, result):
+    def done(self, result: int) -> None:
         self._cleanup()
         super().done(result)
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         self._cleanup()
         super().closeEvent(event)
 
 
 class FilesBrowserTab(QWidget):
-    """
-    The 'Files' tab — lists remote files and folders, allows:
-      • Navigate folders (double-click or path bar)
-      • Create folder
-      • Delete file or folder
-      • Move file or folder
-      • Create / copy share link
-      • Download file (direct or via browser)
+    """The 'Files' tab — lists remote files and folders, allows:
+    • Navigate folders (double-click or path bar)
+    • Create folder
+    • Delete file or folder
+    • Move file or folder
+    • Create / copy share link
+    • Download file (direct or via browser).
     """
 
-    def __init__(self, client, upload_path_provider, parent=None):
+    def __init__(
+        self,
+        client: MochaClient,
+        upload_path_provider: WidgetUploadPathProvider,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._client = client
         self._upload_path_provider = upload_path_provider
@@ -946,9 +976,9 @@ class FilesBrowserTab(QWidget):
         self._build_ui()
         # Ensure toolbar icons update if the accent changes at runtime.
         try:
-            from ..theme import notifier, get_accent
+            from ..theme import get_accent, notifier
 
-            def _apply_accent(_old, new):
+            def _apply_accent(_old: str | None, new: str) -> None:
                 try:
                     # reuse same update logic as the notifier handler in _build_toolbar
                     try:
@@ -958,29 +988,25 @@ class FilesBrowserTab(QWidget):
                         self.move_btn.setIcon(lucide_icon("move", new, 13))
                         self.share_btn.setIcon(lucide_icon("share-2", new, 13))
                         self.refresh_btn.setIconSize(QSize(13, 13))
-                    except Exception:
-                        pass
-                    try:
+                    except (AttributeError, TypeError, RuntimeError) as e:
+                        write_debug_log(f"[Silenced] _apply_accent: {e}")
+                    with contextlib.suppress(Exception):
                         self.status_lbl.setStyleSheet(
-                            f"color:{new}; font-size:11px; background:transparent;"
+                            f"color:{new}; font-size:11px; background:transparent;",
                         )
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] _apply_accent: {e}")
 
             notifier().accent_changed.connect(_apply_accent)
             # Apply current accent immediately so Apply in Settings mirrors startup
-            try:
+            with contextlib.suppress(Exception):
                 _apply_accent(None, get_accent())
-            except Exception:
-                pass
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+            write_debug_log(f"[Silenced] __init__: {e}")
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
-    def _build_ui(self):
+    def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 12, 12, 12)
         outer.setSpacing(8)
@@ -991,7 +1017,7 @@ class FilesBrowserTab(QWidget):
         self._build_share_bar(outer)
         self._set_action_btns_enabled(False)
 
-    def _build_path_bar(self, parent_lay: QVBoxLayout):
+    def _build_path_bar(self, parent_lay: QVBoxLayout) -> None:
         path_row = QHBoxLayout()
         path_row.setSpacing(6)
 
@@ -1016,7 +1042,7 @@ class FilesBrowserTab(QWidget):
         path_row.addWidget(up_btn)
         parent_lay.addLayout(path_row)
 
-    def _build_toolbar(self, parent_lay: QVBoxLayout):
+    def _build_toolbar(self, parent_lay: QVBoxLayout) -> None:
         tb = QHBoxLayout()
         tb.setSpacing(4)
 
@@ -1026,7 +1052,10 @@ class FilesBrowserTab(QWidget):
         self.move_btn = self._tb("Move", "move", self._move_selected)
         self.share_btn = self._tb("Share", "share-2", self._share_selected)
         self.delete_btn = self._tb(
-            "Delete", "trash-2", self._delete_selected, danger=True
+            "Delete",
+            "trash-2",
+            self._delete_selected,
+            danger=True,
         )
 
         for btn in (
@@ -1040,11 +1069,9 @@ class FilesBrowserTab(QWidget):
             tb.addWidget(btn)
         tb.addStretch()
 
-        from ..theme import accent_qcolor
-
         self.status_lbl = QLabel("")
         self.status_lbl.setStyleSheet(
-            f"color:{accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;"
+            f"color:{accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;",
         )
         tb.addWidget(self.status_lbl)
         parent_lay.addLayout(tb)
@@ -1052,7 +1079,7 @@ class FilesBrowserTab(QWidget):
         try:
             from ..theme import notifier
 
-            def _on_accent_changed(_old, _new):
+            def _on_accent_changed(_old: str | None, _new: str) -> None:
                 try:
                     for btn, name in (
                         (self.refresh_btn, "refresh-cw"),
@@ -1070,22 +1097,18 @@ class FilesBrowserTab(QWidget):
                                 # platforms where icon pixmaps are cached.
                                 app = QApplication.instance()
                                 if app and hasattr(app, "style"):
-                                    try:
+                                    with contextlib.suppress(Exception):
                                         app.style().unpolish(btn)
-                                    except Exception:
-                                        pass
-                                    try:
+                                    with contextlib.suppress(Exception):
                                         app.style().polish(btn)
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                pass
+                            except (AttributeError, TypeError, RuntimeError) as e:
+                                write_debug_log(f"[Silenced] _on_accent_changed: {e}")
                             btn.update()
                             btn.repaint()
-                        except Exception:
-                            pass
+                        except (AttributeError, TypeError, RuntimeError) as e:
+                            write_debug_log(f"[Silenced] _on_accent_changed: {e}")
                     self.status_lbl.setStyleSheet(
-                        f"color:{_new}; font-size:11px; background:transparent;"
+                        f"color:{_new}; font-size:11px; background:transparent;",
                     )
                     # Finalize visual update: repaint and process events so
                     # icon pixmaps are refreshed immediately.
@@ -1095,16 +1118,16 @@ class FilesBrowserTab(QWidget):
                         app = QApplication.instance()
                         if app:
                             app.processEvents()
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
+                    except (AttributeError, TypeError, RuntimeError) as e:
+                        write_debug_log(f"[Silenced] _on_accent_changed: {e}")
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] _on_accent_changed: {e}")
 
             notifier().accent_changed.connect(_on_accent_changed)
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+            write_debug_log(f"[Silenced] _build_toolbar: {e}")
 
-    def _build_tree(self, parent_lay: QVBoxLayout):
+    def _build_tree(self, parent_lay: QVBoxLayout) -> None:
         self.tree = QTreeWidget()
         self.tree.setColumnCount(5)
         self.tree.setHeaderLabels(["Name", "Size", "Type", "Shared", "Expires"])
@@ -1121,14 +1144,10 @@ class FilesBrowserTab(QWidget):
         self.tree.setAlternatingRowColors(True)
         self.tree.setUniformRowHeights(True)
         self.tree.setIndentation(10)
-        try:
+        with contextlib.suppress(Exception):
             self.tree.setTextElideMode(Qt.TextElideMode.ElideMiddle)
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             self.tree.setIconSize(QSize(18, 18))
-        except Exception:
-            pass
 
         hdr = self.tree.header()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
@@ -1141,10 +1160,10 @@ class FilesBrowserTab(QWidget):
         # while the metadata columns keep sensible fixed widths.
         try:
             hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-            for _c in (1, 2, 3, 4):
-                hdr.setSectionResizeMode(_c, QHeaderView.ResizeMode.Interactive)
-        except Exception:
-            pass
+            for c in (1, 2, 3, 4):
+                hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _build_tree: {e}")
         hdr.setStretchLastSection(False)
         hdr.setHighlightSections(False)
         hdr.resizeSection(0, 340)  # Name
@@ -1152,14 +1171,12 @@ class FilesBrowserTab(QWidget):
         hdr.resizeSection(2, 96)  # Type
         hdr.resizeSection(3, 84)  # Shared
         hdr.resizeSection(4, 108)  # Expires
-        try:
+        with contextlib.suppress(Exception):
             self.tree.setColumnWidth(0, 340)
-        except Exception:
-            pass
 
         parent_lay.addWidget(self.tree, 1)
 
-    def _build_share_bar(self, parent_lay: QVBoxLayout):
+    def _build_share_bar(self, parent_lay: QVBoxLayout) -> None:
         self._share_bar_row = QHBoxLayout()
         self._share_bar_row.setContentsMargins(0, 0, 0, 0)
         self._share_bar_row.setSpacing(8)
@@ -1175,7 +1192,7 @@ class FilesBrowserTab(QWidget):
         acc = get_accent()
         self.copy_share_btn.setStyleSheet(
             f"min-height:0px; padding:0px 16px; font-size:13px; font-weight:600;"
-            f"background:{acc}; color:#111010; border:1px solid rgba(0,0,0,0.12); border-radius:7px;"
+            f"background:{acc}; color:#111010; border:1px solid rgba(0,0,0,0.12); border-radius:7px;",
         )
         # Icon stays dark/black so it contrasts with the accent background
         self.copy_share_btn.setIcon(lucide_icon("copy", "#111010", 13))
@@ -1185,20 +1202,20 @@ class FilesBrowserTab(QWidget):
         try:
             from ..theme import notifier
 
-            def _on_accent_change(_old, _new):
+            def _on_accent_change(_old: str | None, _new: str) -> None:
                 # refresh stylesheet background to new accent and keep text/icon dark
                 try:
                     self.copy_share_btn.setStyleSheet(
                         f"min-height:0px; padding:0px 16px; font-size:13px; font-weight:600;"
-                        f"background:{get_accent()}; color:#111010; border:1px solid rgba(0,0,0,0.12); border-radius:7px;"
+                        f"background:{get_accent()}; color:#111010; border:1px solid rgba(0,0,0,0.12); border-radius:7px;",
                     )
                     self.copy_share_btn.setIcon(lucide_icon("copy", "#111010", 13))
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] _on_accent_change: {e}")
 
             notifier().accent_changed.connect(_on_accent_change)
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+            write_debug_log(f"[Silenced] _build_share_bar: {e}")
 
         self._share_bar_row.addWidget(self.share_bar, 1)
         self._share_bar_row.addWidget(self.copy_share_btn)
@@ -1209,7 +1226,7 @@ class FilesBrowserTab(QWidget):
         self._share_bar_widget.hide()
         parent_lay.addWidget(self._share_bar_widget)
 
-    def _copy_share_url(self):
+    def _copy_share_url(self) -> None:
         cb = QApplication.clipboard()
         if cb is not None:
             cb.setText(self._current_share_url)
@@ -1217,7 +1234,11 @@ class FilesBrowserTab(QWidget):
         QTimer.singleShot(1500, partial(self.copy_share_btn.setText, "Copy link"))
 
     def _tb(
-        self, label: str, icon_name: str, slot, danger: bool = False
+        self,
+        label: str,
+        icon_name: str,
+        slot: Callable[[], None],
+        danger: bool = False,
     ) -> QPushButton:
         btn = QPushButton(f"  {label}")
         btn.setObjectName("tb_btn_danger" if danger else "tb_btn")
@@ -1228,12 +1249,12 @@ class FilesBrowserTab(QWidget):
 
     # ── Cache subscriptions ───────────────────────────────────────────────────
 
-    def attach_cache_poller(self, poller):
+    def attach_cache_poller(self, poller: Any) -> None:
         """Called by app.py after the poller is created.  Subscribes callbacks."""
         self._poller = poller
         registry.subscribe("shares", self._on_shares_cache_update)
 
-    def _on_list_cache_update(self, data):
+    def _on_list_cache_update(self, data: Any) -> None:
         """Called by remote_cache registry when a 'list' result for current_path arrives."""
         self._populate(self.current_path, data)
         if self._shares_cache is not None:
@@ -1241,7 +1262,7 @@ class FilesBrowserTab(QWidget):
             self._refresh_share_indicators()
         self._status(f"{self.tree.topLevelItemCount()} items")
 
-    def _on_shares_cache_update(self, data):
+    def _on_shares_cache_update(self, data: Any) -> None:
         """Called by remote_cache registry when a fresh 'shares' result arrives."""
         if data is None:
             return
@@ -1251,15 +1272,15 @@ class FilesBrowserTab(QWidget):
 
     # ── Navigation ────────────────────────────────────────────────────────────
 
-    def _on_path_entered(self):
+    def _on_path_entered(self) -> None:
         self._navigate(self.path_edit.text().strip() or "/")
 
-    def _go_up(self):
+    def _go_up(self) -> None:
         parts = self.current_path.strip("/").split("/")
         parent = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
         self._navigate(parent)
 
-    def _navigate(self, path: str):
+    def _navigate(self, path: str) -> None:
         if not self._client.has_api_key:
             self._status("⚠ Enter your API key in the Settings tab first.")
             return
@@ -1298,23 +1319,22 @@ class FilesBrowserTab(QWidget):
         if hasattr(self, "_poller"):
             self._poller.force_refresh("list", path=path)
 
-    def _refresh(self):
+    def _refresh(self) -> None:
         # Force-invalidate this path so next poll fetches fresh
         cache.invalidate("list", path=self.current_path)
         self._navigate(self.current_path)
 
     # ── Called externally to warm cache after an upload ───────────────────────
 
-    def notify_upload_done(self, remote_folder: str):
-        """
-        Called by app.py / mass_upload_tab when a file finishes uploading.
+    def notify_upload_done(self, remote_folder: str) -> None:
+        """Called by app.py / mass_upload_tab when a file finishes uploading.
         Invalidates the cache for the affected folder and re-fetches.
         """
         # Normalise to the folder part (strip trailing filename if present)
         folder = remote_folder.rstrip("/")
         # If this is a file path rather than a folder, take parent
         # (heuristic: if it has an extension it's a file)
-        if "." in os.path.basename(folder):
+        if "." in pathlib.Path(folder).name:
             folder = "/".join(folder.split("/")[:-1]) or "/"
         folder = folder or "/"
 
@@ -1330,7 +1350,7 @@ class FilesBrowserTab(QWidget):
 
     # ── Worker dispatch ───────────────────────────────────────────────────────
 
-    def _run_worker(self, op: str, **kwargs):
+    def _run_worker(self, op: str, **kwargs: Any) -> None:
         w = FilesWorker(op, self._client, **kwargs)
         w.done.connect(self._on_worker_done)
         w.error.connect(self._on_worker_error)
@@ -1338,11 +1358,11 @@ class FilesBrowserTab(QWidget):
         self._workers.append(w)
         w.start()
 
-    def _remove_worker(self, w):
+    def _remove_worker(self, w: FilesWorker) -> None:
         if w in self._workers:
             self._workers.remove(w)
 
-    def _on_worker_done(self, result: dict):
+    def _on_worker_done(self, result: dict) -> None:
         op = result.get("op")
         if op == "list":
             path = result.get("path", "")
@@ -1422,7 +1442,7 @@ class FilesBrowserTab(QWidget):
             if hasattr(self, "_poller"):
                 self._poller.force_refresh("shares")
 
-    def _on_worker_error(self, msg: str):
+    def _on_worker_error(self, msg: str) -> None:
         self._status(f"✗ {msg}")
         QMessageBox.warning(self, "Error", msg)
 
@@ -1432,21 +1452,21 @@ class FilesBrowserTab(QWidget):
     _folder_icon = None
 
     @classmethod
-    def _get_folder_icon(cls):
+    def _get_folder_icon(cls) -> QIcon | None:
         if cls._folder_icon is None:
             try:
                 from ..theme import get_accent
 
                 cls._folder_icon = lucide_icon("folder", get_accent(), 14)
-            except Exception:
-                pass
+            except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+                write_debug_log(f"[Silenced] _get_folder_icon: {e}")
         return cls._folder_icon
 
-    def _populate(self, path: str, data):
+    def _populate(self, path: str, data: Any) -> None:
         # Skip re-render if data hasn't changed (hash comparison)
         import hashlib
 
-        new_hash = hashlib.md5(str(data).encode()).hexdigest()
+        new_hash = hashlib.sha256(str(data).encode()).hexdigest()
         old_hash = getattr(self, "_listing_hashes", {}).get(path)
         if (
             old_hash == new_hash
@@ -1487,21 +1507,16 @@ class FilesBrowserTab(QWidget):
                 {"_type": "up", "path": self._parent_path(path)},
             )
             up_item.setForeground(0, QColor("#9ca3af"))
-            try:
+            with contextlib.suppress(Exception):
                 up_item.setIcon(0, folder_icon or lucide_icon("folder", accent, 14))
-            except Exception:
-                pass
             folder_items.append(up_item)
         for f in sorted(folders, key=lambda x: x["name"].lower()):
             item = QTreeWidgetItem([f"{f['name']}", "", "folder", "", ""])
             item.setData(0, Qt.ItemDataRole.UserRole, {"_type": "folder", **f})
-            from ..theme import accent_qcolor
 
             item.setForeground(0, accent_qcolor())
-            try:
+            with contextlib.suppress(Exception):
                 item.setIcon(0, folder_icon or lucide_icon("folder", accent, 14))
-            except Exception:
-                pass
             folder_items.append(item)
 
         file_items = []
@@ -1526,7 +1541,9 @@ class FilesBrowserTab(QWidget):
             fid = f.get("id") or f.get("fileId") or ""
             expires = f.get("expiresAt") or f.get("expiry") or "—"
             if expires and expires != "—":
-                expires = expires[:10] if len(expires) > 10 else expires
+                expires = (
+                    expires[:_ISO_DATE_LEN] if len(expires) > _ISO_DATE_LEN else expires
+                )
             item = QTreeWidgetItem(
                 [
                     f"  {name}",
@@ -1534,7 +1551,7 @@ class FilesBrowserTab(QWidget):
                     "file",
                     "",
                     expires,
-                ]
+                ],
             )
             item.setData(
                 0,
@@ -1559,7 +1576,7 @@ class FilesBrowserTab(QWidget):
         try:
             from ..theme import notifier
 
-            def _refresh_items(old, new):
+            def _refresh_items(_old: str | None, new: str) -> None:
                 for i in range(self.tree.topLevelItemCount()):
                     it = self.tree.topLevelItem(i)
                     meta = it.data(0, Qt.ItemDataRole.UserRole) or {}
@@ -1567,14 +1584,12 @@ class FilesBrowserTab(QWidget):
                         from ..theme import accent_qcolor
 
                         it.setForeground(0, accent_qcolor())
-                        try:
+                        with contextlib.suppress(Exception):
                             it.setIcon(0, lucide_icon("folder", new, 14))
-                        except Exception:
-                            pass
 
             notifier().accent_changed.connect(_refresh_items)
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+            write_debug_log(f"[Silenced] _populate: {e}")
 
         self.tree.setSortingEnabled(True)
         self.tree.header().setSortIndicatorShown(False)
@@ -1592,12 +1607,12 @@ class FilesBrowserTab(QWidget):
 
         self._status(
             f"{len(folders)} folder{'s' if len(folders) != 1 else ''}, "
-            f"{len(files)} file{'s' if len(files) != 1 else ''}"
+            f"{len(files)} file{'s' if len(files) != 1 else ''}",
         )
         self._on_selection_changed()
         self._refresh_share_indicators()
 
-    def _parse_listing(self, path: str, data) -> tuple[list, list]:
+    def _parse_listing(self, path: str, data: Any) -> tuple[list, list]:
         """Normalise the API listing into (folders, files) lists."""
         if isinstance(data, dict):
             raw_folders = data.get("folders") or []
@@ -1636,10 +1651,10 @@ class FilesBrowserTab(QWidget):
                 )
                 write_debug_log(
                     f"[DEBUG]   Dict folder: name={name!r}, entry.path={entry_path!r}, "
-                    f"current_path={path!r}, computed fullpath={fullpath!r}"
+                    f"current_path={path!r}, computed fullpath={fullpath!r}",
                 )
                 folders.append(
-                    {**entry, "_type": "folder", "name": name, "path": fullpath}
+                    {**entry, "_type": "folder", "name": name, "path": fullpath},
                 )
 
         files: list[dict] = []
@@ -1664,7 +1679,7 @@ class FilesBrowserTab(QWidget):
 
     # ── Share indicators ──────────────────────────────────────────────────────
 
-    def _index_shares(self, data):
+    def _index_shares(self, data: Any) -> None:
         self._shares_map = {}
         items = data if isinstance(data, list) else data.get("shares", [])
         for s in items:
@@ -1684,7 +1699,7 @@ class FilesBrowserTab(QWidget):
                 if key:
                     self._shares_map[key] = share
 
-    def _refresh_share_indicators(self):
+    def _refresh_share_indicators(self) -> None:
         root = self.tree.invisibleRootItem()
         for i in range(root.childCount()):
             item = root.child(i)
@@ -1702,13 +1717,15 @@ class FilesBrowserTab(QWidget):
                 if item.text(4) in ("—", ""):
                     exp = share.get("expires", "—")
                     if exp and exp != "—":
-                        item.setText(4, exp[:10] if len(exp) > 10 else exp)
+                        item.setText(
+                            4, exp[:_ISO_DATE_LEN] if len(exp) > _ISO_DATE_LEN else exp
+                        )
             else:
                 item.setText(3, "")
 
     # ── Selection helpers ─────────────────────────────────────────────────────
 
-    def _on_selection_changed(self):
+    def _on_selection_changed(self) -> None:
         items = self._selected_items()
         has = len(items) > 0
         single = len(items) == 1
@@ -1720,7 +1737,7 @@ class FilesBrowserTab(QWidget):
         self.share_btn.setEnabled(single_file)
         self.delete_btn.setEnabled(has)
 
-    def _set_action_btns_enabled(self, enabled: bool):
+    def _set_action_btns_enabled(self, enabled: bool) -> None:
         self.rename_btn.setEnabled(enabled)
         self.move_btn.setEnabled(enabled)
         self.share_btn.setEnabled(enabled)
@@ -1734,14 +1751,14 @@ class FilesBrowserTab(QWidget):
             in ("file", "folder")
         ]
 
-    def _on_double_click(self, item: QTreeWidgetItem, _col):
+    def _on_double_click(self, item: QTreeWidgetItem, _col: int) -> None:
         meta = item.data(0, Qt.ItemDataRole.UserRole) or {}
         if meta.get("_type") in ("folder", "up"):
             self._navigate(meta["path"])
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
-    def _create_folder(self):
+    def _create_folder(self) -> None:
         name, ok = QInputDialog.getText(self, "New Folder", "Folder name:")
         if not ok or not name.strip():
             return
@@ -1749,7 +1766,7 @@ class FilesBrowserTab(QWidget):
         self._status(f"Creating {path}…")
         self._run_worker("mkdir", path=path)
 
-    def _rename_selected(self):
+    def _rename_selected(self) -> None:
         items = self._selected_items()
         if len(items) != 1:
             return
@@ -1763,12 +1780,17 @@ class FilesBrowserTab(QWidget):
 
         if not old_name:
             QMessageBox.warning(
-                self, "Rename", "Cannot determine the current folder name."
+                self,
+                "Rename",
+                "Cannot determine the current folder name.",
             )
             return
 
         new_name, ok = QInputDialog.getText(
-            self, "Rename Folder", f"New name for {old_name!r}:", text=old_name
+            self,
+            "Rename Folder",
+            f"New name for {old_name!r}:",
+            text=old_name,
         )
         if not ok or not new_name.strip() or new_name.strip() == old_name:
             return
@@ -1782,7 +1804,7 @@ class FilesBrowserTab(QWidget):
             new_name=new_name,
         )
 
-    def _delete_selected(self):
+    def _delete_selected(self) -> None:
         items = self._selected_items()
         if not items:
             return
@@ -1825,7 +1847,7 @@ class FilesBrowserTab(QWidget):
                 self._run_worker("delete", file_name=file_name)
         self._status("Deleting…")
 
-    def _prune_cache(self, tree_items: list[QTreeWidgetItem]):
+    def _prune_cache(self, tree_items: list[QTreeWidgetItem]) -> None:
         """Remove deleted items from remote_cache so instant re-renders look correct."""
         deleted_names, deleted_paths = set(), set()
         for ti in tree_items:
@@ -1837,14 +1859,14 @@ class FilesBrowserTab(QWidget):
             if fp:
                 deleted_paths.add(fp)
 
-        def _keep_file(f):
+        def _keep_file(f: Any) -> bool:
             if not isinstance(f, dict):
                 return str(f) not in deleted_names and str(f) not in deleted_paths
             fn = f.get("file_name") or f.get("originalName") or f.get("name") or ""
             fp = f.get("path") or ""
             return fn not in deleted_names and fp not in deleted_paths
 
-        def _keep_folder(f):
+        def _keep_folder(f: Any) -> bool:
             if not isinstance(f, dict):
                 return str(f) not in deleted_names and str(f) not in deleted_paths
             return (
@@ -1867,7 +1889,7 @@ class FilesBrowserTab(QWidget):
             return
         cache.set("list", pruned, path=self.current_path)
 
-    def _move_selected(self):
+    def _move_selected(self) -> None:
         items = self._selected_items()
         if len(items) != 1:
             return
@@ -1892,7 +1914,7 @@ class FilesBrowserTab(QWidget):
             is_folder=is_folder,
         )
 
-    def _share_selected(self):
+    def _share_selected(self) -> None:
         items = self._selected_items()
         if len(items) != 1:
             return
@@ -1916,15 +1938,16 @@ class FilesBrowserTab(QWidget):
                     from ..theme import get_accent
 
                     color = get_accent()
-                except Exception:
+                except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+                    write_debug_log(f"[Silenced] _share_selected: {e}")
                     color = "#c8a96e"
                 self.share_bar.setText(
                     f'Share link: <a href="{existing_url}" style="color:{color};">'
-                    f"{existing_url}</a>"
+                    f"{existing_url}</a>",
                 )
                 self._share_bar_widget.show()
                 return
-            elif ans == QMessageBox.StandardButton.Cancel:
+            if ans == QMessageBox.StandardButton.Cancel:
                 return
 
         expiry, ok = QInputDialog.getItem(
@@ -1939,7 +1962,7 @@ class FilesBrowserTab(QWidget):
         self._status(f"Creating share for {name!r}…")
         self._run_worker("share", file_id=fid, expiry=expiry)
 
-    def _preview_selected(self):
+    def _preview_selected(self) -> None:
         items = self._selected_items()
         if len(items) != 1:
             return
@@ -1951,7 +1974,9 @@ class FilesBrowserTab(QWidget):
         ptype = _preview_type(name)
         if not fid or not ptype:
             QMessageBox.information(
-                self, "Preview", "This file type cannot be previewed."
+                self,
+                "Preview",
+                "This file type cannot be previewed.",
             )
             return
 
@@ -1959,7 +1984,7 @@ class FilesBrowserTab(QWidget):
         self._presigned_callbacks[fid] = ("preview", name, ptype)
         self._run_worker("presigned", file_id=fid)
 
-    def _download_selected(self):
+    def _download_selected(self) -> None:
         items = self._selected_items()
         if len(items) != 1:
             return
@@ -1979,7 +2004,7 @@ class FilesBrowserTab(QWidget):
         self._presigned_callbacks[fid] = ("download", name)
         self._run_worker("presigned", file_id=fid)
 
-    def _on_presigned(self, fid: str, url: str):
+    def _on_presigned(self, fid: str, url: str) -> None:
         cb = self._presigned_callbacks.pop(fid, None)
         if not cb:
             return
@@ -2001,7 +2026,7 @@ class FilesBrowserTab(QWidget):
                 return
             self._start_download(name, url)
 
-    def _start_download(self, name: str, url: str):
+    def _start_download(self, name: str, url: str) -> None:
         main_win = self.window()
         use_browser = getattr(main_win, "browser_download_cb", None)
         if use_browser is not None and use_browser.isChecked():
@@ -2013,7 +2038,7 @@ class FilesBrowserTab(QWidget):
         dest_dir = QFileDialog.getExistingDirectory(self, "Save download to…")
         if not dest_dir:
             return
-        dest_path = os.path.join(dest_dir, name)
+        dest_path = str(pathlib.Path(dest_dir) / name)
         self._status(f"Downloading {name}…")
 
         from ..workers import DownloadWorker
@@ -2022,13 +2047,13 @@ class FilesBrowserTab(QWidget):
             self._dl_workers = []
         w = DownloadWorker(url, dest_path)
 
-        def _on_done(path, _w=w):
+        def _on_done(path: str, _w: DownloadWorker = w) -> None:
             self._status(f"✓ Saved to {path}")
             QMessageBox.information(self, "Download complete", f"Saved to:\n{path}")
             if _w in self._dl_workers:
                 self._dl_workers.remove(_w)
 
-        def _on_err(msg, _w=w):
+        def _on_err(msg: str, _w: DownloadWorker = w) -> None:
             self._status(f"✗ Download failed: {msg}")
             QMessageBox.warning(self, "Download failed", msg)
             if _w in self._dl_workers:
@@ -2040,14 +2065,14 @@ class FilesBrowserTab(QWidget):
         self._dl_workers.append(w)
         w.start()
 
-    def _on_download_speed(self, name: str, bps: float):
+    def _on_download_speed(self, name: str, bps: float) -> None:
         self._status(
             f"Downloading {name}… {bps / 1024 / 1024:.3f} MB/s"
             if bps >= 1024 * 1024
-            else f"Downloading {name}… {bps / 1024:.3f} KB/s"
+            else f"Downloading {name}… {bps / 1024:.3f} KB/s",
         )
 
-    def _context_menu(self, pos):
+    def _context_menu(self, pos: QPoint) -> None:
         item = self.tree.itemAt(pos)
         if not item:
             return
@@ -2058,19 +2083,20 @@ class FilesBrowserTab(QWidget):
         menu.setStyleSheet(
             "QMenu { background:#1f1f1f; border:1px solid #3a3a3a; border-radius:8px; color:#f0f0f0; font-size:12px; }"
             "QMenu::item { padding:6px 8px; }"
-            "QMenu::item:selected { background:#332b1a; }"
+            "QMenu::item:selected { background:#332b1a; }",
         )
         from ..theme import get_accent
 
         if meta.get("_type") == "file":
             # Preview action — only shown for previewable file types
-            _ptype = _preview_type(meta.get("name", "") or "")
-            if _ptype:
+            ptype = _preview_type(meta.get("name", "") or "")
+            if ptype:
                 act = menu.addAction(lucide_icon("eye", get_accent(), 12), "Preview")
                 act.triggered.connect(self._preview_selected)
                 menu.addSeparator()
             act = menu.addAction(
-                lucide_icon("download-cloud", get_accent(), 12), "Download"
+                lucide_icon("download-cloud", get_accent(), 12),
+                "Download",
             )
             act.triggered.connect(self._download_selected)
             act = menu.addAction(lucide_icon("share-2", get_accent(), 12), "Share")
@@ -2087,7 +2113,7 @@ class FilesBrowserTab(QWidget):
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _status(self, msg: str):
+    def _status(self, msg: str) -> None:
         self.status_lbl.setText(msg)
 
     @staticmethod

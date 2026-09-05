@@ -1,5 +1,4 @@
-"""
-tabs/shares_tab.py — Active shares browser tab for MochaTools.
+"""tabs/shares_tab.py — Active shares browser tab for MochaTools.
 
 Lists all active shares with copy-link, toggle-active, and delete actions.
 
@@ -11,9 +10,13 @@ fresh data in the background.  Deletes are applied optimistically to
 both the tree and the cache store before the worker confirms.
 """
 
-from functools import partial
+from __future__ import annotations
 
-from PySide6.QtCore import Qt, QSize
+import contextlib
+from functools import partial
+from typing import TYPE_CHECKING, Any
+
+from PySide6.QtCore import QPoint, QSize, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -23,7 +26,6 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
-    QSizePolicy,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -31,15 +33,24 @@ from PySide6.QtWidgets import (
 )
 
 from ..constants import SHARE_BASE_URL
-from ..workers import FilesWorker
+from ..logging_utils import write_debug_log
+from ..remote_cache import CachePoller, cache, registry
 from ..ui.icons import lucide_icon
-from ..remote_cache import cache, registry
+from ..workers import FilesWorker
+
+# Length of an ISO date string ("YYYY-MM-DD") used to truncate expiry labels
+_ISO_DATE_LEN = 10
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from ..mocha_client import MochaClient
 
 
 class SharesTab(QWidget):
     """Lists all active shares with copy-link and delete actions."""
 
-    def __init__(self, client, parent=None):
+    def __init__(self, client: MochaClient, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._client = client
         self._workers = []
@@ -48,7 +59,7 @@ class SharesTab(QWidget):
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
-    def _build_ui(self):
+    def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 12, 12, 12)
         outer.setSpacing(8)
@@ -57,23 +68,36 @@ class SharesTab(QWidget):
         self._build_tree(outer)
         self._build_copy_bar(outer)
 
-    def _build_toolbar(self, parent_lay: QVBoxLayout):
+    def _build_toolbar(self, parent_lay: QVBoxLayout) -> None:
         tb = QHBoxLayout()
         tb.setSpacing(4)
 
-        from ..theme import get_accent, notifier, accent_qcolor
+        from ..theme import accent_qcolor, get_accent, notifier
 
         self.refresh_btn = self._tb(
-            "  Refresh", "refresh-cw", get_accent(), self.refresh
+            "  Refresh",
+            "refresh-cw",
+            get_accent(),
+            self.refresh,
         )
         self.copy_btn = self._tb(
-            "  Copy Link", "copy", get_accent(), self._copy_selected
+            "  Copy Link",
+            "copy",
+            get_accent(),
+            self._copy_selected,
         )
         self.toggle_btn = self._tb(
-            "  Toggle Active", "link", get_accent(), self._toggle_selected
+            "  Toggle Active",
+            "link",
+            get_accent(),
+            self._toggle_selected,
         )
         self.delete_btn = self._tb(
-            "  Delete", "trash-2", "#f87171", self._delete_selected, danger=True
+            "  Delete",
+            "trash-2",
+            "#f87171",
+            self._delete_selected,
+            danger=True,
         )
 
         self.copy_btn.setEnabled(False)
@@ -88,18 +112,16 @@ class SharesTab(QWidget):
 
         self.status_lbl = QLabel("")
         self.status_lbl.setStyleSheet(
-            f"color:{accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;"
+            f"color:{accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;",
         )
         tb.addWidget(self.status_lbl)
         parent_lay.addLayout(tb)
-        try:
+        with contextlib.suppress(Exception):
             notifier().accent_changed.connect(self._on_accent_changed)
-        except Exception:
-            pass
 
-    def _on_accent_changed(self, old, new):
+    def _on_accent_changed(self, _old: str, _new: str) -> None:
         try:
-            from ..theme import get_accent, accent_qcolor
+            from ..theme import accent_qcolor, get_accent
 
             self.refresh_btn.setIcon(lucide_icon("refresh-cw", get_accent(), 13))
             self.copy_btn.setIcon(lucide_icon("copy", get_accent(), 13))
@@ -107,12 +129,12 @@ class SharesTab(QWidget):
             from ..theme import get_font
 
             self.status_lbl.setStyleSheet(
-                f"color:{accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;"
+                f"color:{accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;",
             )
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError, ImportError, ValueError) as e:
+            write_debug_log(f"[Silenced] _on_accent_changed: {e}")
 
-    def _build_tree(self, parent_lay: QVBoxLayout):
+    def _build_tree(self, parent_lay: QVBoxLayout) -> None:
         self.tree = QTreeWidget()
         self.tree.setColumnCount(4)
         self.tree.setHeaderLabels(["File", "Share Link", "Active", "Expires"])
@@ -128,10 +150,8 @@ class SharesTab(QWidget):
         self.tree.setAlternatingRowColors(True)
         self.tree.setUniformRowHeights(True)
         self.tree.setIndentation(10)
-        try:
+        with contextlib.suppress(Exception):
             self.tree.setTextElideMode(Qt.TextElideMode.ElideMiddle)
-        except Exception:
-            pass
 
         from PySide6.QtWidgets import QHeaderView
 
@@ -149,8 +169,8 @@ class SharesTab(QWidget):
             hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
             hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
             hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _build_tree: {e}")
         hdr.setStretchLastSection(False)
         hdr.resizeSection(0, 240)  # File
         hdr.resizeSection(1, 340)  # Share Link
@@ -158,20 +178,25 @@ class SharesTab(QWidget):
         hdr.resizeSection(3, 108)  # Expires
         parent_lay.addWidget(self.tree, 1)
 
-    def _build_copy_bar(self, parent_lay: QVBoxLayout):
+    def _build_copy_bar(self, parent_lay: QVBoxLayout) -> None:
         self.copy_bar = QLabel("")
         self.copy_bar.setObjectName("log_console")
         self.copy_bar.setWordWrap(True)
         self.copy_bar.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
-            | Qt.TextInteractionFlag.LinksAccessibleByMouse
+            | Qt.TextInteractionFlag.LinksAccessibleByMouse,
         )
         self.copy_bar.setOpenExternalLinks(True)
         self.copy_bar.hide()
         parent_lay.addWidget(self.copy_bar)
 
     def _tb(
-        self, label: str, icon_name: str, color: str, slot, danger: bool = False
+        self,
+        label: str,
+        icon_name: str,
+        color: str,
+        slot: Callable[[], None],
+        danger: bool = False,
     ) -> QPushButton:
         btn = QPushButton(label)
         btn.setObjectName("tb_btn_danger" if danger else "tb_btn")
@@ -182,19 +207,19 @@ class SharesTab(QWidget):
 
     # ── Cache subscription ────────────────────────────────────────────────────
 
-    def attach_cache_poller(self, poller):
+    def attach_cache_poller(self, poller: CachePoller) -> None:
         """Called by app.py once the poller exists.  Subscribes for push updates."""
         self._poller = poller
         registry.subscribe("shares", self._on_shares_cache_update)
 
-    def _on_shares_cache_update(self, data):
+    def _on_shares_cache_update(self, data: Any) -> None:
         """Receives fresh shares data from remote_cache registry (background poll)."""
         self._cache = data
         self._render(data)
 
     # ── Data ──────────────────────────────────────────────────────────────────
 
-    def refresh(self):
+    def refresh(self) -> None:
         if not self._client.has_api_key:
             self._status("⚠ Enter your API key in Settings first.")
             return
@@ -221,8 +246,8 @@ class SharesTab(QWidget):
                 try:
                     w.quit()
                     w.wait(500)
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] refresh: {e}")
             w = FilesWorker("shares", self._client)
             w.done.connect(self._on_done)
             w.error.connect(self._on_refresh_error)
@@ -230,7 +255,7 @@ class SharesTab(QWidget):
             self._workers.append(w)
             w.start()
 
-    def _render(self, data):
+    def _render(self, data: Any) -> None:
         shares = data.get("shares", data) if isinstance(data, dict) else data
 
         # Preserve current selection (by token) across rebuild
@@ -259,8 +284,8 @@ class SharesTab(QWidget):
             expires = (
                 s.get("expires_at") or s.get("expiresAt") or s.get("expiry") or "Never"
             )
-            if expires and expires != "Never" and len(expires) > 10:
-                expires = expires[:10]
+            if expires and expires != "Never" and len(expires) > _ISO_DATE_LEN:
+                expires = expires[:_ISO_DATE_LEN]
             url = f"{SHARE_BASE_URL}/share/{token}" if token else ""
 
             active_text = "● Active" if is_active else "○ Inactive"
@@ -299,7 +324,7 @@ class SharesTab(QWidget):
         count = self.tree.topLevelItemCount()
         self._status(f"{count} share{'s' if count != 1 else ''}")
 
-    def _on_done(self, result: dict):
+    def _on_done(self, result: dict) -> None:
         if result.get("op") != "shares":
             return
         data = result["data"]
@@ -309,20 +334,20 @@ class SharesTab(QWidget):
         self._cache = data
         self._render(data)
 
-    def _on_error(self, msg: str):
+    def _on_error(self, msg: str) -> None:
         self._status(f"✗ {msg}")
         QMessageBox.warning(self, "Error", msg)
 
-    def _on_refresh_error(self, msg: str):
+    def _on_refresh_error(self, msg: str) -> None:
         self._status(f"✗ {msg}")
 
-    def _remove_worker(self, w):
+    def _remove_worker(self, w: FilesWorker) -> None:
         if w in self._workers:
             self._workers.remove(w)
 
     # ── Selection ─────────────────────────────────────────────────────────────
 
-    def _on_selection_changed(self):
+    def _on_selection_changed(self) -> None:
         has = len(self.tree.selectedItems()) > 0
         self.copy_btn.setEnabled(has)
         self.toggle_btn.setEnabled(has)
@@ -336,7 +361,7 @@ class SharesTab(QWidget):
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
-    def _copy_selected(self):
+    def _copy_selected(self) -> None:
         items = self._selected_meta()
         if not items:
             return
@@ -346,7 +371,7 @@ class SharesTab(QWidget):
             if cb is not None:
                 cb.setText(url)
             self.copy_bar.setText(
-                f'Copied: <a href="{url}" style="color:#e11d48;">{url}</a>'
+                f'Copied: <a href="{url}" style="color:#e11d48;">{url}</a>',
             )
         else:
             urls = "\n".join(m.get("url", "") for m in items)
@@ -356,7 +381,7 @@ class SharesTab(QWidget):
             self.copy_bar.setText(f"Copied {len(items)} links to clipboard.")
         self.copy_bar.show()
 
-    def _toggle_selected(self):
+    def _toggle_selected(self) -> None:
         items = [
             (meta.get("token", ""), not meta.get("is_active", True))
             for meta in self._selected_meta()
@@ -371,7 +396,7 @@ class SharesTab(QWidget):
         self._workers.append(w)
         w.start()
 
-    def _on_toggle_done(self, result: dict):
+    def _on_toggle_done(self, result: dict) -> None:
         if result.get("op") != "toggle_shares":
             return
         errors = result.get("errors", [])
@@ -385,7 +410,7 @@ class SharesTab(QWidget):
         else:
             self.refresh()
 
-    def _delete_selected(self):
+    def _delete_selected(self) -> None:
         items = self._selected_meta()
         if not items:
             return
@@ -415,7 +440,7 @@ class SharesTab(QWidget):
         self._workers.append(w)
         w.start()
 
-    def _on_delete_done(self, result: dict):
+    def _on_delete_done(self, result: dict) -> None:
         if result.get("op") != "delete_shares":
             return
         errors = result.get("errors", [])
@@ -447,10 +472,10 @@ class SharesTab(QWidget):
         else:
             self.refresh()
 
-    def _prune_cache(self, deleted_tokens: set):
+    def _prune_cache(self, deleted_tokens: set) -> None:
         """Remove deleted shares from remote_cache so instant re-renders are correct."""
 
-        def _pruned(data):
+        def _pruned(data: Any) -> dict | list:
             shares = data.get("shares", data) if isinstance(data, dict) else data
             kept = [s for s in shares if s.get("token") not in deleted_tokens]
             if isinstance(data, dict):
@@ -466,7 +491,7 @@ class SharesTab(QWidget):
         if cached is not None:
             cache.set("shares", _pruned(cached))
 
-    def _context_menu(self, pos):
+    def _context_menu(self, pos: QPoint) -> None:
         item = self.tree.itemAt(pos)
         if not item:
             return
@@ -474,7 +499,7 @@ class SharesTab(QWidget):
         menu.setStyleSheet(
             "QMenu { background:#1f1f1f; border:1px solid #3a3a3a; border-radius:8px; color:#f0f0f0; font-size:12px; }"
             "QMenu::item { padding:6px 8px; }"
-            "QMenu::item:selected { background:#332b1a; }"
+            "QMenu::item:selected { background:#332b1a; }",
         )
         from ..theme import get_accent
 
@@ -489,5 +514,5 @@ class SharesTab(QWidget):
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _status(self, msg: str):
+    def _status(self, msg: str) -> None:
         self.status_lbl.setText(msg)

@@ -1,5 +1,4 @@
-"""
-upload_pipeline.py — Shared upload pipeline for MochaTools.
+"""upload_pipeline.py — Shared upload pipeline for MochaTools.
 
 Single-file, mass, and sync uploads all funnel through the same
 UploadWorker engine.  This module adds the one orchestrator they share:
@@ -8,11 +7,11 @@ job ID on every signal so tabs can correlate results back to their UI.
 
 Public API
 ----------
-  UploadJob            – dataclass describing one upload unit
-  UploadManager        – QObject that owns the queue and worker lifecycle
-  PRIORITY_SINGLE      – priority for user-initiated single uploads
-  PRIORITY_MASS        – priority for user-initiated mass uploads
-  PRIORITY_SYNC        – priority for background sync uploads
+  UploadJob            - dataclass describing one upload unit
+  UploadManager        - QObject that owns the queue and worker lifecycle
+  PRIORITY_SINGLE      - priority for user-initiated single uploads
+  PRIORITY_MASS        - priority for user-initiated mass uploads
+  PRIORITY_SYNC        - priority for background sync uploads
 
 Tabs enqueue UploadJob instances and subscribe to the manager's signals.
 The manager never knows about tab widgets; callers correlate via the
@@ -21,12 +20,17 @@ job ID and the optional ``ref`` they attached to the job.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import contextlib
+from dataclasses import dataclass
 from functools import partial
+from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from .workers import UploadWorker
+
+if TYPE_CHECKING:
+    from .mocha_client import MochaClient
 
 # ── Priorities ────────────────────────────────────────────────────────────────
 # Higher values are scheduled first when the global cap is reached.
@@ -88,8 +92,11 @@ class UploadManager(QObject):
     queue_idle = Signal()  # emitted when the queue drains to empty
 
     def __init__(
-        self, client, max_concurrency: int = DEFAULT_GLOBAL_CONCURRENCY, parent=None
-    ):
+        self,
+        client: MochaClient,
+        max_concurrency: int = DEFAULT_GLOBAL_CONCURRENCY,
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent)
         self._client = client
         self._max_concurrency = max(1, int(max_concurrency))
@@ -125,7 +132,7 @@ class UploadManager(QObject):
         """Drop a per-job subscription (no-op if not subscribed)."""
         self._subscribers.pop(job_id, None)
 
-    def cancel(self, job_id: int):
+    def cancel(self, job_id: int) -> None:
         """Cancel one job: stop its worker if active, drop it if pending."""
         worker = self._active.pop(job_id, None)
         if worker is not None:
@@ -136,7 +143,7 @@ class UploadManager(QObject):
             self._pending = [(jid, j) for jid, j in self._pending if jid != job_id]
         self._schedule()
 
-    def cancel_all(self):
+    def cancel_all(self) -> None:
         """Cancel every active and pending job."""
         for worker in self._active.values():
             worker.cancel()
@@ -147,7 +154,7 @@ class UploadManager(QObject):
             self._ensure_drain_timer()
         self._schedule()
 
-    def set_concurrency(self, max_concurrency: int):
+    def set_concurrency(self, max_concurrency: int) -> None:
         """Raise/lower the global cap.  Takes effect on the next schedule."""
         self._max_concurrency = max(1, int(max_concurrency))
         self._schedule()
@@ -166,7 +173,7 @@ class UploadManager(QObject):
 
     # ── Scheduling ──────────────────────────────────────────────────────────
 
-    def _schedule(self):
+    def _schedule(self) -> None:
         """Launch pending jobs up to the global cap, highest priority first."""
         if not self._pending:
             if not self._active:
@@ -178,7 +185,7 @@ class UploadManager(QObject):
             job_id, job = self._pending.pop(0)
             self._launch(job_id, job)
 
-    def _launch(self, job_id: int, job: UploadJob):
+    def _launch(self, job_id: int, job: UploadJob) -> None:
         w = UploadWorker(
             self._client,
             job.file_pairs,
@@ -188,9 +195,9 @@ class UploadManager(QObject):
             chunk_size_mb=job.chunk_size_mb,
             max_chunks=job.max_chunks,
         )
-        setattr(w, "_job_id", job_id)
-        setattr(w, "_job_ref", job.ref)
-        setattr(w, "_job_source", job.source)
+        w._job_id = job_id
+        w._job_ref = job.ref
+        w._job_source = job.source
 
         w.progress.connect(partial(self.job_progress.emit, job_id, job.ref))
         w.speed.connect(partial(self.job_speed.emit, job_id, job.ref))
@@ -211,44 +218,38 @@ class UploadManager(QObject):
 
     # ── Per-subscriber routing ──────────────────────────────────────────────
 
-    def _dispatch(self, job_id: int, kind: str, *args):
+    def _dispatch(self, job_id: int, kind: str, *args: Any) -> None:
         """Forward a worker payload to the job's subscriber, if any."""
         sub = self._subscribers.get(job_id)
         if sub is None:
             return
         cb = sub.get(kind)
         if cb is not None:
-            try:
+            with contextlib.suppress(Exception):
                 cb(*args)
-            except Exception:
-                pass
 
     # ── Worker completion ───────────────────────────────────────────────────
 
-    def _on_done(self, job_id: int, ref, result: dict):
+    def _on_done(self, job_id: int, ref: object, result: dict) -> None:
         self._active.pop(job_id, None)
         self.job_done.emit(job_id, ref, result)
         sub = self._subscribers.pop(job_id, None)
         if sub is not None:
             cb = sub.get("done")
             if cb is not None:
-                try:
+                with contextlib.suppress(Exception):
                     cb(result)
-                except Exception:
-                    pass
         self._schedule()
 
-    def _on_error(self, job_id: int, ref, msg: str):
+    def _on_error(self, job_id: int, ref: object, msg: str) -> None:
         self._active.pop(job_id, None)
         self.job_error.emit(job_id, ref, msg)
         sub = self._subscribers.pop(job_id, None)
         if sub is not None:
             cb = sub.get("error")
             if cb is not None:
-                try:
+                with contextlib.suppress(Exception):
                     cb(msg)
-                except Exception:
-                    pass
         self._schedule()
 
     # ── Cancelled-worker cleanup ───────────────────────────────────────────
@@ -257,14 +258,14 @@ class UploadManager(QObject):
     # Keep cancelled workers referenced (never GC a running QThread) and
     # sweep them once their thread reports finished.
 
-    def _ensure_drain_timer(self):
+    def _ensure_drain_timer(self) -> None:
         if self._drain_timer is None:
             self._drain_timer = QTimer(self)
             self._drain_timer.setInterval(500)
             self._drain_timer.timeout.connect(self._sweep_draining)
             self._drain_timer.start()
 
-    def _sweep_draining(self):
+    def _sweep_draining(self) -> None:
         self._draining = [w for w in self._draining if not w.isFinished()]
         if not self._draining and self._drain_timer is not None:
             self._drain_timer.stop()

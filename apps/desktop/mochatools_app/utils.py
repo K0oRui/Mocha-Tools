@@ -1,5 +1,4 @@
-"""
-utils.py — Pure helper functions used across MochaTools.
+"""utils.py — Pure helper functions used across MochaTools.
 
 No Qt imports, no side effects, no dependency on the MochaTools instance.
 """
@@ -10,8 +9,7 @@ import re
 
 
 def parse_release_notes_md(notes: str) -> str:
-    """
-    Extract just the "What's New" section from a GitHub release body, as
+    """Extract just the "What's New" section from a GitHub release body, as
     markdown — for feeding straight into a QLabel with
     setTextFormat(Qt.TextFormat.MarkdownText), which renders bullets/bold/etc
     natively without any manual HTML conversion.
@@ -35,7 +33,10 @@ def parse_release_notes_md(notes: str) -> str:
 
     # Strip any <img ...> or <img ...>...</img> tag anywhere in the body.
     text = re.sub(
-        r"<img\b[^>]*?/?>(?:.*?</img>)?", "", text, flags=re.IGNORECASE | re.DOTALL
+        r"<img\b[^>]*?/?>(?:.*?</img>)?",
+        "",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
     )
 
     # Find the "What's New" heading (## What's New, ### What's New, etc,
@@ -68,25 +69,27 @@ def parse_release_notes_md(notes: str) -> str:
 
 # ── Formatting helpers ───────────────────────────────────────────────────────
 
+_KB = 1024
+
 
 def fmt_bytes(n: int) -> str:
     """Format a byte count into a human-readable string (B, KB, MB, GB)."""
-    if n < 1024:
+    if n < _KB:
         return f"{n} B"
-    if n < 1024**2:
-        return f"{n / 1024:.3f} KB"
-    if n < 1024**3:
-        return f"{n / 1024**2:.3f} MB"
-    return f"{n / 1024**3:.3f} GB"
+    if n < _KB**2:
+        return f"{n / _KB:.3f} KB"
+    if n < _KB**3:
+        return f"{n / _KB**2:.3f} MB"
+    return f"{n / _KB**3:.3f} GB"
 
 
 def fmt_speed(bps: float) -> str:
     """Format a bytes-per-second value into a human-readable speed string."""
-    if bps < 1024:
+    if bps < _KB:
         return f"{bps:.3f} B/s"
-    if bps < 1024**2:
-        return f"{bps / 1024:.3f} KB/s"
-    return f"{bps / 1024**2:.3f} MB/s"
+    if bps < _KB**2:
+        return f"{bps / _KB:.3f} KB/s"
+    return f"{bps / _KB**2:.3f} MB/s"
 
 
 def fmt_eta(seconds: float) -> str:

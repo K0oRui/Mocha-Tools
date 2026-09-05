@@ -1,0 +1,34 @@
+name: Lint
+
+"on":
+  push:
+    branches: ["master"]
+  pull_request:
+
+jobs:
+  lint:
+    name: Ruff lint + format check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Ruff
+        run: pip install ruff
+
+      - name: Run ruff check
+        run: ruff check apps/desktop
+
+      - name: Run ruff format check
+        run: ruff format --check apps/desktop
+
+      - name: Install Pyright
+        run: pip install pyright requests packaging keyring PySide6 mutagen
+
+      - name: Run pyright
+        run: pyright

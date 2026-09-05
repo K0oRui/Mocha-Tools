@@ -1,18 +1,21 @@
+from __future__ import annotations
+
 import math
+import operator
 import os
+import pathlib
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import requests
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QObject, QThread, Signal
 
 from .constants import (
-    CHUNK_SIZE,
     DEFAULT_CHUNK_SIZE_MB,
     DEFAULT_MAX_CHUNKS,
     PART_UPLOAD_RETRIES,
-    PART_UPLOAD_TIMEOUT,
     RELAY_DEFAULT_CONCURRENCY,
     RELAY_MAX_CONCURRENCY,
     S3_DEFAULT_CONCURRENCY,
@@ -20,7 +23,16 @@ from .constants import (
     SHARE_BASE_URL,
 )
 from .logging_utils import write_debug_log
-from .mocha_client import MochaAPIError
+from .mocha_client import MochaAPIError, MochaClient, StreamingBody
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+
+_KB = 1024
+_MIN_SAMPLES = 2
+_HTTP_CONFLICT = 409
+_HTTP_SERVER_ERROR_MIN = 500
 
 
 # ── Progress Tracker ─────────────────────────────────────────────────────────
@@ -33,7 +45,7 @@ class _SlidingWindow:
     Thread-safe when used from *feed* (the only writer).
     """
 
-    def __init__(self, window: float = 5.0):
+    def __init__(self, window: float = 5.0) -> None:
         self._window = window
         self._samples: list[tuple[float, int]] = []  # (monotonic, cum_bytes)
 
@@ -44,7 +56,7 @@ class _SlidingWindow:
         # Prune samples older than window
         cutoff = now - self._window
         # Keep at least two samples so we can always compute a slope
-        while len(samples) > 2 and samples[0][0] < cutoff:
+        while len(samples) > _MIN_SAMPLES and samples[0][0] < cutoff:
             samples.pop(0)
         # If the window hasn't filled yet, use whatever span we have
         oldest_ts, oldest_bytes = samples[0]
@@ -63,7 +75,13 @@ class ProgressTracker:
 
     EMIT_INTERVAL = 0.25  # seconds between UI updates
 
-    def __init__(self, total_bytes, on_progress, on_speed, on_bytes_progress=None):
+    def __init__(
+        self,
+        total_bytes: int,
+        on_progress: Callable[[float], None],
+        on_speed: Callable[[float], None],
+        on_bytes_progress: Callable[[int, int], None] | None = None,
+    ) -> None:
         self._total = total_bytes
         self._sent = 0  # bytes confirmed sent
         self._lock = threading.Lock()
@@ -74,12 +92,12 @@ class ProgressTracker:
         self._on_speed = on_speed  # callable(float bps)
         self._on_bytes = on_bytes_progress  # callable(int done, int total) or None
 
-    def feed(self, n_bytes):
+    def feed(self, n_bytes: int) -> None:
         """Called by upload threads as bytes leave the socket."""
         with self._lock:
             self._sent = min(self._sent + n_bytes, self._total)
             now = time.monotonic()
-            elapsed = max(now - self._start, 0.001)
+            max(now - self._start, 0.001)
             if now - self._last_emit >= self.EMIT_INTERVAL:
                 self._last_emit = now
                 pct = min(self._sent / self._total * 100, 99.999)
@@ -89,13 +107,14 @@ class ProgressTracker:
                 if self._on_bytes:
                     self._on_bytes(self._sent, self._total)
 
-    def unfeed(self, n_bytes):
+    def unfeed(self, n_bytes: int) -> None:
         """Subtract bytes that were fed for a part that is being retried,
-        so the counter doesn't accumulate duplicate data."""
+        so the counter doesn't accumulate duplicate data.
+        """
         with self._lock:
             self._sent = max(self._sent - n_bytes, 0)
 
-    def finish(self):
+    def finish(self) -> None:
         """Call once when all parts are done to snap to 100%."""
         with self._lock:
             now = time.monotonic()
@@ -107,9 +126,18 @@ class ProgressTracker:
         if self._on_bytes:
             self._on_bytes(total, total)
 
-    def make_streaming_body(self, chunk: bytes, read_size: int = 65536):
+    def make_streaming_body(
+        self,
+        chunk: bytes,
+        read_size: int = 65536,
+    ) -> StreamingBody:
         class ChunkStream:
-            def __init__(self, chunk_bytes: bytes, tracker, block_size: int):
+            def __init__(
+                self,
+                chunk_bytes: bytes,
+                tracker: ProgressTracker,
+                block_size: int,
+            ) -> None:
                 self.chunk = chunk_bytes
                 self.tracker = tracker
                 self.block_size = block_size
@@ -118,7 +146,7 @@ class ProgressTracker:
                 self.len = self.length
                 self.fed = 0  # bytes fed to the tracker during this attempt
 
-            def read(self, size=-1):
+            def read(self, size: int = -1) -> bytes:
                 if self.offset >= self.length:
                     return b""
                 if size is None or size < 0:
@@ -131,7 +159,7 @@ class ProgressTracker:
                     self.offset = end
                 return piece
 
-            def __len__(self):
+            def __len__(self) -> int:
                 return self.length
 
         return ChunkStream(chunk, self, read_size)
@@ -142,7 +170,8 @@ class UploadWorker(QThread):
     progress = Signal(float)  # 0.0-100.0
     speed = Signal(float)  # bytes/sec
     bytes_progress = Signal(
-        "qint64", "qint64"
+        "qint64",
+        "qint64",
     )  # (bytes_done, bytes_total) — 64-bit to handle files > 2 GB
     status = Signal(str)  # log message
     finished = Signal(dict)  # result dict
@@ -150,21 +179,20 @@ class UploadWorker(QThread):
 
     def __init__(
         self,
-        client,
-        file_pairs,
-        create_share,
-        share_expiry,
-        share_max_downloads,
-        chunk_size_mb=None,
-        max_chunks=None,
-    ):
-        """
-        client: shared MochaClient instance.
+        client: MochaClient,
+        file_pairs: list[tuple[str, str]],
+        create_share: bool,
+        share_expiry: int | None,
+        share_max_downloads: int,
+        chunk_size_mb: int | None = None,
+        max_chunks: int | None = None,
+    ) -> None:
+        """client: shared MochaClient instance.
         file_pairs: list of (local_abs_path, remote_dest_path) tuples.
         remote_dest_path is already the full absolute path on Mocha,
         e.g. '/Music/Album/CD1/track.flac'.
-        chunk_size_mb: size of each multipart chunk in MB (1–100).
-        max_chunks: maximum number of in-flight parallel chunks (1–20).
+        chunk_size_mb: size of each multipart chunk in MB (1-100).
+        max_chunks: maximum number of in-flight parallel chunks (1-20).
         """
         super().__init__()
         self._client = client
@@ -179,10 +207,10 @@ class UploadWorker(QThread):
         self._max_chunks = max(1, min(mc, 20))
         self._cancel = False
 
-    def cancel(self):
+    def cancel(self) -> None:
         self._cancel = True
 
-    def run(self):
+    def run(self) -> None:
         total_files = len(self.file_pairs)
         last_file_id = None
         last_share_url = None
@@ -192,7 +220,7 @@ class UploadWorker(QThread):
             {
                 "/".join(dest.rstrip("/").split("/")[:-1]) or "/"
                 for _, dest in self.file_pairs
-            }
+            },
         )
         for d in dest_dirs:
             if d == "/":
@@ -200,7 +228,7 @@ class UploadWorker(QThread):
             self.status.emit(f"[DEBUG] Creating folder: {d}")
             try:
                 self._ensure_folder(d)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 self.error.emit(f"Failed to create folder {d!r}: {e}")
                 return
 
@@ -208,7 +236,7 @@ class UploadWorker(QThread):
         file_sizes: list[int] = []
         for local_path, _ in self.file_pairs:
             try:
-                sz = os.path.getsize(local_path)
+                sz = pathlib.Path(local_path).stat().st_size
             except OSError:
                 sz = 0
             file_sizes.append(sz)
@@ -220,7 +248,7 @@ class UploadWorker(QThread):
             if self._cancel:
                 return
 
-            file_name = os.path.basename(local_path)
+            file_name = pathlib.Path(local_path).name
             prefix = f"[{idx}/{total_files}] " if total_files > 1 else ""
             file_size = file_sizes[idx - 1]
 
@@ -232,12 +260,15 @@ class UploadWorker(QThread):
                 self.status.emit(f"{prefix}{file_name}  ({self._fmt_size(file_size)})")
                 self.status.emit(f"[DEBUG] Remote dest: {dest_path}")
 
-                _offset = bytes_done_offset
-                _grand = grand_total
+                offset = bytes_done_offset
+                grand = grand_total
 
                 def _on_bytes(
-                    done_this_file, _total_this_file, offset=_offset, grand=_grand
-                ):
+                    done_this_file: int,
+                    _total_this_file: int,
+                    offset: int = offset,
+                    grand: int = grand,
+                ) -> None:
                     self.bytes_progress.emit(min(offset + done_this_file, grand), grand)
 
                 self.status.emit("[DEBUG] Strategy: multipart upload")
@@ -259,7 +290,7 @@ class UploadWorker(QThread):
                     last_share_url = self._create_share(file_id)
                     self.status.emit(f"Share: {last_share_url}")
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 self.error.emit(f"{prefix}{file_name}: {e}")
                 return
 
@@ -267,11 +298,15 @@ class UploadWorker(QThread):
 
     # ── multipart upload (> 50 MB) ───────────────────────────────────────────
     def _multipart_upload(
-        self, file_size, local_path, dest_path, bytes_progress_cb=None
-    ):
+        self,
+        file_size: int,
+        local_path: str,
+        dest_path: str,
+        bytes_progress_cb: Callable[[int, int], None] | None = None,
+    ) -> str | None:
         import mimetypes
 
-        file_name = os.path.basename(local_path)
+        file_name = pathlib.Path(local_path).name
         dest_dir = "/".join(dest_path.rstrip("/").split("/")[:-1]) or "/"
         dest_dir = dest_dir.rstrip("/") + "/"
         mime_type = mimetypes.guess_type(local_path)[0] or "application/octet-stream"
@@ -298,9 +333,10 @@ class UploadWorker(QThread):
         # file via the stat check below, it just can't stop the deletion
         # itself.
         try:
-            guard_fh = open(local_path, "rb")
+            guard_fh = pathlib.Path(local_path).open("rb")  # noqa: SIM115
         except OSError as e:
-            raise RuntimeError(f"Couldn't open {file_name!r} for upload: {e}") from e
+            msg = f"Couldn't open {file_name!r} for upload: {e}"
+            raise RuntimeError(msg) from e
 
         try:
             try:
@@ -308,9 +344,8 @@ class UploadWorker(QThread):
             except OSError:
                 guard_stat = None
 
-            def _verify_file_unchanged():
-                """
-                Best-effort check that the file we locked hasn't been
+            def _verify_file_unchanged() -> None:
+                """Best-effort check that the file we locked hasn't been
                 replaced in-place (same path, different underlying file)
                 since we opened the guard handle. Cheap — just an fstat,
                 no extra I/O — so safe to call before every chunk read.
@@ -318,10 +353,11 @@ class UploadWorker(QThread):
                 if guard_stat is None:
                     return
                 try:
-                    current = os.stat(local_path)
+                    current = pathlib.Path(local_path).stat()
                 except OSError as e:
+                    msg = f"{file_name} was deleted or moved during upload: {e}"
                     raise RuntimeError(
-                        f"{file_name} was deleted or moved during upload: {e}"
+                        msg,
                     ) from e
                 # On POSIX, st_ino/st_dev identify the same underlying file
                 # even after a rename; on Windows these aren't reliable for
@@ -331,13 +367,17 @@ class UploadWorker(QThread):
                         guard_stat.st_ino,
                         guard_stat.st_dev,
                     ):
+                        msg = f"{file_name} was replaced during upload (different file at the same path)"
                         raise RuntimeError(
-                            f"{file_name} was replaced during upload (different file at the same path)"
+                            msg,
                         )
                 elif current.st_size != guard_stat.st_size:
-                    raise RuntimeError(
+                    msg = (
                         f"{file_name} changed size during upload "
                         f"(was {guard_stat.st_size} bytes, now {current.st_size})"
+                    )
+                    raise RuntimeError(
+                        msg,
                     )
 
             return self._do_multipart_upload(
@@ -355,21 +395,21 @@ class UploadWorker(QThread):
 
     def _do_multipart_upload(
         self,
-        file_size,
-        local_path,
-        dest_path,
-        file_name,
-        dest_dir,
-        mime_type,
-        bytes_progress_cb=None,
-        verify_file_unchanged=None,
-    ):
+        file_size: int,
+        local_path: str,
+        _dest_path: str,
+        file_name: str,
+        dest_dir: str,
+        mime_type: str,
+        bytes_progress_cb: Callable[[int, int], None] | None = None,
+        verify_file_unchanged: Callable[[], None] | None = None,
+    ) -> str | None:
 
         # Retry init on transient 5xx — concurrent mass uploads can cause
         # the server to return 500 when folder creation races or S3 is busy.
-        init_data = None
-        last_init_error = None
-        for _init_attempt in range(1, 6):
+        init_data: dict | None = None
+        last_init_error: Exception | None = None
+        for init_attempt in range(1, 6):
             if self._cancel:
                 return None
             try:
@@ -384,7 +424,7 @@ class UploadWorker(QThread):
                 break
             except MochaAPIError as e:
                 self.status.emit(
-                    f"[DEBUG] HTTPError (init attempt {_init_attempt}/5): {e}"
+                    f"[DEBUG] HTTPError (init attempt {init_attempt}/5): {e}",
                 )
                 self.status.emit(f"[DEBUG] Response status: {e.status_code}")
                 self.status.emit(f"[DEBUG] Response content: {e.response_text}")
@@ -393,17 +433,19 @@ class UploadWorker(QThread):
                     e.kind == "http" and e.status_code not in (429, 500, 502, 503, 504)
                 ):
                     raise  # 4xx client errors are not retryable
-                wait = min(2 ** (_init_attempt - 1), 10)
+                wait = min(2 ** (init_attempt - 1), 10)
                 self.status.emit(f"[DEBUG] Retrying multipart init in {wait}s…")
                 time.sleep(wait)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 self.status.emit(
-                    f"[DEBUG] Exception (init attempt {_init_attempt}/5): {e}"
+                    f"[DEBUG] Exception (init attempt {init_attempt}/5): {e}",
                 )
                 last_init_error = e
-                time.sleep(min(2 ** (_init_attempt - 1), 10))
+                time.sleep(min(2 ** (init_attempt - 1), 10))
         if last_init_error is not None:
             raise last_init_error
+        if init_data is None:
+            raise RuntimeError("multipart init returned no data")  # noqa: TRY003
         self.status.emit(f"[DEBUG] Init response: {init_data}")
         # Store the init response fields in one session payload so every
         # multipart request uses the same uploadId, key, nodeId, and path.
@@ -415,7 +457,8 @@ class UploadWorker(QThread):
         direct = init_data.get("directUploadEnabled") is not False
 
         if strategy not in ("s3", "webdav") or not upload_id or not key or not node_id:
-            raise RuntimeError(f"Invalid multipart init response: {init_data}")
+            msg = f"Invalid multipart init response: {init_data}"
+            raise RuntimeError(msg)
 
         session = {
             "strategy": strategy,
@@ -434,10 +477,13 @@ class UploadWorker(QThread):
         total_parts = math.ceil(file_size / chunk_size)
         mode = "direct S3" if strategy == "s3" and direct else "server relay"
         concurrency = self._multipart_concurrency(
-            init_data, total_parts, mode, self._max_chunks
+            init_data,
+            total_parts,
+            mode,
+            self._max_chunks,
         )
         self.status.emit(
-            f"[DEBUG] Multipart upload: {total_parts} parts… (strategy={strategy}, mode={mode}, partSize={self._fmt_size(chunk_size)}, concurrency={concurrency})"
+            f"[DEBUG] Multipart upload: {total_parts} parts… (strategy={strategy}, mode={mode}, partSize={self._fmt_size(chunk_size)}, concurrency={concurrency})",
         )
         self.status.emit(f"[DEBUG] Session: {upload_id}")
 
@@ -445,12 +491,12 @@ class UploadWorker(QThread):
         # across all parallel part workers rather than only on part completion.
         # Use the caller-supplied callback when available (run() injects a
         # cumulative wrapper so multi-file batches show the right grand total).
-        _bytes_cb = bytes_progress_cb or self.bytes_progress.emit
+        bytes_cb = bytes_progress_cb or self.bytes_progress.emit
         tracker = ProgressTracker(
             file_size,
             on_progress=self.progress.emit,
             on_speed=self.speed.emit,
-            on_bytes_progress=_bytes_cb,
+            on_bytes_progress=bytes_cb,
         )
 
         parts = []
@@ -460,7 +506,7 @@ class UploadWorker(QThread):
         # Each worker opens its own file handle and seeks to its part offset.
         # Sharing one file object across parallel uploads would race the read
         # position and corrupt the parts.
-        def upload_part(part_num):
+        def upload_part(part_num: int) -> dict | None:
             with active_lock:
                 active_parts.add(part_num)
             offset = (part_num - 1) * chunk_size
@@ -469,13 +515,13 @@ class UploadWorker(QThread):
                 return None
             if verify_file_unchanged is not None:
                 verify_file_unchanged()
-            with open(local_path, "rb") as part_file:
+            with pathlib.Path(local_path).open("rb") as part_file:
                 part_file.seek(offset)
                 chunk = part_file.read(read_size)
             if self._cancel:
                 return None
             self.status.emit(
-                f"[DEBUG] Chunk size for part {part_num}: {len(chunk)} bytes"
+                f"[DEBUG] Chunk size for part {part_num}: {len(chunk)} bytes",
             )
             if strategy == "s3" and direct:
                 etag = self._upload_part_s3(session, part_num, chunk, tracker)
@@ -495,7 +541,7 @@ class UploadWorker(QThread):
             if current:
                 parts_str = " & ".join(f"part {p}" for p in current)
                 self.status.emit(
-                    f"[DEBUG] Uploading {parts_str} out of {total_parts} total…"
+                    f"[DEBUG] Uploading {parts_str} out of {total_parts} total…",
                 )
             for future in as_completed(futures):
                 if self._cancel:
@@ -504,7 +550,8 @@ class UploadWorker(QThread):
 
                 try:
                     result = future.result()
-                except Exception:
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] _do_multipart_upload: {e}")
                     self._cancel = True
                     self._stop_multipart_futures(futures, session, total_parts)
                     raise
@@ -516,9 +563,9 @@ class UploadWorker(QThread):
                     return None
 
                 parts.append(
-                    {"partNumber": result["partNumber"], "etag": result["etag"]}
+                    {"partNumber": result["partNumber"], "etag": result["etag"]},
                 )
-                done = len(parts)
+                len(parts)
 
                 with active_lock:
                     active_parts.discard(result["partNumber"])
@@ -526,7 +573,7 @@ class UploadWorker(QThread):
         # 3. Complete
         complete_payload = {
             **session,
-            "parts": sorted(parts, key=lambda part: part["partNumber"]),
+            "parts": sorted(parts, key=operator.itemgetter("partNumber")),
         }
         j = self._complete_multipart_upload(complete_payload)
         file_id = j.get("fileId") or j.get("id") or (j.get("file") or {}).get("id")
@@ -534,21 +581,21 @@ class UploadWorker(QThread):
         tracker.finish()
         return file_id
 
-    def _complete_multipart_upload(self, payload):
-        last_error = None
+    def _complete_multipart_upload(self, payload: dict) -> dict:
+        last_error: MochaAPIError | None = None
         for attempt in range(1, 9):
             if self._cancel:
                 return {}
             try:
                 self.status.emit(
-                    f"[DEBUG] Completing multipart upload… attempt {attempt}/8"
+                    f"[DEBUG] Completing multipart upload… attempt {attempt}/8",
                 )
                 return self._client.multipart_complete(payload, logger=self.status.emit)
             except MochaAPIError as e:
                 last_error = e
                 if e.kind == "connection":
                     self.status.emit(
-                        f"[DEBUG] Multipart complete connection issue: {e}"
+                        f"[DEBUG] Multipart complete connection issue: {e}",
                     )
                 else:
                     status = e.status_code
@@ -559,19 +606,26 @@ class UploadWorker(QThread):
                     ):
                         raise
                     self.status.emit(
-                        f"[DEBUG] Multipart complete still pending/retryable ({status}): {body[:200]}"
+                        f"[DEBUG] Multipart complete still pending/retryable ({status}): {body[:200]}",
                     )
 
             wait_seconds = min(2 * attempt, 20)
             self.status.emit(
-                f"[DEBUG] Waiting {wait_seconds}s before checking complete again…"
+                f"[DEBUG] Waiting {wait_seconds}s before checking complete again…",
             )
             time.sleep(wait_seconds)
 
-        raise last_error
+        if last_error is not None:
+            raise last_error
+        return {}
 
     @staticmethod
-    def _multipart_concurrency(init_data, total_parts, mode, user_max_chunks=None):
+    def _multipart_concurrency(
+        init_data: dict,
+        total_parts: int,
+        mode: str,
+        user_max_chunks: int | None = None,
+    ) -> int:
         default = (
             S3_DEFAULT_CONCURRENCY if mode == "direct S3" else RELAY_DEFAULT_CONCURRENCY
         )
@@ -586,46 +640,67 @@ class UploadWorker(QThread):
         return max(1, min(parsed, total_parts, maximum))
 
     @staticmethod
-    def _cancel_futures(futures):
+    def _cancel_futures(futures: dict[Future, int]) -> None:
         for future in futures:
             future.cancel()
 
-    def _abort_all_parts(self, session, total_parts):
+    def _abort_all_parts(self, session: dict, total_parts: int) -> None:
         self._abort(session, list(range(1, total_parts + 1)))
 
-    def _stop_multipart_futures(self, futures, session, total_parts):
+    def _stop_multipart_futures(
+        self,
+        futures: dict[Future, int],
+        session: dict,
+        total_parts: int,
+    ) -> None:
         self._cancel_futures(futures)
         self._abort_all_parts(session, total_parts)
 
-    def _wait_before_part_retry(self, label, part_num, attempt, error):
+    def _wait_before_part_retry(
+        self,
+        label: str,
+        part_num: int,
+        attempt: int,
+        error: Exception | None,
+    ) -> None:
+        if error is None:
+            return
         if attempt >= PART_UPLOAD_RETRIES or not self._is_retryable_upload_error(error):
             raise error
 
         delay = min(2 ** (attempt - 1), 10)
         self.status.emit(
-            f"[DEBUG] Retrying {label} part {part_num} after transient failure in {delay}s…"
+            f"[DEBUG] Retrying {label} part {part_num} after transient failure in {delay}s…",
         )
         time.sleep(delay)
 
-    def _upload_part_relay(self, session, part_num, chunk, tracker: "ProgressTracker"):
+    def _upload_part_relay(
+        self,
+        session: dict,
+        part_num: int,
+        chunk: bytes,
+        tracker: ProgressTracker,
+    ) -> str | None:
         """Upload one part through the Mocha relay."""
-        last_error = None
+        last_error: Exception | None = None
         for attempt in range(1, PART_UPLOAD_RETRIES + 1):
             if self._cancel:
                 return None
             body = None
             try:
                 body = tracker.make_streaming_body(chunk)
-                etag = self._client.multipart_part_relay(
-                    session, part_num, body, logger=self.status.emit
+                return self._client.multipart_part_relay(
+                    session,
+                    part_num,
+                    body,
+                    logger=self.status.emit,
                 )
-                return etag
             except MochaAPIError as e:
                 self.status.emit(f"[DEBUG] HTTPError: {e}")
                 self.status.emit(f"[DEBUG] Response status: {e.status_code}")
                 self.status.emit(f"[DEBUG] Response content: {e.response_text}")
                 last_error = e
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 self.status.emit(f"[DEBUG] Exception: {e}")
                 last_error = e
 
@@ -636,14 +711,23 @@ class UploadWorker(QThread):
                 tracker.unfeed(body.fed)
             self._wait_before_part_retry("relay", part_num, attempt, last_error)
 
-        raise last_error
+        if last_error is not None:
+            raise last_error
+        return None
 
-    def _presign_part_url(self, session, part_num, http=None):
+    def _presign_part_url(
+        self,
+        session: dict,
+        part_num: int,
+        _http: object | None = None,
+    ) -> str:
         # Step 1: ask Mocha for a presigned URL for this part
         self.status.emit(f"[DEBUG] Presign payload: partNumbers=[{part_num}]")
         try:
             signed_url = self._client.multipart_presign(
-                session, part_num, logger=self.status.emit
+                session,
+                part_num,
+                logger=self.status.emit,
             )
         except MochaAPIError as e:
             self.status.emit(f"[DEBUG] HTTPError (presign): {e}")
@@ -656,7 +740,7 @@ class UploadWorker(QThread):
         return signed_url
 
     @staticmethod
-    def _is_retryable_upload_error(error):
+    def _is_retryable_upload_error(error: Exception) -> bool:
         if isinstance(
             error,
             (
@@ -697,9 +781,15 @@ class UploadWorker(QThread):
             code in content for code in retryable_codes
         )
 
-    def _upload_part_s3(self, session, part_num, chunk, tracker: "ProgressTracker"):
+    def _upload_part_s3(
+        self,
+        session: dict,
+        part_num: int,
+        chunk: bytes,
+        tracker: ProgressTracker,
+    ) -> str | None:
         """Upload one part directly to S3 via a presigned URL (strategy='s3')."""
-        last_error = None
+        last_error: Exception | None = None
         for attempt in range(1, PART_UPLOAD_RETRIES + 1):
             if self._cancel:
                 return None
@@ -708,10 +798,12 @@ class UploadWorker(QThread):
                 signed_url = self._presign_part_url(session, part_num)
                 # Step 2: PUT the chunk directly to S3 (no auth header — the URL is pre-signed)
                 body = tracker.make_streaming_body(chunk)
-                etag = self._client.multipart_part_s3(
-                    signed_url, body, logger=self.status.emit, part_num=part_num
+                return self._client.multipart_part_s3(
+                    signed_url,
+                    body,
+                    logger=self.status.emit,
+                    part_num=part_num,
                 )
-                return etag
             except MochaAPIError as e:
                 content = e.response_text or ""
                 self.status.emit(f"[DEBUG] HTTPError (S3 PUT): {e}")
@@ -720,11 +812,11 @@ class UploadWorker(QThread):
                 if e.kind == "http" and "NoSuchUpload" in content:
                     self._abort(session)
                     self.error.emit(
-                        "S3 upload session expired or invalid (NoSuchUpload). Please retry the upload."
+                        "S3 upload session expired or invalid (NoSuchUpload). Please retry the upload.",
                     )
                     return None
                 last_error = e
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 self.status.emit(f"[DEBUG] Exception (S3 PUT): {e}")
                 last_error = e
 
@@ -735,19 +827,21 @@ class UploadWorker(QThread):
                 tracker.unfeed(body.fed)
             self._wait_before_part_retry("S3", part_num, attempt, last_error)
 
-        raise last_error
+        if last_error is not None:
+            raise last_error
+        return None
 
-    def _abort(self, session, part_numbers=None):
+    def _abort(self, session: dict, part_numbers: list[int] | None = None) -> None:
         try:
             payload = dict(session)
             if part_numbers:
                 payload["partNumbers"] = part_numbers
             self._client.multipart_abort(payload, logger=self.status.emit)
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _abort: {e}")
         self.status.emit("[DEBUG] Upload aborted.")
 
-    def _ensure_folder(self, path):
+    def _ensure_folder(self, path: str) -> None:
         """Create a folder and all missing parents via POST /api/files/folders.
         The API takes {"path": <parent>, "name": <folder_name>}.
         409 (already exists) and connection/timeout errors are both treated as
@@ -763,22 +857,22 @@ class UploadWorker(QThread):
                 self._client.create_folder(parent, name, logger=self.status.emit)
                 self.status.emit(f"[DEBUG] Created folder: {parent}/{name}")
             except MochaAPIError as e:
-                if e.kind == "http" and e.status_code == 409:
+                if e.kind == "http" and e.status_code == _HTTP_CONFLICT:
                     self.status.emit(f"[DEBUG] Folder already exists: {parent}/{name}")
                 elif (
                     e.kind == "http"
                     and e.status_code is not None
-                    and e.status_code < 500
+                    and e.status_code < _HTTP_SERVER_ERROR_MIN
                 ):
                     # Hard client error (e.g. 403, 422) — re-raise
                     self.status.emit(
-                        f"[DEBUG] Folder create hard error {parent}/{name}: {e}"
+                        f"[DEBUG] Folder create hard error {parent}/{name}: {e}",
                     )
                     raise
                 else:
                     # 5xx or ambiguous — folder likely exists, press on
                     self.status.emit(
-                        f"[DEBUG] Folder create non-fatal error {parent}/{name}: {e}"
+                        f"[DEBUG] Folder create non-fatal error {parent}/{name}: {e}",
                     )
             except (
                 requests.exceptions.ConnectionError,
@@ -786,10 +880,10 @@ class UploadWorker(QThread):
             ) as e:
                 # Network hiccup — folder almost certainly already exists
                 self.status.emit(
-                    f"[DEBUG] Folder create connection error (ignored) {parent}/{name}: {e}"
+                    f"[DEBUG] Folder create connection error (ignored) {parent}/{name}: {e}",
                 )
 
-    def _move_file(self, file_id, dest_path):
+    def _move_file(self, file_id: str, dest_path: str) -> str:
         """Move an uploaded file to dest_path via POST /api/files/move."""
         try:
             j = self._client.move(
@@ -804,14 +898,14 @@ class UploadWorker(QThread):
             self.status.emit(f"[DEBUG] Move response: {(e.response_text or '')[:200]}")
             # Don't raise — upload succeeded even if move fails
             return file_id
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self.status.emit(f"[DEBUG] Move exception: {e}")
             return file_id
 
-    def _create_share(self, file_id):
+    def _create_share(self, file_id: str) -> str:
         self.status.emit(
             f"[DEBUG] Share payload: fileId={file_id}, "
-            f"expiresInHours={self.share_expiry_hours}, maxDownloads={self.share_max_downloads}"
+            f"expiresInHours={self.share_expiry_hours}, maxDownloads={self.share_max_downloads}",
         )
         try:
             data = self._client.create_share(
@@ -833,11 +927,11 @@ class UploadWorker(QThread):
         return f"{SHARE_BASE_URL}/share/{token}" if token else "(no share URL returned)"
 
     @staticmethod
-    def _fmt_size(b):
+    def _fmt_size(b: float) -> str:
         for unit in ("B", "KB", "MB", "GB", "TB"):
-            if b < 1024:
+            if b < _KB:
                 return f"{b:.3f} {unit}"
-            b /= 1024
+            b /= _KB
         return f"{b:.3f} PB"
 
 
@@ -848,13 +942,13 @@ class FilesWorker(QThread):
     done = Signal(object)  # result payload (varies by op)
     error = Signal(str)
 
-    def __init__(self, op, client, **kwargs):
+    def __init__(self, op: str, client: MochaClient, **kwargs: Any) -> None:
         super().__init__()
         self.op = op  # 'list' | 'delete' | 'move' | 'share' | 'mkdir' | 'shares' | ...
         self._client = client
         self.kwargs = kwargs
 
-    def run(self):
+    def run(self) -> None:
         try:
             if self.op == "list":
                 self._list()
@@ -878,24 +972,25 @@ class FilesWorker(QThread):
                 self._rename()
             elif self.op == "presigned":
                 self._presigned()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self.error.emit(str(e))
 
-    def _list(self):
+    def _list(self) -> None:
         path = self.kwargs.get("path", "/")
         data = self._client.list_files(path)
         self.done.emit({"op": "list", "path": path, "data": data})
 
-    def _delete(self):
+    def _delete(self) -> None:
         file_name = self.kwargs["file_name"]  # full remote path / filename
         self._client.delete_file(file_name)
         self.done.emit({"op": "delete", "file_name": file_name})
 
-    def _delete_folder(self):
+    def _delete_folder(self) -> None:
         full_path = self.kwargs["path"].rstrip("/")
         if not full_path or full_path == "/":
             # Cannot delete root
-            raise ValueError("Cannot delete root folder")
+            msg = "Cannot delete root folder"
+            raise ValueError(msg)
 
         # Split path into parent and folder name
         # Example: /Functionality/New folder → parent=/Functionality, name=New folder
@@ -903,14 +998,14 @@ class FilesWorker(QThread):
         if "/" in full_path.lstrip("/"):
             # Has a parent folder
             parts = full_path.rsplit("/", 1)
-            parent = parts[0] if parts[0] else "/"
+            parent = parts[0] or "/"
             name = parts[1]
         else:
             # Root-level folder
             parent = "/"
             name = full_path.lstrip("/")
 
-        write_debug_log(f"[DEBUG] Delete folder request:")
+        write_debug_log("[DEBUG] Delete folder request:")
         write_debug_log(f"[DEBUG]   Full path: {full_path}")
         write_debug_log(f"[DEBUG]   Parent: {parent}")
         write_debug_log(f"[DEBUG]   Name: {name}")
@@ -928,7 +1023,7 @@ class FilesWorker(QThread):
 
         self.done.emit({"op": "delete_folder", "path": full_path})
 
-    def _move(self):
+    def _move(self) -> None:
         file_id = self.kwargs.get("file_id")
         is_folder = self.kwargs.get("is_folder", False)
         new_path = self.kwargs["new_path"]
@@ -936,7 +1031,8 @@ class FilesWorker(QThread):
         if is_folder:
             # Folder move: {"folderPath": "/from/folder/", "toPath": "/to/"}
             self._client.move(
-                folder_path=self.kwargs.get("source_path", ""), to_path=to_path
+                folder_path=self.kwargs.get("source_path", ""),
+                to_path=to_path,
             )
         elif file_id:
             # File move by ID (preferred): {"fileId": "...", "toPath": "/dest/"}
@@ -944,12 +1040,13 @@ class FilesWorker(QThread):
         else:
             # File move by path fallback
             self._client.move(
-                source_path=self.kwargs.get("source_path", ""), to_path=to_path
+                source_path=self.kwargs.get("source_path", ""),
+                to_path=to_path,
             )
         self.done.emit({"op": "move", "new_path": new_path})
 
     # label → hours mapping for the Files-tab share dialog
-    _EXPIRY_LABEL_TO_HOURS = {
+    _EXPIRY_LABEL_TO_HOURS: ClassVar[dict[str, int]] = {
         "1h": 1,
         "6h": 6,
         "12h": 12,
@@ -960,21 +1057,23 @@ class FilesWorker(QThread):
         "30d": 720,
     }
 
-    def _share(self):
+    def _share(self) -> None:
         file_id = self.kwargs["file_id"]
         expiry_label = self.kwargs.get("expiry", "Never")
         expiry_hours = self._EXPIRY_LABEL_TO_HOURS.get(
-            expiry_label
+            expiry_label,
         )  # None → omit field
         max_dl = self.kwargs.get("max_downloads", 0)
         data = self._client.create_share(
-            file_id, expires_in_hours=expiry_hours, max_downloads=max_dl
+            file_id,
+            expires_in_hours=expiry_hours,
+            max_downloads=max_dl,
         )
         token = data.get("token") or (data.get("share") or {}).get("token", "")
         url = self._client.share_url(token)
         self.done.emit({"op": "share", "url": url, "token": token})
 
-    def _mkdir(self):
+    def _mkdir(self) -> None:
         full_path = self.kwargs["path"].rstrip("/")
         parts = full_path.rsplit("/", 1)
         parent = parts[0] or "/"
@@ -982,7 +1081,7 @@ class FilesWorker(QThread):
         self._client.create_folder(parent, name)
         self.done.emit({"op": "mkdir", "path": full_path})
 
-    def _rename(self):
+    def _rename(self) -> None:
         self._client.rename_folder(
             self.kwargs.get("path", "/"),
             self.kwargs.get("old_name", ""),
@@ -990,7 +1089,7 @@ class FilesWorker(QThread):
         )
         self.done.emit({"op": "rename"})
 
-    def _delete_shares(self):
+    def _delete_shares(self) -> None:
         """Delete multiple shares by token. Attempts all; collects errors."""
         tokens = self.kwargs.get("tokens", [])
         deleted_tokens = []
@@ -999,7 +1098,8 @@ class FilesWorker(QThread):
             try:
                 self._client.delete_share(token)
                 deleted_tokens.append(token)
-            except Exception as e:
+            except (AttributeError, TypeError, RuntimeError) as e:
+                write_debug_log(f"[Silenced] _delete_shares: {e}")
                 errors.append(f"{token}: {e}")
         self.done.emit(
             {
@@ -1007,10 +1107,10 @@ class FilesWorker(QThread):
                 "deleted": len(deleted_tokens),
                 "deleted_tokens": deleted_tokens,
                 "errors": errors,
-            }
+            },
         )
 
-    def _toggle_shares(self):
+    def _toggle_shares(self) -> None:
         """Toggle share active state. items = [(token, is_active), ...]."""
         items = self.kwargs.get("items", [])
         toggled = []
@@ -1019,17 +1119,18 @@ class FilesWorker(QThread):
             try:
                 self._client.set_share_active(token, is_active)
                 toggled.append(token)
-            except Exception as e:
+            except (AttributeError, TypeError, RuntimeError) as e:
+                write_debug_log(f"[Silenced] _toggle_shares: {e}")
                 errors.append(f"{token}: {e}")
         self.done.emit(
             {
                 "op": "toggle_shares",
                 "toggled": toggled,
                 "errors": errors,
-            }
+            },
         )
 
-    def _list_shares(self):
+    def _list_shares(self) -> None:
         data = self._client.list_shares()
         shares = data.get("shares", data) if isinstance(data, dict) else data
 
@@ -1042,7 +1143,8 @@ class FilesWorker(QThread):
                     continue
                 try:
                     meta = self._client.get_share(token).get("share", {})
-                except Exception:
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] _list_shares: {e}")
                     continue
 
                 original_name = (
@@ -1060,7 +1162,7 @@ class FilesWorker(QThread):
 
         self.done.emit({"op": "shares", "data": data})
 
-    def _presigned(self):
+    def _presigned(self) -> None:
         """Fetch a presigned download URL in the background."""
         file_id = self.kwargs["file_id"]
         url = self._client.presigned_url(file_id)
@@ -1072,13 +1174,13 @@ class RemoteWorker(QThread):
     done = Signal(object)
     error = Signal(str)
 
-    def __init__(self, op, client, **kwargs):
+    def __init__(self, op: str, client: MochaClient, **kwargs: Any) -> None:
         super().__init__()
         self.op = op
         self._client = client
         self.kwargs = kwargs
 
-    def run(self):
+    def run(self) -> None:
         try:
             if self.op == "ingest":
                 self._ingest()
@@ -1086,10 +1188,10 @@ class RemoteWorker(QThread):
                 self._jobs()
             elif self.op == "cancel":
                 self._cancel()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self.error.emit(str(e))
 
-    def _ingest(self):
+    def _ingest(self) -> None:
         data = self._client.remote_ingest(
             self.kwargs["source_url"],
             self.kwargs["file_name"],
@@ -1097,13 +1199,13 @@ class RemoteWorker(QThread):
         )
         self.done.emit({"op": "ingest", "data": data})
 
-    def _jobs(self):
+    def _jobs(self) -> None:
         data = self._client.list_transfer_jobs(
-            active_only=self.kwargs.get("active_only", True)
+            active_only=self.kwargs.get("active_only", True),
         )
         self.done.emit({"op": "jobs", "data": data})
 
-    def _cancel(self):
+    def _cancel(self) -> None:
         job_id = self.kwargs["job_id"]
         data = self._client.cancel_transfer_job(job_id)
         self.done.emit({"op": "cancel", "job_id": job_id, "data": data})
@@ -1114,18 +1216,18 @@ class StorageWorker(QThread):
     """Fetches remote storage capacity for the titlebar indicator."""
 
     done = Signal(
-        object
+        object,
     )  # dict: usedBytes, availableBytes, maxStorageBytes, storagePercent
     error = Signal(str)
 
-    def __init__(self, client):
+    def __init__(self, client: MochaClient) -> None:
         super().__init__()
         self._client = client
 
-    def run(self):
+    def run(self) -> None:
         try:
             self.done.emit(self._client.storage_available())
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self.error.emit(str(e))
 
 
@@ -1138,23 +1240,23 @@ class DownloadWorker(QThread):
     done = Signal(str)  # local file path on success
     error = Signal(str)
 
-    def __init__(self, url: str, dest_path: str, parent=None):
+    def __init__(self, url: str, dest_path: str, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.url = url
         self.dest_path = dest_path
         self._cancel = False
 
-    def cancel(self):
+    def cancel(self) -> None:
         self._cancel = True
 
-    def run(self):
+    def run(self) -> None:
         try:
             resp = requests.get(self.url, stream=True, timeout=60)
             resp.raise_for_status()
             total = int(resp.headers.get("content-length", 0))
             fetched = 0
             start = time.monotonic()
-            with open(self.dest_path, "wb") as fh:
+            with pathlib.Path(self.dest_path).open("wb") as fh:
                 for chunk in resp.iter_content(chunk_size=65536):
                     if self._cancel:
                         return
@@ -1167,5 +1269,5 @@ class DownloadWorker(QThread):
                             self.progress.emit(min(fetched / total * 100, 99.999))
             self.progress.emit(100.0)
             self.done.emit(self.dest_path)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self.error.emit(str(e))

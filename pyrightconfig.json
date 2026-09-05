@@ -1,0 +1,6 @@
+{
+  "include": ["apps/desktop/mochatools_app"],
+  "reportAttributeAccessIssue": "none",
+  "reportOptionalMemberAccess": "none",
+  "reportArgumentType": "none"
+}

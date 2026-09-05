@@ -1,5 +1,4 @@
-"""
-update_controller.py — Update check, download, install, and restart logic.
+"""update_controller.py — Update check, download, install, and restart logic.
 
 Extracted from MochaTools in app.py. All functions receive a ``win``
 instance and a ``ctx`` (AppContext) for shared state.
@@ -18,7 +17,10 @@ Attached on ``win``:
   win._trigger_test_update()
 """
 
+from __future__ import annotations
+
 from functools import partial
+from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QSettings, Qt, QThread
 from PySide6.QtWidgets import (
@@ -31,16 +33,24 @@ from PySide6.QtWidgets import (
 
 from .constants import APP_NAME, APP_VERSION, ORG_NAME
 from .dialogs import MochaDialog
+from .logging_utils import write_debug_log
 from .theme import get_accent
 from .updater import UpdateCheckWorker, UpdateDownloadWorker, launch_update_batch
 from .utils import parse_release_notes_md
 
+if TYPE_CHECKING:
+    from .app import AppContext
+
 # ── Release-info dialog (shared by startup popup + Settings button) ────────
 
 
-def _build_release_info_dialog(win, tag: str, notes: str, with_buttons: bool = True):
-    """
-    Build the MochaDialog shared by both the startup "update available"
+def _build_release_info_dialog(
+    win: Any,
+    tag: str,
+    notes: str,
+    with_buttons: bool = True,
+) -> tuple[MochaDialog, QPushButton | None, QPushButton | None, QPushButton | None]:
+    """Build the MochaDialog shared by both the startup "update available"
     popup and the Settings "Release Info" button.
 
     Returns (dlg, update_btn, skip_btn, later_btn) — the latter three
@@ -51,16 +61,16 @@ def _build_release_info_dialog(win, tag: str, notes: str, with_buttons: bool = T
     update_btn = skip_btn = later_btn = None
 
     if with_buttons:
-        _tmp_row = QHBoxLayout()
-        _tmp_buttons = [
+        tmp_row = QHBoxLayout()
+        tmp_buttons = [
             QPushButton(t)
             for t in ("Update Now", "Skip This Version", "Remind Me Later")
         ]
-        for b in _tmp_buttons:
+        for b in tmp_buttons:
             b.setMinimumHeight(32)
-            _tmp_row.addWidget(b)
-        btn_row_width = _tmp_row.sizeHint().width()
-        for b in _tmp_buttons:
+            tmp_row.addWidget(b)
+        btn_row_width = tmp_row.sizeHint().width()
+        for b in tmp_buttons:
             b.deleteLater()
         dlg_width = max(460, btn_row_width + 28 * 2 + 8)
     else:
@@ -100,12 +110,12 @@ def _build_release_info_dialog(win, tag: str, notes: str, with_buttons: bool = T
             acc = get_accent()
             update_btn.setStyleSheet(
                 f"background: {acc}; color: #111010; font-weight: 700; "
-                "border: none; border-radius: 6px; padding: 4px 16px;"
+                "border: none; border-radius: 6px; padding: 4px 16px;",
             )
             for b in (skip_btn, later_btn):
                 b.setStyleSheet("border-radius: 6px; padding: 4px 16px;")
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _build_release_info_dialog: {e}")
 
     if grip_item:
         lay.addItem(grip_item)
@@ -113,7 +123,12 @@ def _build_release_info_dialog(win, tag: str, notes: str, with_buttons: bool = T
     return dlg, update_btn, skip_btn, later_btn
 
 
-def _show_update_available_popup(win, ctx, tag: str, notes: str):
+def _show_update_available_popup(
+    win: Any,
+    ctx: AppContext,
+    tag: str,
+    notes: str,
+) -> None:
     """Startup notification — lets the user update now, snooze, or skip."""
     dlg, update_btn, skip_btn, later_btn = _build_release_info_dialog(
         win,
@@ -122,9 +137,9 @@ def _show_update_available_popup(win, ctx, tag: str, notes: str):
         with_buttons=True,
     )
 
-    result_holder = {"clicked": None}
+    result_holder: dict[str, str | None] = {"clicked": None}
 
-    def _set_clicked(name, _checked=False):
+    def _set_clicked(name: str, _checked: bool = False) -> None:
         result_holder["clicked"] = name
         dlg.accept()
 
@@ -145,24 +160,24 @@ def _show_update_available_popup(win, ctx, tag: str, notes: str):
 # ── Check ───────────────────────────────────────────────────────────────────
 
 
-def check_for_updates(win, ctx, silent: bool = False):
+def check_for_updates(win: Any, ctx: AppContext, silent: bool = False) -> None:
     win.check_update_btn.setEnabled(False)
     win.update_status_lbl.setText("Checking for updates…")
     ctx.pending_silent_update_popup = silent
 
-    def _on_available(tag: str, url: str, notes: str):
+    def _on_available(tag: str, url: str, notes: str) -> None:
         ctx.update_tag = tag
         ctx.update_url = url
         ctx.update_notes = notes
         win.update_status_lbl.setText(
-            f"Update available: {tag}  (current: {APP_VERSION})"
+            f"Update available: {tag}  (current: {APP_VERSION})",
         )
         win.install_update_btn.setVisible(bool(url))
         win.release_info_btn.setVisible(bool(url))
         if not url:
             win.update_status_lbl.setText(
                 f"Update {tag} available — no binary for this platform. "
-                "Download manually from github.com/nxllxvxxd2/Mocha-Tools/releases"
+                "Download manually from github.com/nxllxvxxd2/Mocha-Tools/releases",
             )
             return
         if ctx.pending_silent_update_popup:
@@ -171,15 +186,16 @@ def check_for_updates(win, ctx, silent: bool = False):
             if skipped != tag:
                 _show_update_available_popup(win, ctx, tag, notes)
 
-    def _on_up_to_date(silent: bool = silent):
+    def _on_up_to_date(silent: bool = silent) -> None:
         try:
             from .updater import _is_portable_windows
 
-            _portable_suffix = " (portable)" if _is_portable_windows() else ""
-        except Exception:
-            _portable_suffix = ""
+            portable_suffix = " (portable)" if _is_portable_windows() else ""
+        except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+            write_debug_log(f"[Silenced] _on_up_to_date: {e}")
+            portable_suffix = ""
         win.update_status_lbl.setText(
-            f"You're up to date ({APP_VERSION}{_portable_suffix})"
+            f"You're up to date ({APP_VERSION}{portable_suffix})",
         )
         win.install_update_btn.hide()
         win.release_info_btn.hide()
@@ -190,7 +206,7 @@ def check_for_updates(win, ctx, silent: bool = False):
                 f"Mocha Tools {APP_VERSION} is the latest version.",
             )
 
-    def _on_error(msg: str, silent: bool = silent):
+    def _on_error(msg: str, silent: bool = silent) -> None:
         win.update_status_lbl.setText(f"Update check failed: {msg}")
         if not silent:
             QMessageBox.warning(win, "Update check failed", msg)
@@ -206,14 +222,14 @@ def check_for_updates(win, ctx, silent: bool = False):
 # ── Download + install ──────────────────────────────────────────────────────
 
 
-def _install_update(win, ctx):
+def _install_update(win: Any, ctx: AppContext) -> None:
     if not ctx.update_url:
         return
     win.install_update_btn.setEnabled(False)
     win.update_progress.setValue(0)
     win.update_progress.show()
 
-    def _on_done():
+    def _on_done() -> None:
         win.update_progress.setValue(100)
         win.install_update_btn.hide()
         win.release_info_btn.hide()
@@ -224,7 +240,7 @@ def _install_update(win, ctx):
             "Please restart the application to apply the update.",
         )
 
-    def _on_ready(bat_path: str):
+    def _on_ready(bat_path: str) -> None:
         ctx.update_bat_path = bat_path
         win.update_progress.setValue(100)
         win.install_update_btn.hide()
@@ -240,7 +256,7 @@ def _install_update(win, ctx):
             launch_update_batch(ctx.update_bat_path)
             QApplication.quit()
 
-    def _on_dl_error(msg: str):
+    def _on_dl_error(msg: str) -> None:
         win.update_progress.hide()
         win.install_update_btn.setEnabled(True)
         win.update_status_lbl.setText(f"Download failed: {msg}")
@@ -257,7 +273,7 @@ def _install_update(win, ctx):
     ctx.update_bat_path = ""
 
 
-def _on_update_done(win, ctx):
+def _on_update_done(win: Any, ctx: AppContext) -> None:
     """Also callable from the ``done`` signal directly."""
     win.update_progress.setValue(100)
     win.install_update_btn.hide()
@@ -270,11 +286,11 @@ def _on_update_done(win, ctx):
     )
 
 
-def _on_ready_to_restart(win, ctx, _path: str):
+def _on_ready_to_restart(win: Any, ctx: AppContext, _path: str) -> None:
     _on_update_done(win, ctx)
 
 
-def _on_update_dl_error(win, msg: str):
+def _on_update_dl_error(win: Any, msg: str) -> None:
     win.update_progress.hide()
     win.install_update_btn.setEnabled(True)
     win.update_status_lbl.setText(f"Download failed: {msg}")
@@ -284,7 +300,7 @@ def _on_update_dl_error(win, msg: str):
 # ── Release info (Settings button) ──────────────────────────────────────────
 
 
-def show_release_info(win, ctx):
+def show_release_info(win: Any, ctx: AppContext) -> None:
     if not ctx.update_tag:
         return
     dlg, *_rest = _build_release_info_dialog(
@@ -299,7 +315,7 @@ def show_release_info(win, ctx):
 # ── Test-update (--test-update flag only) ───────────────────────────────────
 
 
-def trigger_test_update(win, ctx):
+def trigger_test_update(win: Any, ctx: AppContext) -> None:
     """Fetch latest release and download+install, skipping version check."""
     import requests as _req
 
@@ -314,7 +330,7 @@ def trigger_test_update(win, ctx):
     win.install_update_btn.hide()
     win.release_info_btn.hide()
 
-    def _fetch():
+    def _fetch() -> None:
         try:
             resp = _req.get(
                 UPDATE_CHECK_URL,
@@ -323,7 +339,8 @@ def trigger_test_update(win, ctx):
             )
             resp.raise_for_status()
             data = resp.json()
-        except Exception as exc:
+        except (AttributeError, TypeError, RuntimeError) as exc:
+            write_debug_log(f"[Silenced] _fetch: {exc}")
             win.update_status_lbl.setText(f"Test-update fetch failed: {exc}")
             win.check_update_btn.setEnabled(True)
             return
@@ -354,13 +371,13 @@ def trigger_test_update(win, ctx):
         if not url:
             win.update_status_lbl.setText(
                 f"Test-update: no asset '{want}' found in release {tag}.\n"
-                "Check that the build for this platform uploaded successfully."
+                "Check that the build for this platform uploaded successfully.",
             )
             win.check_update_btn.setEnabled(True)
             return
 
         win.update_status_lbl.setText(
-            f"Test mode: installing {tag} ({want}) - version check skipped"
+            f"Test mode: installing {tag} ({want}) - version check skipped",
         )
         ctx.update_tag = tag
         ctx.update_url = url
@@ -375,7 +392,7 @@ def trigger_test_update(win, ctx):
         ctx.update_dl_worker = w
 
     class _FetchThread(QThread):
-        def run(self_):
+        def run(self) -> None:
             _fetch()
 
     ctx._test_fetch_thread = _FetchThread(win)
@@ -385,7 +402,7 @@ def trigger_test_update(win, ctx):
 # ── Attach convenience methods to win ───────────────────────────────────────
 
 
-def install_update_controller(win, ctx):
+def install_update_controller(win: Any, ctx: AppContext) -> None:
     """Wire up all update-related methods and initial state on *win*."""
     ctx.update_tag = ""
     ctx.update_url = ""

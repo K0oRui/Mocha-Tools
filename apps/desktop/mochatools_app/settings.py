@@ -1,5 +1,4 @@
-"""
-settings.py — Settings tab UI, persistence, and sub-tab builders.
+"""settings.py — Settings tab UI, persistence, and sub-tab builders.
 
 Consolidated from the former tabs/settings_tab.py and
 tabs/settings_sections.py into a single module with a clear internal
@@ -25,11 +24,28 @@ Internal helpers
   _install_lucide_spin_arrows(sb) -> overlay
 """
 
-import json
-import os
-from functools import partial
+from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QObject, QSettings, QSize, Qt, QTimer
+import contextlib
+import json
+from functools import partial
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+import pathlib
+
+from PySide6.QtCore import (
+    QEvent,
+    QModelIndex,
+    QObject,
+    QPersistentModelIndex,
+    QSettings,
+    QSize,
+    Qt,
+    QTimer,
+)
 from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -49,6 +65,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QStyledItemDelegate,
+    QStyleOptionViewItem,
     QVBoxLayout,
     QWidget,
 )
@@ -60,23 +77,28 @@ from .constants import (
     DEFAULT_MAX_CHUNKS,
     ORG_NAME,
 )
-from .upload_pipeline import DEFAULT_GLOBAL_CONCURRENCY
+from .logging_utils import write_debug_log
 from .theme import (
     BACKGROUND_LABELS,
     DEFAULT_ACCENT,
     DEFAULT_BACKGROUND,
 )
+from .upload_pipeline import DEFAULT_GLOBAL_CONCURRENCY
 
 try:
     import keyring
     import keyring.errors
-
-    _KEYRING_OK = True
 except ImportError:
-    _KEYRING_OK = False
+    keyring = None  # type: ignore[assignment]
 
 _KR_SERVICE = "MochaTools"
 _KR_USER = "api_key"
+
+# Retry budget for the lucide spin-arrow overlay before giving up
+_MAX_ICON_ATTEMPTS = 4
+
+# Index of the "UI" tab in the settings dialog
+_TAB_UI = 3
 
 # ── Canonical helpers (from settings_sections) ───────────────────────────────
 
@@ -90,37 +112,37 @@ def _sh(text: str) -> QLabel:
     return lbl
 
 
-def _style_install_btn(win, _old: str, _new: str):
-    try:
+def _style_install_btn(win: Any, _old: str, _new: str) -> None:
+    with contextlib.suppress(Exception):
         win.install_update_btn.setStyleSheet(
             f"min-height:0px; padding:0px 16px; font-size:13px; font-weight:700;"
-            f"background:{_new}; color:#111010; border:none; border-radius:7px;"
+            f"background:{_new}; color:#111010; border:none; border-radius:7px;",
         )
-    except Exception:
-        pass
 
 
-def _raise_font_overlay(win):
+def _raise_font_overlay(win: Any) -> None:
     try:
         btn = getattr(win.font_combo, "_overlay_btn", None)
         if btn:
             btn.raise_()
-    except Exception:
-        pass
+    except (AttributeError, TypeError, RuntimeError) as e:
+        write_debug_log(f"[Silenced] _raise_font_overlay: {e}")
 
 
 def _card() -> QFrame:
     f = QFrame()
     f.setObjectName("card")
-    try:
+    with contextlib.suppress(Exception):
         f.setContentsMargins(6, 6, 6, 6)
-    except Exception:
-        pass
     return f
 
 
 def _spinbox(
-    min_val: int, max_val: int, default: int, suffix: str, tooltip: str
+    min_val: int,
+    max_val: int,
+    default: int,
+    suffix: str,
+    tooltip: str,
 ) -> QSpinBox:
     """Create a QSpinBox with lucide chevron arrow overlays."""
     sb = QSpinBox()
@@ -129,14 +151,10 @@ def _spinbox(
     sb.setSuffix(suffix)
     sb.setToolTip(tooltip)
     sb.setMaximumWidth(200)
-    try:
+    with contextlib.suppress(Exception):
         sb.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         sb.setFixedHeight(34)
-    except Exception:
-        pass
 
     # Try to replace internal arrow button icons after the widget is shown.
     try:
@@ -144,7 +162,7 @@ def _spinbox(
 
         from .ui.icons import lucide_icon
 
-        def _inject_arrow_images():
+        def _inject_arrow_images() -> None:
             try:
                 ico_up = lucide_icon("chevron-up", "#f0ece6", 16)
                 ico_dn = lucide_icon("chevron-down", "#f0ece6", 16)
@@ -169,17 +187,20 @@ def _spinbox(
                     " width:10px; height:6px; }"
                 )
                 sb.setStyleSheet(sb.styleSheet() + "\n" + css)
-            except Exception:
-                pass
+            except (AttributeError, TypeError, RuntimeError, OSError) as e:
+                write_debug_log(f"[Silenced] _inject_arrow_images: {e}")
 
         QTimer.singleShot(0, _inject_arrow_images)
 
-        def _apply_icons():
+        attempt = 0
+
+        def _apply_icons() -> None:
+            nonlocal attempt
             try:
                 btns = sb.findChildren(QAbstractButton)
                 if not btns:
-                    _apply_icons.attempt = getattr(_apply_icons, "attempt", 0) + 1
-                    if _apply_icons.attempt < 4:
+                    attempt += 1
+                    if attempt < _MAX_ICON_ATTEMPTS:
                         QTimer.singleShot(80, _apply_icons)
                     return
                 ico_up = lucide_icon("chevron-up", "#f0ece6", 16)
@@ -192,9 +213,11 @@ def _spinbox(
                 icon_dn = QIcon(pm_dn)
                 try:
                     ordered = sorted(
-                        btns, key=lambda b: b.mapToParent(b.rect().topLeft()).y()
+                        btns,
+                        key=lambda b: b.mapToParent(b.rect().topLeft()).y(),
                     )
-                except Exception:
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] _apply_icons: {e}")
                     ordered = btns
                 for i, b in enumerate(ordered[:2]):
                     try:
@@ -202,39 +225,35 @@ def _spinbox(
                         b.setIcon(icon)
                         b.setIconSize(QSize(10, 10))
                         b.setStyleSheet(
-                            "background: transparent; border: none; padding:0px;"
+                            "background: transparent; border: none; padding:0px;",
                         )
-                    except Exception:
-                        pass
-                _apply_icons.attempt = getattr(_apply_icons, "attempt", 0) + 1
-                if _apply_icons.attempt < 4:
+                    except (AttributeError, TypeError, RuntimeError) as e:
+                        write_debug_log(f"[Silenced] _apply_icons: {e}")
+                attempt += 1
+                if attempt < _MAX_ICON_ATTEMPTS:
                     QTimer.singleShot(140, _apply_icons)
-            except Exception:
-                pass
+            except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+                write_debug_log(f"[Silenced] _apply_icons: {e}")
 
         QTimer.singleShot(0, _apply_icons)
-    except Exception:
-        pass
+    except (AttributeError, TypeError, RuntimeError, ImportError, OSError) as e:
+        write_debug_log(f"[Silenced] _spinbox: {e}")
     return sb
 
 
-def _add_spin_row(card_lay: QVBoxLayout, label: str, spinbox: QSpinBox):
+def _add_spin_row(card_lay: QVBoxLayout, label: str, spinbox: QSpinBox) -> None:
     row = QHBoxLayout()
     row.setContentsMargins(0, 0, 0, 0)
     row.setSpacing(6)
     lbl = QLabel(label)
     lbl.setObjectName("field_label")
-    try:
+    with contextlib.suppress(Exception):
         lbl.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-    except Exception:
-        pass
     row.addWidget(lbl)
     row.addWidget(spinbox)
     row.addStretch()
-    try:
+    with contextlib.suppress(Exception):
         row.setContentsMargins(0, 0, 12, 0)
-    except Exception:
-        pass
     card_lay.addLayout(row)
 
     # Deterministic lucide overlay on every spinbox
@@ -244,12 +263,12 @@ def _add_spin_row(card_lay: QVBoxLayout, label: str, spinbox: QSpinBox):
         from .ui.icons import lucide_icon
 
         class _SpinOverlayHandler(QObject):
-            def __init__(self, sb: QSpinBox):
+            def __init__(self, sb: QSpinBox) -> None:
                 super().__init__(sb)
                 self.sb = sb
                 self._create()
 
-            def _create(self):
+            def _create(self) -> None:
                 try:
                     if getattr(self.sb, "_overlay_up_btn", None):
                         return
@@ -280,18 +299,18 @@ def _add_spin_row(card_lay: QVBoxLayout, label: str, spinbox: QSpinBox):
                     dn.show()
                     dn.raise_()
                     self._reposition()
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] _create: {e}")
 
-            def eventFilter(self, obj, ev):
+            def eventFilter(self, _obj: QObject | None, ev: QEvent) -> bool:
                 try:
                     if ev.type() in (QEvent.Type.Resize, QEvent.Type.Show):
                         self._reposition()
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] eventFilter: {e}")
                 return False
 
-            def _reposition(self):
+            def _reposition(self) -> None:
                 try:
                     sb = self.sb
                     up = getattr(sb, "_overlay_up_btn", None)
@@ -304,36 +323,37 @@ def _add_spin_row(card_lay: QVBoxLayout, label: str, spinbox: QSpinBox):
                     x = w - button_w
                     up.move(x, max(0, (h // 4) - (up.height() // 2)))
                     dn.move(x, max(0, (3 * h // 4) - (dn.height() // 2)))
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] _reposition: {e}")
 
-        def _make():
+        def _make() -> None:
             h = _SpinOverlayHandler(spinbox)
             QTimer.singleShot(50, h._reposition)
             QTimer.singleShot(150, h._reposition)
 
         QTimer.singleShot(0, _make)
-    except Exception:
-        pass
+    except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+        write_debug_log(f"[Silenced] _add_spin_row: {e}")
 
 
 # ── Lucide spin arrow overlay (for spinboxes not built by _spinbox) ──────────
 
 
-def _install_lucide_spin_arrows(sb: QSpinBox):
+def _install_lucide_spin_arrows(sb: QSpinBox) -> QObject | None:
     """Hide a QSpinBox's native up/down buttons and overlay lucide chevron
-    buttons instead. Used for the appearance-tab QColorDialog spinboxes."""
+    buttons instead. Used for the appearance-tab QColorDialog spinboxes.
+    """
     try:
         sb.setStyleSheet(
             "QSpinBox::up-button { width: 0px; border: none; }"
-            "QSpinBox::down-button { width: 0px; border: none; }"
+            "QSpinBox::down-button { width: 0px; border: none; }",
         )
         from PySide6.QtWidgets import QToolButton
 
         from .ui.icons import lucide_icon
 
         class _SpinOverlay(QObject):
-            def __init__(self, spinbox: QSpinBox):
+            def __init__(self, spinbox: QSpinBox) -> None:
                 super().__init__(spinbox)
                 self.sb = spinbox
                 try:
@@ -363,18 +383,18 @@ def _install_lucide_spin_arrows(sb: QSpinBox):
                     up.raise_()
                     dn.raise_()
                     self._reposition()
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] __init__: {e}")
 
-            def eventFilter(self, obj, ev):
+            def eventFilter(self, _obj: QObject | None, ev: QEvent) -> bool:
                 try:
                     if ev.type() in (QEvent.Type.Resize, QEvent.Type.Show):
                         self._reposition()
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] eventFilter: {e}")
                 return False
 
-            def _reposition(self):
+            def _reposition(self) -> None:
                 try:
                     sb = self.sb
                     up = getattr(sb, "_overlay_up_btn", None)
@@ -387,16 +407,18 @@ def _install_lucide_spin_arrows(sb: QSpinBox):
                     x = w - bw
                     up.move(x, max(0, (h // 4) - (up.height() // 2)))
                     dn.move(x, max(0, (3 * h // 4) - (dn.height() // 2)))
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] _reposition: {e}")
 
         ov = _SpinOverlay(sb)
         sb._lucide_overlay = ov
         QTimer.singleShot(40, partial(ov._reposition))
         QTimer.singleShot(120, partial(ov._reposition))
-        return ov
-    except Exception:
+    except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+        write_debug_log(f"[Silenced] _install_lucide_spin_arrows: {e}")
         return None
+    else:
+        return ov
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -406,7 +428,7 @@ def _install_lucide_spin_arrows(sb: QSpinBox):
 # ── Basic tab ────────────────────────────────────────────────────────────────
 
 
-def build_basic_tab(win, lay: QVBoxLayout):
+def build_basic_tab(win: Any, lay: QVBoxLayout) -> None:
     lay.setAlignment(Qt.AlignmentFlag.AlignTop)
     lay.setSpacing(1)
     lay.addWidget(_sh("API"))
@@ -433,7 +455,7 @@ def build_basic_tab(win, lay: QVBoxLayout):
     win.browser_download_cb = QCheckBox("Use browser for file downloads")
     win.browser_download_cb.setToolTip(
         "When checked, downloads open in your default browser.\n"
-        "When unchecked, files download directly through Mocha Tools."
+        "When unchecked, files download directly through Mocha Tools.",
     )
     card_lay.addWidget(win.browser_download_cb)
     lay.addWidget(card)
@@ -447,13 +469,13 @@ def build_basic_tab(win, lay: QVBoxLayout):
     win.debug_cb = QCheckBox("Enable debug logging")
     win.debug_cb.setToolTip(
         "Show [DEBUG] lines in the status console and log file.\n"
-        "Turn off to see only high-level status messages."
+        "Turn off to see only high-level status messages.",
     )
     card_lay.addWidget(win.debug_cb)
 
     note = QLabel(
         "When enabled, all status messages are shown"
-        " in the console and written to the log file."
+        " in the console and written to the log file.",
     )
     note.setObjectName("field_label")
     note.setWordWrap(True)
@@ -470,14 +492,14 @@ def build_basic_tab(win, lay: QVBoxLayout):
     win.minimize_to_tray_cb.setToolTip(
         "When enabled, minimising or closing the window sends Mocha Tools\n"
         "to the system tray instead of quitting. Use the tray icon's menu\n"
-        "to reopen the window or quit the app."
+        "to reopen the window or quit the app.",
     )
     win.minimize_to_tray_cb.toggled.connect(win._on_tray_setting_toggled)
     card_lay.addWidget(win.minimize_to_tray_cb)
 
     note = QLabel(
         "When disabled, minimising uses the normal taskbar behaviour and "
-        "closing the window quits the app."
+        "closing the window quits the app.",
     )
     note.setObjectName("field_label")
     note.setWordWrap(True)
@@ -488,7 +510,7 @@ def build_basic_tab(win, lay: QVBoxLayout):
 # ── Upload tab ───────────────────────────────────────────────────────────────
 
 
-def build_upload_tab(win, lay: QVBoxLayout):
+def build_upload_tab(win: Any, lay: QVBoxLayout) -> None:
     lay.setAlignment(Qt.AlignmentFlag.AlignTop)
     lay.setSpacing(0)
     lay.addWidget(_sh("Global"))
@@ -568,7 +590,7 @@ def build_upload_tab(win, lay: QVBoxLayout):
     note = QLabel(
         "Files larger than one chunk size are uploaded in multiple parts. "
         "Larger chunks reduce overhead; more parallel chunks can increase throughput "
-        "on fast connections."
+        "on fast connections.",
     )
     note.setObjectName("field_label")
     note.setWordWrap(True)
@@ -600,7 +622,7 @@ def build_upload_tab(win, lay: QVBoxLayout):
 # ── Updates tab ──────────────────────────────────────────────────────────────
 
 
-def build_updates_tab(win, lay: QVBoxLayout):
+def build_updates_tab(win: Any, lay: QVBoxLayout) -> None:
     lay.setAlignment(Qt.AlignmentFlag.AlignTop)
     lay.setSpacing(0)
     lay.addWidget(_sh("Updates"))
@@ -611,10 +633,11 @@ def build_updates_tab(win, lay: QVBoxLayout):
     try:
         from .updater import _is_portable_windows
 
-        _portable_suffix = " (portable)" if _is_portable_windows() else ""
-    except Exception:
-        _portable_suffix = ""
-    win.update_status_lbl = QLabel(f"Current version: {APP_VERSION}{_portable_suffix}")
+        portable_suffix = " (portable)" if _is_portable_windows() else ""
+    except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+        write_debug_log(f"[Silenced] build_updates_tab: {e}")
+        portable_suffix = ""
+    win.update_status_lbl = QLabel(f"Current version: {APP_VERSION}{portable_suffix}")
     win.update_status_lbl.setObjectName("field_label")
     win.update_status_lbl.setWordWrap(True)
     card_lay.addWidget(win.update_status_lbl)
@@ -632,7 +655,7 @@ def build_updates_tab(win, lay: QVBoxLayout):
         "min-height:0px; padding:0px 16px;"
         " font-size:13px; font-weight:600;"
         "background:#1e1c19; color:#f0ece6;"
-        " border:1px solid #3d3a35; border-radius:7px;"
+        " border:1px solid #3d3a35; border-radius:7px;",
     )
     win.check_update_btn.clicked.connect(win._check_for_updates)
     btn_row.addWidget(win.check_update_btn)
@@ -644,15 +667,13 @@ def build_updates_tab(win, lay: QVBoxLayout):
     win.install_update_btn.setFixedHeight(36)
     win.install_update_btn.setStyleSheet(
         f"min-height:0px; padding:0px 16px; font-size:13px; font-weight:700;"
-        f"background:{get_accent()}; color:#111010; border:none; border-radius:7px;"
+        f"background:{get_accent()}; color:#111010; border:none; border-radius:7px;",
     )
     win.install_update_btn.clicked.connect(win._install_update)
     win.install_update_btn.hide()
     btn_row.addWidget(win.install_update_btn)
-    try:
+    with contextlib.suppress(Exception):
         notifier().accent_changed.connect(partial(_style_install_btn, win))
-    except Exception:
-        pass
 
     win.release_info_btn = QPushButton("Release info")
     win.release_info_btn.setObjectName("browse_btn")
@@ -661,7 +682,7 @@ def build_updates_tab(win, lay: QVBoxLayout):
         "min-height:0px; padding:0px 16px;"
         " font-size:13px; font-weight:600;"
         "background:#1e1c19; color:#f0ece6;"
-        " border:1px solid #3d3a35; border-radius:7px;"
+        " border:1px solid #3d3a35; border-radius:7px;",
     )
     win.release_info_btn.clicked.connect(win._show_release_info)
     win.release_info_btn.hide()
@@ -673,7 +694,7 @@ def build_updates_tab(win, lay: QVBoxLayout):
     win.check_updates_on_launch_cb = QCheckBox("Check for updates on launch")
     win.check_updates_on_launch_cb.setToolTip(
         "Automatically check for a new version each time Mocha Tools starts.\n"
-        "If an update is found you will be prompted to download it."
+        "If an update is found you will be prompted to download it.",
     )
     win.check_updates_on_launch_cb.setChecked(True)
     card_lay.addWidget(win.check_updates_on_launch_cb)
@@ -681,7 +702,7 @@ def build_updates_tab(win, lay: QVBoxLayout):
     win.auto_restart_cb = QCheckBox("Auto-restart after update downloads")
     win.auto_restart_cb.setToolTip(
         "Restart Mocha Tools automatically once an update has finished\n"
-        "downloading, without showing a confirmation prompt."
+        "downloading, without showing a confirmation prompt.",
     )
     card_lay.addWidget(win.auto_restart_cb)
 
@@ -691,7 +712,7 @@ def build_updates_tab(win, lay: QVBoxLayout):
 # ── Appearance tab ───────────────────────────────────────────────────────────
 
 
-def build_appearance_tab(win, lay: QVBoxLayout):
+def build_appearance_tab(win: Any, lay: QVBoxLayout) -> None:
     lay.addWidget(_sh("UI"))
     card = _card()
     card_lay = QVBoxLayout(card)
@@ -701,10 +722,8 @@ def build_appearance_tab(win, lay: QVBoxLayout):
     # Accent colour picker
     pick_lbl = QLabel("Accent colour")
     pick_lbl.setObjectName("field_label")
-    try:
+    with contextlib.suppress(Exception):
         pick_lbl.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-    except Exception:
-        pass
     card_lay.addWidget(pick_lbl)
 
     preview_row = QHBoxLayout()
@@ -713,7 +732,7 @@ def build_appearance_tab(win, lay: QVBoxLayout):
     win.acc_swatch = QLabel()
     win.acc_swatch.setFixedSize(52, 34)
     win.acc_swatch.setStyleSheet(
-        f"border:1px solid #2e2b27; border-radius:8px; background:{DEFAULT_ACCENT};"
+        f"border:1px solid #2e2b27; border-radius:8px; background:{DEFAULT_ACCENT};",
     )
     win.acc_hex = QLineEdit()
     win.acc_hex.setReadOnly(True)
@@ -728,35 +747,33 @@ def build_appearance_tab(win, lay: QVBoxLayout):
     # Embedded colour picker
     win.acc_dialog = QColorDialog(QColor(DEFAULT_ACCENT), win)
     win.acc_dialog.setOption(QColorDialog.ColorDialogOption.DontUseNativeDialog, True)
-    try:
+    with contextlib.suppress(Exception):
         win.acc_dialog.setOption(QColorDialog.ColorDialogOption.NoButtons, True)
-    except Exception:
-        pass
     win.acc_dialog.setWindowFlags(Qt.WindowType.Widget)
     try:
         for bb in win.acc_dialog.findChildren(QDialogButtonBox):
             bb.hide()
-    except Exception:
-        pass
+    except (AttributeError, TypeError, RuntimeError) as e:
+        write_debug_log(f"[Silenced] build_appearance_tab: {e}")
     card_lay.addWidget(win.acc_dialog)
 
-    def _on_color_changed(col: QColor):
+    def _on_color_changed(col: QColor) -> None:
         if not col.isValid():
             return
         hx = col.name()
         win.acc_hex.setText(hx)
         win.acc_swatch.setStyleSheet(
-            f"border:1px solid #2e2b27; border-radius:8px; background:{hx};"
+            f"border:1px solid #2e2b27; border-radius:8px; background:{hx};",
         )
 
     win.acc_dialog.currentColorChanged.connect(_on_color_changed)
 
-    def _style_dialog_spinboxes():
+    def _style_dialog_spinboxes() -> None:
         try:
             for sb in win.acc_dialog.findChildren(QSpinBox):
                 _install_lucide_spin_arrows(sb)
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _style_dialog_spinboxes: {e}")
 
     QTimer.singleShot(0, _style_dialog_spinboxes)
 
@@ -766,10 +783,8 @@ def build_appearance_tab(win, lay: QVBoxLayout):
     bg_row.setSpacing(8)
     bg_lbl = QLabel("Background")
     bg_lbl.setObjectName("field_label")
-    try:
+    with contextlib.suppress(Exception):
         bg_lbl.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-    except Exception:
-        pass
     win.bg_combo = QComboBox()
     win.bg_combo.setFixedHeight(34)
     win.bg_combo.setMinimumWidth(140)
@@ -779,7 +794,8 @@ def build_appearance_tab(win, lay: QVBoxLayout):
         from .theme import get_background
 
         current_bg = get_background()
-    except Exception:
+    except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+        write_debug_log(f"[Silenced] build_appearance_tab: {e}")
         current_bg = DEFAULT_BACKGROUND
     idx = win.bg_combo.findData(current_bg)
     if idx >= 0:
@@ -811,15 +827,15 @@ def build_appearance_tab(win, lay: QVBoxLayout):
         from .theme import get_font
 
         fam, fsz = get_font()
-        try:
+        with contextlib.suppress(Exception):
             win.font_combo.setCurrentFont(QFont(fam))
-        except Exception:
-            pass
         try:
             win.font_size.setValue(int(fsz))
-        except Exception:
+        except (AttributeError, TypeError, RuntimeError, ValueError) as e:
+            write_debug_log(f"[Silenced] build_appearance_tab: {e}")
             win.font_size.setValue(13)
-    except Exception:
+    except (AttributeError, TypeError, RuntimeError, ImportError, ValueError) as e:
+        write_debug_log(f"[Silenced] build_appearance_tab: {e}")
         win.font_size.setValue(13)
 
     try:
@@ -829,42 +845,53 @@ def build_appearance_tab(win, lay: QVBoxLayout):
             try:
 
                 class _FixedFontDelegate(QStyledItemDelegate):
-                    def initStyleOption(self, option, index):
-                        try:
+                    def initStyleOption(
+                        self,
+                        option: QStyleOptionViewItem,
+                        index: QModelIndex | QPersistentModelIndex,
+                    ) -> None:
+                        with contextlib.suppress(Exception):
                             super().initStyleOption(option, index)
-                        except Exception:
-                            pass
                         try:
                             from .theme import DEFAULT_FONT_FAMILY
 
                             option.font = QFont(DEFAULT_FONT_FAMILY, 12)
-                        except Exception:
-                            pass
+                        except (
+                            AttributeError,
+                            TypeError,
+                            RuntimeError,
+                            ImportError,
+                        ) as e:
+                            write_debug_log(f"[Silenced] initStyleOption: {e}")
 
                 v.setItemDelegate(_FixedFontDelegate(v))
-            except Exception:
-                try:
+            except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+                write_debug_log(f"[Silenced] build_appearance_tab: {e}")
+                with contextlib.suppress(Exception):
                     v.setFont(QFont(v.font().family(), 12))
-                except Exception:
-                    pass
             try:
                 from .theme import get_font
 
                 fsz = int(get_font()[1])
-            except Exception:
+            except (
+                AttributeError,
+                TypeError,
+                RuntimeError,
+                ImportError,
+                ValueError,
+            ) as e:
+                write_debug_log(f"[Silenced] build_appearance_tab: {e}")
                 fsz = 12
             v.setStyleSheet(
                 f"QListView {{ font-size: {fsz}px; }}"
-                " QListView::item {{ height: 26px; }}"
+                " QListView::item {{ height: 26px; }}",
             )
-        except Exception:
-            pass
-        try:
+        except (AttributeError, TypeError, RuntimeError, ImportError, ValueError) as e:
+            write_debug_log(f"[Silenced] build_appearance_tab: {e}")
+        with contextlib.suppress(Exception):
             win.font_combo.setStyleSheet("QComboBox { font-size: 13px; }")
-        except Exception:
-            pass
-    except Exception:
-        pass
+    except (AttributeError, TypeError, RuntimeError, ImportError, ValueError) as e:
+        write_debug_log(f"[Silenced] build_appearance_tab: {e}")
 
     # Chevron overlay on font combo
     try:
@@ -873,7 +900,7 @@ def build_appearance_tab(win, lay: QVBoxLayout):
         from .ui.icons import lucide_icon
 
         class _ComboOverlay(QObject):
-            def __init__(self, cmb):
+            def __init__(self, cmb: QComboBox) -> None:
                 super().__init__(cmb)
                 self.cmb = cmb
                 ico = lucide_icon("chevron-down", "#f0ece6", 12)
@@ -890,18 +917,18 @@ def build_appearance_tab(win, lay: QVBoxLayout):
                 try:
                     btn.show()
                     btn.raise_()
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] __init__: {e}")
 
-            def eventFilter(self, obj, ev):
+            def eventFilter(self, _obj: QObject | None, ev: QEvent) -> bool:
                 try:
                     if ev.type() in (QEvent.Type.Resize, QEvent.Type.Show):
                         self._reposition()
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] eventFilter: {e}")
                 return False
 
-            def _reposition(self):
+            def _reposition(self) -> None:
                 try:
                     cmb = self.cmb
                     btn = getattr(cmb, "_overlay_btn", None)
@@ -912,32 +939,24 @@ def build_appearance_tab(win, lay: QVBoxLayout):
                     x = w - btn.width() - 6
                     y = max(0, (h - btn.height()) // 2)
                     btn.move(x, y)
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] _reposition: {e}")
 
-            def _show_popup(self, _checked=False):
-                try:
+            def _show_popup(self, _checked: bool = False) -> None:
+                with contextlib.suppress(Exception):
                     self.cmb.showPopup()
-                except Exception:
-                    pass
 
-        try:
+        with contextlib.suppress(Exception):
             _ComboOverlay(win.font_combo)
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             _ComboOverlay(win.bg_combo)
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             QTimer.singleShot(
                 40,
                 partial(_raise_font_overlay, win),
             )
-        except Exception:
-            pass
-    except Exception:
-        pass
+    except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+        write_debug_log(f"[Silenced] build_appearance_tab: {e}")
 
     font_row.addWidget(font_lbl)
     font_row.addWidget(win.font_combo)
@@ -956,7 +975,7 @@ def build_appearance_tab(win, lay: QVBoxLayout):
     btn_row.addStretch()
     lay.addLayout(btn_row)
 
-    def _apply():
+    def _apply() -> None:
         hx = win.acc_hex.text() or DEFAULT_ACCENT
         if not hx.startswith("#"):
             hx = "#" + hx
@@ -969,33 +988,31 @@ def build_appearance_tab(win, lay: QVBoxLayout):
             try:
                 if hasattr(win, "_refresh_accented_icons"):
                     win._refresh_accented_icons()
-            except Exception:
-                pass
-        except Exception:
+            except (AttributeError, TypeError, RuntimeError) as e:
+                write_debug_log(f"[Silenced] _apply: {e}")
+        except Exception:  # noqa: BLE001
             try:
                 s = QSettings(ORG_NAME, APP_NAME)
                 old = s.value("accent", DEFAULT_ACCENT) or DEFAULT_ACCENT
                 s.setValue("accent", hx)
-                try:
+                with contextlib.suppress(Exception):
                     s.sync()
-                except Exception:
-                    pass
                 try:
                     from .theme import notifier
 
                     notifier().accent_changed.emit(str(old), hx)
-                except Exception:
-                    pass
-            except Exception:
-                pass
+                except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+                    write_debug_log(f"[Silenced] _apply: {e}")
+            except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+                write_debug_log(f"[Silenced] _apply: {e}")
 
         try:
             from .theme import set_background
 
             bg_key = win.bg_combo.currentData() or DEFAULT_BACKGROUND
             set_background(bg_key, persist=bool(win.remember_cb.isChecked()))
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+            write_debug_log(f"[Silenced] _apply: {e}")
 
         try:
             from PySide6.QtWidgets import QApplication
@@ -1009,55 +1026,47 @@ def build_appearance_tab(win, lay: QVBoxLayout):
                     pal = a.palette()
                     pal.setColor(QPalette.ColorRole.Highlight, QColor(hx))
                     a.setPalette(pal)
-                except Exception:
-                    pass
-                try:
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] _apply: {e}")
+                with contextlib.suppress(Exception):
                     a.setStyleSheet(
-                        build_stylesheet(get_accent(), background_key=get_background())
+                        build_stylesheet(get_accent(), background_key=get_background()),
                     )
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+            write_debug_log(f"[Silenced] _apply: {e}")
 
         try:
+            from PySide6.QtWidgets import QApplication
+
             from .theme import notifier, set_font
 
             fam = win.font_combo.currentFont().family()
             sz = int(win.font_size.value())
             set_font(fam, sz, persist=bool(win.remember_cb.isChecked()))
-            try:
+            with contextlib.suppress(Exception):
                 notifier().font_changed.emit(fam, int(sz))
-            except Exception:
-                pass
             a = QApplication.instance()
             if a:
-                try:
+                with contextlib.suppress(Exception):
                     a.setFont(QFont(fam, int(sz)))
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError, ImportError, ValueError) as e:
+            write_debug_log(f"[Silenced] _apply: {e}")
 
-    def _reset():
+    def _reset() -> None:
         win.acc_dialog.setCurrentColor(QColor(DEFAULT_ACCENT))
         try:
             idx = win.bg_combo.findData(DEFAULT_BACKGROUND)
             if idx >= 0:
                 win.bg_combo.setCurrentIndex(idx)
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _reset: {e}")
         try:
             from .theme import DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE
 
-            try:
+            with contextlib.suppress(Exception):
                 win.font_combo.setCurrentFont(QFont(DEFAULT_FONT_FAMILY))
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 win.font_combo.setCurrentText(DEFAULT_FONT_FAMILY)
-            except Exception:
-                pass
             try:
                 for i in range(win.font_combo.count()):
                     try:
@@ -1067,20 +1076,16 @@ def build_appearance_tab(win, lay: QVBoxLayout):
                         ):
                             win.font_combo.setCurrentIndex(i)
                             break
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            try:
+                    except (AttributeError, TypeError, RuntimeError) as e:
+                        write_debug_log(f"[Silenced] _reset: {e}")
+            except (AttributeError, TypeError, RuntimeError) as e:
+                write_debug_log(f"[Silenced] _reset: {e}")
+            with contextlib.suppress(Exception):
                 win.font_size.setValue(DEFAULT_FONT_SIZE)
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 _apply()
-            except Exception:
-                pass
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+            write_debug_log(f"[Silenced] _reset: {e}")
 
     win.bg_combo.currentIndexChanged.connect(_apply)
     apply_btn.clicked.connect(_apply)
@@ -1090,7 +1095,7 @@ def build_appearance_tab(win, lay: QVBoxLayout):
 # ── Sounds tab ───────────────────────────────────────────────────────────────
 
 
-def build_sounds_tab(win, lay: QVBoxLayout):
+def build_sounds_tab(win: Any, lay: QVBoxLayout) -> None:
     lay.setAlignment(Qt.AlignmentFlag.AlignTop)
     lay.setSpacing(0)
     lay.addWidget(_sh("Sounds"))
@@ -1101,7 +1106,7 @@ def build_sounds_tab(win, lay: QVBoxLayout):
     note = QLabel(
         "Optionally play a sound for each of these events. Leave one unset "
         "and nothing plays for it. Any audio format PySide6 Multimedia can "
-        "decode is supported (WAV, MP3, OGG, FLAC, M4A, and more)."
+        "decode is supported (WAV, MP3, OGG, FLAC, M4A, and more).",
     )
     note.setObjectName("field_label")
     note.setWordWrap(True)
@@ -1148,9 +1153,9 @@ def build_sounds_tab(win, lay: QVBoxLayout):
             "reset": reset_btn,
         }
 
-        def _make_browse(k=key, lbl_text=label, edit=path_edit):
-            def _browse():
-                start_dir = os.path.dirname(edit.text()) if edit.text() else ""
+        def _make_browse(k: str, lbl_text: str, edit: QLineEdit) -> Callable[[], None]:
+            def _browse() -> None:
+                start_dir = str(pathlib.Path(edit.text()).parent) if edit.text() else ""
                 path, _ = QFileDialog.getOpenFileName(
                     win,
                     f"Select sound for \u201c{lbl_text}\u201d",
@@ -1165,16 +1170,16 @@ def build_sounds_tab(win, lay: QVBoxLayout):
 
             return _browse
 
-        def _make_reset(k=key, edit=path_edit):
-            def _reset():
+        def _make_reset(k: str, edit: QLineEdit) -> Callable[[], None]:
+            def _reset() -> None:
                 edit.clear()
                 edit.setToolTip("")
                 set_sound_path(k, "")
 
             return _reset
 
-        browse_btn.clicked.connect(_make_browse())
-        reset_btn.clicked.connect(_make_reset())
+        browse_btn.clicked.connect(_make_browse(key, label, path_edit))
+        reset_btn.clicked.connect(_make_reset(key, path_edit))
 
     lay.addWidget(card)
 
@@ -1184,9 +1189,8 @@ def build_sounds_tab(win, lay: QVBoxLayout):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def build_settings_tab(win) -> QWidget:
-    """
-    Build and return the Settings tab widget.
+def build_settings_tab(win: Any) -> QWidget:
+    """Build and return the Settings tab widget.
     All interactive widgets are attached as attributes of `win` so that
     _start_upload, _load_settings, _save_settings, etc. can reach them.
     """
@@ -1228,10 +1232,8 @@ def build_settings_tab(win) -> QWidget:
     sounds_l.setSpacing(12)
 
     for p in (basic_page, upload_page, updates_page, appearance_page, sounds_page):
-        try:
+        with contextlib.suppress(Exception):
             p.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        except Exception:
-            pass
 
     build_basic_tab(win, basic_l)
     build_upload_tab(win, upload_l)
@@ -1240,7 +1242,7 @@ def build_settings_tab(win) -> QWidget:
     build_sounds_tab(win, sounds_l)
 
     # Wrap in scroll areas
-    def _make_scroll(widget):
+    def _make_scroll(widget: QWidget) -> QScrollArea:
         s = QScrollArea()
         s.setWidgetResizable(True)
         s.setFrameShape(QFrame.Shape.NoFrame)
@@ -1248,7 +1250,7 @@ def build_settings_tab(win) -> QWidget:
         s.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         s.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         s.setStyleSheet(
-            "QScrollBar:vertical {width:0px;} QScrollBar:horizontal{height:0px;}"
+            "QScrollBar:vertical {width:0px;} QScrollBar:horizontal{height:0px;}",
         )
         return s
 
@@ -1259,15 +1261,13 @@ def build_settings_tab(win) -> QWidget:
     tabs.addTab(_make_scroll(sounds_page), "Sounds")
 
     # Ensure lucide spin arrows raise when UI tab is selected
-    def _ensure_accent_spin_arrows(idx=None):
-        if idx is not None and idx != 3:
+    def _ensure_accent_spin_arrows(idx: int | None = None) -> None:
+        if idx is not None and idx != _TAB_UI:
             return
         try:
             spins = [win.font_size]
-            try:
+            with contextlib.suppress(Exception):
                 spins.extend(win.acc_dialog.findChildren(QSpinBox))
-            except Exception:
-                pass
             for sb in spins:
                 try:
                     up = getattr(sb, "_overlay_up_btn", None)
@@ -1278,15 +1278,13 @@ def build_settings_tab(win) -> QWidget:
                     if dn:
                         dn.show()
                         dn.raise_()
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except (AttributeError, TypeError, RuntimeError) as e:
+                    write_debug_log(f"[Silenced] _ensure_accent_spin_arrows: {e}")
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _ensure_accent_spin_arrows: {e}")
 
-    try:
+    with contextlib.suppress(Exception):
         tabs.currentChanged.connect(_ensure_accent_spin_arrows)
-    except Exception:
-        pass
     QTimer.singleShot(120, partial(_ensure_accent_spin_arrows, None))
 
     center_row.addWidget(tabs, 1)
@@ -1299,10 +1297,10 @@ def build_settings_tab(win) -> QWidget:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def load_settings(win):
+def load_settings(win: Any) -> None:
     """Restore persisted QSettings onto win's widgets."""
     s = QSettings(ORG_NAME, APP_NAME)
-    if _KEYRING_OK:
+    if keyring is not None:
         key = keyring.get_password(_KR_SERVICE, _KR_USER) or ""
         if not key:
             key = s.value("api_key", "")
@@ -1321,45 +1319,45 @@ def load_settings(win):
     win.debug_cb.setChecked(s.value("debug", False, type=bool))
     win.minimize_to_tray_cb.setChecked(s.value("minimize_to_tray", False, type=bool))
     win.chunk_size_spin.setValue(
-        s.value("chunk_size_mb", DEFAULT_CHUNK_SIZE_MB, type=int)
+        s.value("chunk_size_mb", DEFAULT_CHUNK_SIZE_MB, type=int),
     )
     win.max_chunks_spin.setValue(s.value("max_chunks", DEFAULT_MAX_CHUNKS, type=int))
     win.global_conc_spin.setValue(
-        s.value("global_conc", DEFAULT_GLOBAL_CONCURRENCY, type=int)
+        s.value("global_conc", DEFAULT_GLOBAL_CONCURRENCY, type=int),
     )
     win.mass_chunk_spin.setValue(
-        s.value("mass_chunk_mb", DEFAULT_CHUNK_SIZE_MB, type=int)
+        s.value("mass_chunk_mb", DEFAULT_CHUNK_SIZE_MB, type=int),
     )
     win.mass_maxchunk_spin.setValue(
-        s.value("mass_max_chunks", DEFAULT_MAX_CHUNKS, type=int)
+        s.value("mass_max_chunks", DEFAULT_MAX_CHUNKS, type=int),
     )
     win.sync_chunk_spin.setValue(
-        s.value("sync_chunk_mb", DEFAULT_CHUNK_SIZE_MB, type=int)
+        s.value("sync_chunk_mb", DEFAULT_CHUNK_SIZE_MB, type=int),
     )
     win.sync_maxchunk_spin.setValue(
-        s.value("sync_max_chunks", DEFAULT_MAX_CHUNKS, type=int)
+        s.value("sync_max_chunks", DEFAULT_MAX_CHUNKS, type=int),
     )
     win.browser_download_cb.setChecked(s.value("browser_download", False, type=bool))
     win.check_updates_on_launch_cb.setChecked(
-        s.value("check_updates_on_launch", True, type=bool)
+        s.value("check_updates_on_launch", True, type=bool),
     )
     win.auto_restart_cb.setChecked(
-        s.value("auto_restart_after_update", False, type=bool)
+        s.value("auto_restart_after_update", False, type=bool),
     )
 
     # Sound settings
     try:
         from .sound_player import SOUND_EVENTS, sound_path
 
-        for _key, _label in SOUND_EVENTS:
-            widgets = getattr(win, "sound_widgets", {}).get(_key)
+        for key_, _label in SOUND_EVENTS:
+            widgets = getattr(win, "sound_widgets", {}).get(key_)
             if not widgets:
                 continue
-            p = sound_path(_key)
+            p = sound_path(key_)
             widgets["edit"].setText(p)
             widgets["edit"].setToolTip(p)
-    except Exception:
-        pass
+    except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+        write_debug_log(f"[Silenced] load_settings: {e}")
 
     # Accent color
     try:
@@ -1367,19 +1365,17 @@ def load_settings(win):
         if accent and getattr(win, "acc_hex", None) is not None:
             win.acc_hex.setText(accent)
             win.acc_swatch.setStyleSheet(
-                f"border:1px solid #2e2b27; border-radius:8px; background:{accent};"
+                f"border:1px solid #2e2b27; border-radius:8px; background:{accent};",
             )
             if getattr(win, "acc_dialog", None) is not None:
-                try:
+                with contextlib.suppress(Exception):
                     win.acc_dialog.setCurrentColor(QColor(accent))
-                except Exception:
-                    pass
         if accent and getattr(win, "accent_swatch", None) is not None:
             win.accent_swatch.setStyleSheet(
-                f"border:1px solid #2e2b27; border-radius:3px; background:{accent};"
+                f"border:1px solid #2e2b27; border-radius:3px; background:{accent};",
             )
-    except Exception:
-        pass
+    except (AttributeError, TypeError, RuntimeError) as e:
+        write_debug_log(f"[Silenced] load_settings: {e}")
 
     # Background theme
     try:
@@ -1388,8 +1384,8 @@ def load_settings(win):
             idx = win.bg_combo.findData(str(bg_key).lower())
             if idx >= 0:
                 win.bg_combo.setCurrentIndex(idx)
-    except Exception:
-        pass
+    except (AttributeError, TypeError, RuntimeError) as e:
+        write_debug_log(f"[Silenced] load_settings: {e}")
 
     # Pre-populate shares cache
     raw = s.value("shares_cache", None)
@@ -1403,11 +1399,11 @@ def load_settings(win):
             win.shares_tab._render(cached)
             win.files_tab._shares_cache = cached
             win.files_tab._index_shares(cached)
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+            write_debug_log(f"[Silenced] load_settings: {e}")
 
 
-def save_settings(win):
+def save_settings(win: Any) -> None:
     """Persist win's widget values to QSettings."""
     s = QSettings(ORG_NAME, APP_NAME)
     s.setValue("debug", win.debug_cb.isChecked())
@@ -1427,23 +1423,21 @@ def save_settings(win):
     try:
         from .sound_player import SOUND_EVENTS, set_sound_path
 
-        for _key, _label in SOUND_EVENTS:
-            widgets = getattr(win, "sound_widgets", {}).get(_key)
+        for key, _label in SOUND_EVENTS:
+            widgets = getattr(win, "sound_widgets", {}).get(key)
             if not widgets:
                 continue
-            set_sound_path(_key, widgets["edit"].text().strip())
-    except Exception:
-        pass
+            set_sound_path(key, widgets["edit"].text().strip())
+    except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+        write_debug_log(f"[Silenced] save_settings: {e}")
 
     cache = getattr(getattr(win, "shares_tab", None), "_cache", None)
     if cache is not None:
-        try:
+        with contextlib.suppress(Exception):
             s.setValue("shares_cache", json.dumps(cache))
-        except Exception:
-            pass
 
     if win.remember_cb.isChecked():
-        if _KEYRING_OK:
+        if keyring is not None:
             keyring.set_password(_KR_SERVICE, _KR_USER, win.api_key_edit.text())
         else:
             s.setValue("api_key", win.api_key_edit.text())
@@ -1453,11 +1447,9 @@ def save_settings(win):
             s.setValue("remote_path", win.remote_tab.path_edit.text())
         s.setValue("remember", True)
     else:
-        if _KEYRING_OK:
-            try:
+        if keyring is not None:
+            with contextlib.suppress(keyring.errors.PasswordDeleteError):
                 keyring.delete_password(_KR_SERVICE, _KR_USER)
-            except keyring.errors.PasswordDeleteError:
-                pass
         s.remove("api_key")
         s.remove("upload_path")
         s.remove("remote_path")
@@ -1469,16 +1461,12 @@ def save_settings(win):
         if win.remember_cb.isChecked():
             s.setValue("accent", get_accent())
         else:
-            try:
+            with contextlib.suppress(Exception):
                 s.remove("accent")
-            except Exception:
-                pass
-        try:
+        with contextlib.suppress(Exception):
             s.sync()
-        except Exception:
-            pass
-    except Exception:
-        pass
+    except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+        write_debug_log(f"[Silenced] save_settings: {e}")
 
     try:
         from .theme import get_background
@@ -1486,18 +1474,12 @@ def save_settings(win):
         if win.remember_cb.isChecked():
             s.setValue("background", get_background())
         else:
-            try:
+            with contextlib.suppress(Exception):
                 s.remove("background")
-            except Exception:
-                pass
-        try:
+        with contextlib.suppress(Exception):
             s.sync()
-        except Exception:
-            pass
-    except Exception:
-        pass
+    except (AttributeError, TypeError, RuntimeError, ImportError) as e:
+        write_debug_log(f"[Silenced] save_settings: {e}")
 
-    try:
+    with contextlib.suppress(Exception):
         s.sync()
-    except Exception:
-        pass

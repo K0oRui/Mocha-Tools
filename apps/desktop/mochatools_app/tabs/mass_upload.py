@@ -1,13 +1,17 @@
-"""
-tabs/mass_upload.py — MassUploadSection widget.
+"""tabs/mass_upload.py — MassUploadSection widget.
 
 Embedded into the Upload tab of MochaTools; not a standalone tab.
 """
 
-import os
-from functools import partial
+from __future__ import annotations
 
-from PySide6.QtCore import Qt, QSize, QTimer
+import contextlib
+import os
+import pathlib
+from functools import partial
+from typing import TYPE_CHECKING
+
+from PySide6.QtCore import QPoint, QSize, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -28,12 +32,19 @@ from PySide6.QtWidgets import (
 )
 
 from ..constants import DEFAULT_CHUNK_SIZE_MB, DEFAULT_MAX_CHUNKS
-from ..logging_utils import write_debug_log
-from ..providers import DefaultMassSettingsProvider
-from ..upload_pipeline import PRIORITY_MASS, UploadJob
 from ..dialogs import FolderBrowserDialog
+from ..logging_utils import write_debug_log
+from ..providers import DefaultMassSettingsProvider, MassSettingsProvider
+from ..theme import accent_qcolor, get_accent, get_font, notifier
 from ..ui import lucide_icon
-from ..theme import get_accent, accent_qcolor, get_font, notifier
+from ..upload_pipeline import PRIORITY_MASS, UploadJob, UploadManager
+
+_KB = 1024
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from ..mocha_client import MochaClient
 
 
 class MassUploadSection(QWidget):
@@ -44,13 +55,13 @@ class MassUploadSection(QWidget):
 
     def __init__(
         self,
-        client,
-        mass_settings_provider=None,
-        on_upload_done=None,
-        parent=None,
+        client: MochaClient,
+        mass_settings_provider: MassSettingsProvider | None = None,
+        on_upload_done: Callable[[str], None] | None = None,
+        parent: QWidget | None = None,
         embedded: bool = True,
-        upload_manager=None,
-    ):
+        upload_manager: UploadManager | None = None,
+    ) -> None:
         super().__init__(parent)
         self._client = client
         self._manager = upload_manager
@@ -68,7 +79,7 @@ class MassUploadSection(QWidget):
         self._build_ui()
         self._connect_manager()
 
-    def _build_ui(self):
+    def _build_ui(self) -> None:
         # If embedded into another scroll area (the main Upload tab), avoid
         # creating an internal QScrollArea to prevent double scrolling.
         if self._embedded:
@@ -108,7 +119,7 @@ class MassUploadSection(QWidget):
         self._build_progress_card(outer)
         self._build_action_buttons(outer)
 
-    def _build_drop_section(self, parent_lay: QVBoxLayout):
+    def _build_drop_section(self, parent_lay: QVBoxLayout) -> None:
         from ..ui.widgets import DropZone
 
         # The Upload tab's mode switcher already labels this view "Multiple
@@ -139,7 +150,7 @@ class MassUploadSection(QWidget):
         add_lay.addLayout(dest_row)
         parent_lay.addWidget(add_card)
 
-    def _build_queue_table(self, parent_lay: QVBoxLayout):
+    def _build_queue_table(self, parent_lay: QVBoxLayout) -> None:
         self._tree = QTreeWidget()
         self._tree.setColumnCount(4)
         self._tree.setHeaderLabels(["File / Folder", "Size", "Destination", "Status"])
@@ -158,7 +169,7 @@ class MassUploadSection(QWidget):
         self._tree.customContextMenuRequested.connect(self._queue_context_menu)
         parent_lay.addWidget(self._tree)
 
-    def _build_queue_toolbar(self, parent_lay: QVBoxLayout):
+    def _build_queue_toolbar(self, parent_lay: QVBoxLayout) -> None:
         qtb = QHBoxLayout()
         qtb.setSpacing(6)
 
@@ -192,24 +203,20 @@ class MassUploadSection(QWidget):
         qtb.addStretch()
         self._queue_lbl = QLabel("0 items")
         self._queue_lbl.setStyleSheet(
-            f"color: {accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;"
+            f"color: {accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;",
         )
         qtb.addWidget(self._queue_lbl)
         parent_lay.addLayout(qtb)
-        try:
+        with contextlib.suppress(Exception):
             notifier().accent_changed.connect(self._on_accent_changed)
-        except Exception:
-            pass
 
-    def _on_accent_changed(self, old, new):
-        try:
+    def _on_accent_changed(self, _old: str, _new: str) -> None:
+        with contextlib.suppress(Exception):
             self._queue_lbl.setStyleSheet(
-                f"color: {accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;"
+                f"color: {accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;",
             )
-        except Exception:
-            pass
 
-    def _build_progress_card(self, parent_lay: QVBoxLayout):
+    def _build_progress_card(self, parent_lay: QVBoxLayout) -> None:
         prog_card = self._card()
         prog_lay = QVBoxLayout(prog_card)
         prog_lay.setSpacing(8)
@@ -227,14 +234,14 @@ class MassUploadSection(QWidget):
         self._speed_lbl = QLabel("")
         self._speed_lbl.setObjectName("status_label")
         self._speed_lbl.setStyleSheet(
-            f"color:{accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;"
+            f"color:{accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;",
         )
         speed_row.addWidget(speed_lbl)
         speed_row.addWidget(self._speed_lbl)
         speed_row.addStretch()
         self._transferred_lbl = QLabel("")
         self._transferred_lbl.setStyleSheet(
-            f"color:{accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;"
+            f"color:{accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;",
         )
         speed_row.addWidget(self._transferred_lbl)
         prog_lay.addLayout(speed_row)
@@ -257,7 +264,7 @@ class MassUploadSection(QWidget):
         prog_lay.addWidget(self._log_lbl)
         parent_lay.addWidget(prog_card)
 
-    def _build_action_buttons(self, parent_lay: QVBoxLayout):
+    def _build_action_buttons(self, parent_lay: QVBoxLayout) -> None:
         self._start_btn = QPushButton("  Start upload")
         self._start_btn.setObjectName("upload_btn")
         self._start_btn.setIcon(lucide_icon("upload", "#111010", 15))
@@ -279,7 +286,7 @@ class MassUploadSection(QWidget):
     # ── Helpers ────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _sh(text) -> QLabel:
+    def _sh(text: str) -> QLabel:
         lbl = QLabel(text.upper())
         lbl.setObjectName("section_header")
         return lbl
@@ -292,15 +299,15 @@ class MassUploadSection(QWidget):
 
     @staticmethod
     def _fmt(n: int) -> str:
-        if n < 1024:
+        if n < _KB:
             return f"{n} B"
-        if n < 1024**2:
-            return f"{n / 1024:.3f} KB"
+        if n < _KB**2:
+            return f"{n / _KB:.3f} KB"
         if n < 1024**3:
             return f"{n / 1024**2:.3f} MB"
         return f"{n / 1024**3:.3f} GB"
 
-    def _set_badge(self, text: str, color: str):
+    def _set_badge(self, text: str, color: str) -> None:
         self._badge_lbl.setText(f"● {text}")
         bg = {
             get_accent(): "#2a2215",
@@ -318,10 +325,10 @@ class MassUploadSection(QWidget):
             f"background-color:{bg.get(color, '#1e1c19')};"
             f"border:1px solid {bd.get(color, '#2e2b27')};"
             f"border-radius:10px; color:{color}; font-size:11px;"
-            f"font-weight:600; padding:2px 10px;"
+            f"font-weight:600; padding:2px 10px;",
         )
 
-    def _log(self, msg: str):
+    def _log(self, msg: str) -> None:
         if msg.startswith("[DEBUG]"):
             write_debug_log(msg)
             if not self._mass_settings_provider.get_debug():
@@ -330,7 +337,7 @@ class MassUploadSection(QWidget):
 
     # ── Queue label + overall progress ───────────────────────────────────────
 
-    def _update_queue_label(self):
+    def _update_queue_label(self) -> None:
         total = len(self._queue)
         done = sum(1 for e in self._queue if e.get("status") == "done")
         errors = sum(1 for e in self._queue if e.get("status") == "error")
@@ -341,7 +348,7 @@ class MassUploadSection(QWidget):
             parts.append(f"{errors} failed")
         self._queue_lbl.setText(" · ".join(parts))
 
-    def _update_overall_progress(self):
+    def _update_overall_progress(self) -> None:
         if not self._queue:
             return
         total_pct = sum(
@@ -356,16 +363,16 @@ class MassUploadSection(QWidget):
 
     # ── Queue management ───────────────────────────────────────────────────
 
-    def _on_drop(self, file_list: list[str], root: str):
+    def _on_drop(self, file_list: list[str], root: str) -> None:
         new_entries = []
         for local in file_list:
             rel = os.path.relpath(local, root).replace(os.sep, "/")
             if rel.startswith("/") or (len(rel) > 1 and rel[1] == ":"):
-                rel = os.path.basename(local)
+                rel = pathlib.Path(local).name
             dest_base = "/" + (self._default_dest.text().strip("/") or "")
             rdest = f"{dest_base}/{rel}" if dest_base != "/" else f"/{rel}"
             try:
-                fsize = os.path.getsize(local)
+                fsize = pathlib.Path(local).stat().st_size
             except OSError:
                 fsize = 0
             entry = {
@@ -382,7 +389,7 @@ class MassUploadSection(QWidget):
             self._queue.append(entry)
             display_name = os.path.relpath(local, root).replace(os.sep, "/")
             item = QTreeWidgetItem(
-                [display_name, self._fmt(entry["size"]), rdest, "Pending"]
+                [display_name, self._fmt(entry["size"]), rdest, "Pending"],
             )
             item.setForeground(3, accent_qcolor())
             entry["item"] = item
@@ -418,7 +425,7 @@ class MassUploadSection(QWidget):
                 if entry["status"] == "pending":
                     self._enqueue_entry(entry)
 
-    def _browse_default_dest(self):
+    def _browse_default_dest(self) -> None:
         if not self._client.has_api_key:
             self._log("⚠ Enter API key in Settings first.")
             return
@@ -432,10 +439,10 @@ class MassUploadSection(QWidget):
             write_debug_log(f"[MassUpload BrowseDest] dlg.selected={dlg.selected!r}")
             self._default_dest.setText(dlg.selected)
             write_debug_log(
-                f"[MassUpload BrowseDest] _default_dest now={self._default_dest.text()!r}"
+                f"[MassUpload BrowseDest] _default_dest now={self._default_dest.text()!r}",
             )
 
-    def _edit_dest(self, item: QTreeWidgetItem, _col):
+    def _edit_dest(self, item: QTreeWidgetItem, _col: int) -> None:
         row = next((e for e in self._queue if e.get("item") is item), None)
         if row is None or row.get("status") in ("uploading", "done"):
             return
@@ -463,13 +470,13 @@ class MassUploadSection(QWidget):
                 row["dest"] = new_dest.strip()
                 item.setText(self._COL_DEST, row["dest"])
 
-    def _queue_context_menu(self, pos):
+    def _queue_context_menu(self, pos: QPoint) -> None:
         item = self._tree.itemAt(pos)
         menu = QMenu(self)
         menu.setStyleSheet(
             "QMenu { background:#1f1f1f; border:1px solid #3a3a3a; border-radius:8px; color:#f0f0f0; font-size:12px; }"
             "QMenu::item { padding:6px 8px; }"
-            "QMenu::item:selected { background:#332b1a; }"
+            "QMenu::item:selected { background:#332b1a; }",
         )
         if item:
             entry = next((e for e in self._queue if e.get("item") is item), None)
@@ -482,17 +489,18 @@ class MassUploadSection(QWidget):
 
             move_dn = menu.addAction(lucide_icon("move", get_accent(), 12), "Move down")
             move_dn.setEnabled(
-                idx < count - 1 and entry and entry.get("status") == "pending"
+                idx < count - 1 and entry and entry.get("status") == "pending",
             )
             move_dn.triggered.connect(self._move_selected_down)
 
             menu.addSeparator()
 
             edit_dest = menu.addAction(
-                lucide_icon("pencil", get_accent(), 12), "Edit destination"
+                lucide_icon("pencil", get_accent(), 12),
+                "Edit destination",
             )
             edit_dest.setEnabled(
-                entry and entry.get("status") not in ("uploading", "done")
+                entry and entry.get("status") not in ("uploading", "done"),
             )
             edit_dest.triggered.connect(partial(self._edit_dest, item, 0))
 
@@ -511,7 +519,7 @@ class MassUploadSection(QWidget):
 
     # ── Row reordering ────────────────────────────────────────────────────
 
-    def _move_entry(self, delta: int):
+    def _move_entry(self, delta: int) -> None:
         selected = [
             e
             for e in self._queue
@@ -521,7 +529,7 @@ class MassUploadSection(QWidget):
         if not selected:
             return
         if delta > 0:
-            selected = list(reversed(selected))
+            selected.reverse()
         for entry in selected:
             qi = self._queue.index(entry)
             ti = self._tree.indexOfTopLevelItem(entry.get("item"))
@@ -541,19 +549,19 @@ class MassUploadSection(QWidget):
             self._tree.insertTopLevelItem(new_ti, taken)
             self._tree.setCurrentItem(taken)
 
-    def _move_selected_up(self):
+    def _move_selected_up(self) -> None:
         self._move_entry(-1)
 
-    def _move_selected_down(self):
+    def _move_selected_down(self) -> None:
         self._move_entry(1)
 
     # ── Row removal ───────────────────────────────────────────────────────
 
-    def _detach_entry(self, entry: dict):
+    def _detach_entry(self, entry: dict) -> None:
         """Clear the item ref before removal."""
         entry["item"] = None
 
-    def _remove_selected(self):
+    def _remove_selected(self) -> None:
         assert self._manager is not None
         for item in list(self._tree.selectedItems()):
             row = next((e for e in self._queue if e.get("item") is item), None)
@@ -571,7 +579,7 @@ class MassUploadSection(QWidget):
                 self._tree.takeTopLevelItem(idx)
         self._update_queue_label()
 
-    def _clear_done(self):
+    def _clear_done(self) -> None:
         for entry in list(self._queue):
             if entry.get("status") in ("done", "error", "cancelled"):
                 item = entry.get("item")
@@ -583,7 +591,7 @@ class MassUploadSection(QWidget):
                 self._queue.remove(entry)
         self._update_queue_label()
 
-    def _clear_all(self):
+    def _clear_all(self) -> None:
         if self._job_map:
             self._cancel()
         for entry in list(self._queue):
@@ -600,7 +608,7 @@ class MassUploadSection(QWidget):
 
     # ── Upload engine ──────────────────────────────────────────────────────
 
-    def _connect_manager(self):
+    def _connect_manager(self) -> None:
         if self._manager is None:
             return
         mgr = self._manager
@@ -610,7 +618,7 @@ class MassUploadSection(QWidget):
         mgr.job_done.connect(self._on_job_done)
         mgr.job_error.connect(self._on_job_error)
 
-    def _enqueue_entry(self, entry: dict):
+    def _enqueue_entry(self, entry: dict) -> None:
         assert self._manager is not None
         if entry.get("item") is None:
             return
@@ -633,7 +641,7 @@ class MassUploadSection(QWidget):
         job_id = self._manager.enqueue(job)
         self._job_map[job_id] = entry
 
-    def _start(self):
+    def _start(self) -> None:
         if not self._client.has_api_key:
             self._log("⚠ Enter API key in Settings first.")
             return
@@ -651,33 +659,40 @@ class MassUploadSection(QWidget):
 
     # ── Signal handlers ────────────────────────────────────────────────────
 
-    def _on_job_progress(self, job_id: int, ref, pct: float):
+    def _on_job_progress(self, job_id: int, _ref: object, pct: float) -> None:
         entry = self._job_map.get(job_id)
         if entry is None or entry not in self._queue or entry.get("item") is None:
             return
         entry["_pct"] = float(pct)
         entry["item"].setText(
-            self._COL_STATUS, f"{pct:.3f}%  ·  {entry.get('_xfr', '')}"
+            self._COL_STATUS,
+            f"{pct:.3f}%  ·  {entry.get('_xfr', '')}",
         )
         self._update_overall_progress()
 
-    def _on_job_speed(self, job_id: int, ref, bps: float):
+    def _on_job_speed(self, job_id: int, _ref: object, bps: float) -> None:
         if self._job_map.get(job_id) is None:
             return
         self._last_speed_bps = bps
-        if bps < 1024:
+        if bps < _KB:
             txt = f"{bps:.0f} B/s"
-        elif bps < 1024**2:
-            txt = f"{bps / 1024:.1f} KB/s"
+        elif bps < _KB**2:
+            txt = f"{bps / _KB:.1f} KB/s"
         else:
             txt = f"{bps / 1024**2:.2f} MB/s"
         self._speed_lbl.setText(txt)
 
-    def _on_job_status(self, job_id: int, ref, msg: str):
+    def _on_job_status(self, job_id: int, _ref: object, msg: str) -> None:
         if self._job_map.get(job_id) is not None:
             self._log(msg)
 
-    def _on_job_bytes(self, job_id: int, ref, done_bytes: int, total_bytes: int):
+    def _on_job_bytes(
+        self,
+        job_id: int,
+        _ref: object,
+        done_bytes: int,
+        total_bytes: int,
+    ) -> None:
         entry = self._job_map.get(job_id)
         if entry is None or entry not in self._queue:
             return
@@ -695,10 +710,10 @@ class MassUploadSection(QWidget):
         all_total = sum(e.get("_bytes_total", 0) for e in self._queue)
         if all_total > 0:
             self._transferred_lbl.setText(
-                f"{self._fmt(all_done)} / {self._fmt(all_total)}"
+                f"{self._fmt(all_done)} / {self._fmt(all_total)}",
             )
 
-    def _on_job_done(self, job_id: int, ref, result: dict):
+    def _on_job_done(self, job_id: int, _ref: object, _result: dict) -> None:
         entry = self._job_map.pop(job_id, None)
         if entry is None:
             return
@@ -719,7 +734,7 @@ class MassUploadSection(QWidget):
         self._update_overall_progress()
         self._check_all_done()
 
-    def _on_job_error(self, job_id: int, ref, msg: str):
+    def _on_job_error(self, job_id: int, _ref: object, msg: str) -> None:
         entry = self._job_map.pop(job_id, None)
         if entry is None:
             return
@@ -728,12 +743,12 @@ class MassUploadSection(QWidget):
             entry["item"].setText(self._COL_STATUS, "✗ Failed")
             entry["item"].setForeground(3, QColor("#f87171"))
             entry["item"].setToolTip(self._COL_STATUS, msg)
-        self._log(f"✗ {os.path.basename(entry.get('local', 'unknown'))}: {msg}")
+        self._log(f"✗ {pathlib.Path(entry.get('local', 'unknown')).name}: {msg}")
         self._update_queue_label()
         self._update_overall_progress()
         self._check_all_done()
 
-    def _check_all_done(self):
+    def _check_all_done(self) -> None:
         if self._job_map:
             return
         if any(e.get("status") == "pending" for e in self._queue):
@@ -753,7 +768,7 @@ class MassUploadSection(QWidget):
 
         play_sound_event("sound_mass_all")
 
-    def _cancel(self):
+    def _cancel(self) -> None:
         assert self._manager is not None
         self._cancelled = True
         for job_id in list(self._job_map.keys()):

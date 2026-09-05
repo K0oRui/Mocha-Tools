@@ -1,5 +1,4 @@
-"""
-tabs/sync_tab.py — Folder sync tab for MochaTools.
+"""tabs/sync_tab.py — Folder sync tab for MochaTools.
 
 Lets the user map local folders to remote destinations and keeps them
 in sync automatically.  Every SCAN_INTERVAL seconds the watcher
@@ -9,7 +8,7 @@ queues changed files through the existing UploadWorker.
 UI hierarchy
 ────────────
   SyncTab (QWidget)
-    toolbar (QPushButton × 3)
+    toolbar (QPushButton x 3)
     QTreeWidget
       ▶ Folder pair item  (local ↔ remote, status badge)
           └─ File child items (filename | status | speed/size)
@@ -31,23 +30,24 @@ Persistence
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import pathlib
 import time
 from functools import partial
+from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, QSize, QThread, QTimer, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QPoint, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QCloseEvent, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QApplication,
     QFileDialog,
     QHBoxLayout,
     QLabel,
     QMenu,
     QMessageBox,
     QPushButton,
-    QSizePolicy,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -56,16 +56,23 @@ from PySide6.QtWidgets import (
 
 from ..constants import (
     APP_NAME,
-    DEFAULT_CHUNK_SIZE_MB,
-    DEFAULT_MAX_CHUNKS,
     ORG_NAME,
 )
+from ..logging_utils import write_debug_log
 from ..ui.icons import lucide_icon
-from ..upload_pipeline import PRIORITY_SYNC, UploadJob
+from ..upload_pipeline import PRIORITY_SYNC, UploadJob, UploadManager
 from ..workers import UploadWorker
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from ..mocha_client import MochaClient
+    from ..providers import SyncSettingsProvider
 
 # Seconds between filesystem scans per pair
 SCAN_INTERVAL = 5
+
+_KB = 1024
 
 # Status constants
 _ST_IDLE = "idle"
@@ -79,38 +86,38 @@ _ST_ERROR = "error"
 
 
 class _ScanWorker(QThread):
-    """
-    Walks a local folder and emits the list of files whose mtime is newer
+    """Walks a local folder and emits the list of files whose mtime is newer
     than the manifest entry (or are absent from the manifest entirely).
     Runs off the main thread so large trees don't block the UI.
     """
 
     found = Signal(str, list)  # (pair_id, [(local_path, rel_path), ...])
 
-    def __init__(self, pair_id: str, local_root: str, manifest: dict):
+    def __init__(self, pair_id: str, local_root: str, manifest: dict) -> None:
         super().__init__()
         self.pair_id = pair_id
         self.local_root = local_root
         self.manifest = manifest  # {rel_path: mtime_float}
 
-    def run(self):
+    def run(self) -> None:
         changed: list[tuple[str, str]] = []
         try:
             for dirpath, _dirs, files in os.walk(self.local_root):
                 for fname in files:
-                    abs_path = os.path.join(dirpath, fname)
+                    abs_path = str(pathlib.Path(dirpath) / fname)
                     rel_path = os.path.relpath(abs_path, self.local_root).replace(
-                        "\\", "/"
+                        "\\",
+                        "/",
                     )
                     try:
-                        mtime = os.path.getmtime(abs_path)
+                        mtime = pathlib.Path(abs_path).stat().st_mtime
                     except OSError:
                         continue
                     known_mtime = self.manifest.get(rel_path)
                     if known_mtime is None or mtime > known_mtime + 0.5:
                         changed.append((abs_path, rel_path))
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError, OSError) as e:
+            write_debug_log(f"[Silenced] run: {e}")
         self.found.emit(self.pair_id, changed)
 
 
@@ -118,18 +125,17 @@ class _ScanWorker(QThread):
 
 
 class SyncTab(QWidget):
-    """
-    Folder sync tab.  Presents a list of watched folder pairs and shows
+    """Folder sync tab.  Presents a list of watched folder pairs and shows
     per-file upload status beneath each pair.
     """
 
     def __init__(
         self,
-        client,
-        sync_settings_provider,
-        parent=None,
-        upload_manager=None,
-    ):
+        client: MochaClient,
+        sync_settings_provider: SyncSettingsProvider,
+        parent: QWidget | None = None,
+        upload_manager: UploadManager | None = None,
+    ) -> None:
         super().__init__(parent)
         self._client = client
         self._manager = upload_manager
@@ -153,7 +159,7 @@ class SyncTab(QWidget):
 
     # ── UI construction ───────────────────────────────────────────────────────
 
-    def _build_ui(self):
+    def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 12, 12, 12)
         outer.setSpacing(8)
@@ -162,21 +168,31 @@ class SyncTab(QWidget):
         self._build_tree(outer)
         self._build_status_bar(outer)
 
-    def _build_toolbar(self, parent_lay: QVBoxLayout):
+    def _build_toolbar(self, parent_lay: QVBoxLayout) -> None:
         tb = QHBoxLayout()
         tb.setSpacing(4)
 
-        from ..theme import get_accent, notifier, accent_qcolor
+        from ..theme import accent_qcolor, get_accent, notifier
 
         self.add_btn = self._tb("  Add Folder", "folder", get_accent(), self._add_pair)
         self.refresh_btn = self._tb(
-            "  Refresh", "refresh-cw", get_accent(), self._refresh_action
+            "  Refresh",
+            "refresh-cw",
+            get_accent(),
+            self._refresh_action,
         )
         self.pause_btn = self._tb(
-            "  Pause All", "pause", get_accent(), self._toggle_pause_all
+            "  Pause All",
+            "pause",
+            get_accent(),
+            self._toggle_pause_all,
         )
         self.remove_btn = self._tb(
-            "  Remove", "trash-2", "#f87171", self._remove_selected, danger=True
+            "  Remove",
+            "trash-2",
+            "#f87171",
+            self._remove_selected,
+            danger=True,
         )
 
         self.remove_btn.setEnabled(False)
@@ -189,18 +205,16 @@ class SyncTab(QWidget):
 
         self.status_lbl = QLabel("")
         self.status_lbl.setStyleSheet(
-            f"color:{accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;"
+            f"color:{accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;",
         )
         tb.addWidget(self.status_lbl)
         parent_lay.addLayout(tb)
-        try:
+        with contextlib.suppress(Exception):
             notifier().accent_changed.connect(self._on_accent_changed)
-        except Exception:
-            pass
 
-    def _on_accent_changed(self, old, new):
+    def _on_accent_changed(self, _old: str, _new: str) -> None:
         try:
-            from ..theme import get_accent, accent_qcolor
+            from ..theme import accent_qcolor, get_accent
 
             self.add_btn.setIcon(lucide_icon("folder", get_accent(), 13))
             self.refresh_btn.setIcon(lucide_icon("refresh-cw", get_accent(), 13))
@@ -208,12 +222,12 @@ class SyncTab(QWidget):
             from ..theme import get_font
 
             self.status_lbl.setStyleSheet(
-                f"color:{accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;"
+                f"color:{accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;",
             )
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError, ImportError, ValueError) as e:
+            write_debug_log(f"[Silenced] _on_accent_changed: {e}")
 
-    def _build_tree(self, parent_lay: QVBoxLayout):
+    def _build_tree(self, parent_lay: QVBoxLayout) -> None:
         self.tree = QTreeWidget()
         self.tree.setColumnCount(3)
         self.tree.setHeaderLabels(["Folder / File", "Status", "Speed / Size"])
@@ -235,7 +249,7 @@ class SyncTab(QWidget):
         hdr.resizeSection(2, 120)
         parent_lay.addWidget(self.tree, 1)
 
-    def _build_status_bar(self, parent_lay: QVBoxLayout):
+    def _build_status_bar(self, parent_lay: QVBoxLayout) -> None:
         self.footer_lbl = QLabel("")
         self.footer_lbl.setObjectName("log_console")
         self.footer_lbl.setWordWrap(True)
@@ -243,7 +257,12 @@ class SyncTab(QWidget):
         parent_lay.addWidget(self.footer_lbl)
 
     def _tb(
-        self, label: str, icon_name: str, color: str, slot, danger: bool = False
+        self,
+        label: str,
+        icon_name: str,
+        color: str,
+        slot: Callable[[], None],
+        danger: bool = False,
     ) -> QPushButton:
         btn = QPushButton(label)
         btn.setObjectName("tb_btn_danger" if danger else "tb_btn")
@@ -254,7 +273,7 @@ class SyncTab(QWidget):
 
     # ── Pair management ───────────────────────────────────────────────────────
 
-    def _add_pair(self):
+    def _add_pair(self) -> None:
         if not self._client.has_api_key:
             QMessageBox.warning(
                 self,
@@ -277,10 +296,8 @@ class SyncTab(QWidget):
         remote = dlg.selected or "/"
         # Create a subfolder on the remote using the local folder's base name so
         # the watched folder contents live under <remote>/<local_basename>/...
-        local_name = os.path.basename(local.rstrip("/\\")) or local
-        if remote.rstrip("/") == "":
-            remote = f"/{local_name}"
-        elif remote == "/":
+        local_name = pathlib.Path(local.rstrip("/\\")).name or local
+        if remote.rstrip("/") == "" or remote == "/":
             remote = f"/{local_name}"
         else:
             remote = remote.rstrip("/") + f"/{local_name}"
@@ -297,17 +314,22 @@ class SyncTab(QWidget):
         self._register_pair(pair_id, local, remote, manifest={}, paused=False)
         self._save_pairs()
         self._set_status(
-            f"{len(self._pairs)} pair{'s' if len(self._pairs) != 1 else ''} watched"
+            f"{len(self._pairs)} pair{'s' if len(self._pairs) != 1 else ''} watched",
         )
 
         # Immediate first scan
         self._scan_pair(pair_id)
 
     def _register_pair(
-        self, pair_id: str, local: str, remote: str, manifest: dict, paused: bool
-    ):
+        self,
+        pair_id: str,
+        local: str,
+        remote: str,
+        manifest: dict,
+        paused: bool,
+    ) -> None:
         """Create the tree item and state entry for a pair."""
-        local_name = os.path.basename(local.rstrip("/\\")) or local
+        local_name = pathlib.Path(local.rstrip("/\\")).name or local
         remote_name = remote
 
         root_item = QTreeWidgetItem()
@@ -339,12 +361,10 @@ class SyncTab(QWidget):
         self._refresh_pair_badge(pair_id)
         # Populate initial folder/file tree from disk so the user sees a
         # navigable nested view immediately instead of a flat list.
-        try:
+        with contextlib.suppress(Exception):
             self._populate_initial_tree(pair_id)
-        except Exception:
-            pass
 
-    def _remove_selected(self):
+    def _remove_selected(self) -> None:
         items = self.tree.selectedItems()
         if not items:
             return
@@ -378,10 +398,10 @@ class SyncTab(QWidget):
             self.tree.takeTopLevelItem(idx)
         self._save_pairs()
         self._set_status(
-            f"{len(self._pairs)} pair{'s' if len(self._pairs) != 1 else ''} watched"
+            f"{len(self._pairs)} pair{'s' if len(self._pairs) != 1 else ''} watched",
         )
 
-    def _stop_pair(self, pair_id: str):
+    def _stop_pair(self, pair_id: str) -> None:
         pair = self._pairs.get(pair_id)
         if not pair:
             return
@@ -398,7 +418,7 @@ class SyncTab(QWidget):
 
     # ── Pause / resume ────────────────────────────────────────────────────────
 
-    def _toggle_pause_all(self):
+    def _toggle_pause_all(self) -> None:
         any_active = any(not p["paused"] for p in self._pairs.values())
         for pair_id, pair in self._pairs.items():
             pair["paused"] = any_active
@@ -415,7 +435,7 @@ class SyncTab(QWidget):
         self.pause_btn.setText("  Resume All" if any_active else "  Pause All")
         self._save_pairs()
 
-    def _toggle_pause_pair(self, pair_id: str):
+    def _toggle_pause_pair(self, pair_id: str) -> None:
         pair = self._pairs.get(pair_id)
         if not pair:
             return
@@ -433,7 +453,7 @@ class SyncTab(QWidget):
 
     # ── Scanning ──────────────────────────────────────────────────────────────
 
-    def _scan_all(self):
+    def _scan_all(self) -> None:
         for pair_id, pair in self._pairs.items():
             if pair["paused"]:
                 continue
@@ -441,7 +461,7 @@ class SyncTab(QWidget):
                 continue
             self._scan_pair(pair_id)
 
-    def _scan_pair(self, pair_id: str):
+    def _scan_pair(self, pair_id: str) -> None:
         pair = self._pairs.get(pair_id)
         if not pair or pair["paused"]:
             return
@@ -458,11 +478,11 @@ class SyncTab(QWidget):
         self._workers.append(sw)
         sw.start()
 
-    def _remove_worker(self, w):
+    def _remove_worker(self, w: _ScanWorker) -> None:
         if w in self._workers:
             self._workers.remove(w)
 
-    def _on_scan_done(self, pair_id: str, changed: list):
+    def _on_scan_done(self, pair_id: str, changed: list) -> None:
         pair = self._pairs.get(pair_id)
         if not pair:
             return
@@ -477,7 +497,7 @@ class SyncTab(QWidget):
 
     # ── Uploading ─────────────────────────────────────────────────────────────
 
-    def _start_upload(self, pair_id: str, changed: list[tuple[str, str]]):
+    def _start_upload(self, pair_id: str, changed: list[tuple[str, str]]) -> None:
         pair = self._pairs.get(pair_id)
         if not pair:
             return
@@ -505,7 +525,7 @@ class SyncTab(QWidget):
             job_id = self._manager.enqueue(job)
             self._job_map[job_id] = (pair_id, rel_path)
 
-    def _on_upload_status(self, pair_id: str, rel_path: str, msg: str):
+    def _on_upload_status(self, pair_id: str, rel_path: str, msg: str) -> None:
         pair = self._pairs.get(pair_id)
         if not pair:
             return
@@ -514,17 +534,22 @@ class SyncTab(QWidget):
         if "[DEBUG]" not in msg:
             self._set_file_status(pair_id, rel_path, "Uploading…")
 
-    def _on_upload_speed(self, pair_id: str, bps: float, rel_path: str | None = None):
+    def _on_upload_speed(
+        self,
+        pair_id: str,
+        bps: float,
+        rel_path: str | None = None,
+    ) -> None:
         pair = self._pairs.get(pair_id)
         if not pair:
             return
         pair["_speed_bps"] = bps
         rel = rel_path or pair.get("_active_rel")
         if rel:
-            if bps < 1024:
+            if bps < _KB:
                 speed_str = f"{bps:.3f} B/s"
-            elif bps < 1024**2:
-                speed_str = f"{bps / 1024:.3f} KB/s"
+            elif bps < _KB**2:
+                speed_str = f"{bps / _KB:.3f} KB/s"
             else:
                 speed_str = f"{bps / 1024**2:.3f} MB/s"
             # Use per-file bytes (stored under file-specific state) if present
@@ -540,8 +565,12 @@ class SyncTab(QWidget):
         self._refresh_pair_badge(pair_id)
 
     def _on_upload_bytes(
-        self, pair_id: str, done: int, total: int, rel_path: str | None = None
-    ):
+        self,
+        pair_id: str,
+        done: int,
+        total: int,
+        rel_path: str | None = None,
+    ) -> None:
         pair = self._pairs.get(pair_id)
         if not pair:
             return
@@ -563,10 +592,10 @@ class SyncTab(QWidget):
                     size_str = ""
                 # format speed using last known _speed_bps
                 bps = pair.get("_speed_bps", 0.0)
-                if bps < 1024:
+                if bps < _KB:
                     speed_str = f"{bps:.3f} B/s"
-                elif bps < 1024**2:
-                    speed_str = f"{bps / 1024:.3f} KB/s"
+                elif bps < _KB**2:
+                    speed_str = f"{bps / _KB:.3f} KB/s"
                 else:
                     speed_str = f"{bps / 1024**2:.3f} MB/s"
                 self._set_file_detail(pair_id, rel, speed_str, size_str)
@@ -574,7 +603,7 @@ class SyncTab(QWidget):
             pair["_bytes_done"] = int(done)
             pair["_bytes_total"] = int(total)
 
-    def _on_upload_done(self, pair_id: str, changed: list, result: dict):
+    def _on_upload_done(self, pair_id: str, changed: list, result: dict) -> None:
         pair = self._pairs.get(pair_id)
         if not pair:
             return
@@ -592,9 +621,10 @@ class SyncTab(QWidget):
 
         for rel_path in uploaded:
             try:
-                abs_path = os.path.join(pair["local"], rel_path)
-                mtime = os.path.getmtime(abs_path)
-            except Exception:
+                abs_path = str(pathlib.Path(pair["local"]) / rel_path)
+                mtime = pathlib.Path(abs_path).stat().st_mtime
+            except (AttributeError, TypeError, RuntimeError, OSError) as e:
+                write_debug_log(f"[Silenced] _on_upload_done: {e}")
                 mtime = time.time()
             pair["manifest"][rel_path] = mtime
             self._set_file_status(pair_id, rel_path, "Synced ✓")
@@ -613,7 +643,7 @@ class SyncTab(QWidget):
             self._save_pairs()
             play_sound_event("sound_sync_folder")
 
-    def _on_upload_error(self, pair_id: str, msg: str):
+    def _on_upload_error(self, pair_id: str, msg: str) -> None:
         pair = self._pairs.get(pair_id)
         if not pair:
             return
@@ -621,7 +651,7 @@ class SyncTab(QWidget):
         pair["error_msg"] = msg
         self._refresh_pair_badge(pair_id)
 
-    def _connect_manager(self):
+    def _connect_manager(self) -> None:
         if self._manager is None:
             return
         mgr = self._manager
@@ -631,25 +661,46 @@ class SyncTab(QWidget):
         mgr.job_done.connect(self._on_job_done)
         mgr.job_error.connect(self._on_job_error)
 
-    def _on_job_status(self, job_id: int, ref, msg: str):
+    def _on_job_status(
+        self,
+        _job_id: int,
+        ref: tuple[str, str] | None,
+        msg: str,
+    ) -> None:
         if ref is None:
             return
         pair_id, rel_path = ref
         self._on_upload_status(pair_id, rel_path, msg)
 
-    def _on_job_speed(self, job_id: int, ref, bps: float):
+    def _on_job_speed(
+        self,
+        _job_id: int,
+        ref: tuple[str, str] | None,
+        bps: float,
+    ) -> None:
         if ref is None:
             return
         pair_id, rel_path = ref
         self._on_upload_speed(pair_id, bps, rel_path)
 
-    def _on_job_bytes(self, job_id: int, ref, done: int, total: int):
+    def _on_job_bytes(
+        self,
+        _job_id: int,
+        ref: tuple[str, str] | None,
+        done: int,
+        total: int,
+    ) -> None:
         if ref is None:
             return
         pair_id, rel_path = ref
         self._on_upload_bytes(pair_id, done, total, rel_path)
 
-    def _on_job_done(self, job_id: int, ref, result: dict):
+    def _on_job_done(
+        self,
+        job_id: int,
+        ref: tuple[str, str] | None,
+        result: dict,
+    ) -> None:
         if ref is None:
             return
         pair_id, rel_path = ref
@@ -657,19 +708,19 @@ class SyncTab(QWidget):
         pair = self._pairs.get(pair_id)
         if not pair:
             return
-        abs_path = os.path.join(pair["local"], rel_path)
+        abs_path = str(pathlib.Path(pair["local"]) / rel_path)
         self._on_upload_done(pair_id, [(abs_path, rel_path)], result)
 
-    def _on_job_error(self, job_id: int, ref, msg: str):
+    def _on_job_error(self, job_id: int, ref: tuple[str, str] | None, msg: str) -> None:
         if ref is None:
             return
-        pair_id, rel_path = ref
+        pair_id, _rel_path = ref
         self._job_map.pop(job_id, None)
         self._on_upload_error(pair_id, msg)
 
     # ── Tree helpers ──────────────────────────────────────────────────────────
 
-    def _ensure_file_item(self, pair_id: str, rel_path: str, status_text: str):
+    def _ensure_file_item(self, pair_id: str, rel_path: str, status_text: str) -> None:
         pair = self._pairs.get(pair_id)
         if not pair:
             return
@@ -678,7 +729,7 @@ class SyncTab(QWidget):
         root_item = pair["tree_item"]
         if rel_path not in pair["file_items"]:
             # Determine parent folder and ensure folder nodes exist
-            parent_rel = os.path.dirname(rel_path).replace("\\", "/")
+            parent_rel = str(pathlib.Path(rel_path).parent).replace("\\", "/")
             if parent_rel:
                 parent_item = self._ensure_folder_item(pair_id, parent_rel)
                 if parent_item is None:
@@ -687,7 +738,7 @@ class SyncTab(QWidget):
                 parent_item = root_item
 
             child = QTreeWidgetItem()
-            child.setText(0, f"   {os.path.basename(rel_path)}")
+            child.setText(0, f"   {pathlib.Path(rel_path).name}")
             child.setText(1, status_text)
             child.setText(2, "")
             child.setForeground(0, QColor("#9c9484"))
@@ -703,10 +754,15 @@ class SyncTab(QWidget):
 
             pair["file_items"][rel_path].setForeground(1, accent_qcolor())
 
-    def _ensure_folder_item(self, pair_id: str, folder_rel: str) -> QTreeWidgetItem:
+    def _ensure_folder_item(
+        self,
+        pair_id: str,
+        folder_rel: str,
+    ) -> QTreeWidgetItem | None:
         """Ensure a QTreeWidgetItem exists for the given folder relative
         path under the pair root. Returns the folder item (creates parents
-        recursively as needed) and caches it in pair['folder_items']."""
+        recursively as needed) and caches it in pair['folder_items'].
+        """
         pair = self._pairs.get(pair_id)
         if not pair:
             return None
@@ -715,7 +771,7 @@ class SyncTab(QWidget):
         if folder_rel in pair.get("folder_items", {}):
             return pair["folder_items"][folder_rel]
 
-        parent_rel = os.path.dirname(folder_rel).replace("\\", "/").strip("/")
+        parent_rel = str(pathlib.Path(folder_rel).parent).replace("\\", "/").strip("/")
         if parent_rel:
             parent_item = self._ensure_folder_item(pair_id, parent_rel)
             if parent_item is None:
@@ -725,7 +781,7 @@ class SyncTab(QWidget):
 
         # create folder item
         folder_item = QTreeWidgetItem()
-        folder_item.setText(0, f"   {os.path.basename(folder_rel)}")
+        folder_item.setText(0, f"   {pathlib.Path(folder_rel).name}")
         from ..theme import get_accent
 
         folder_item.setIcon(0, lucide_icon("folder", get_accent(), 12))
@@ -737,38 +793,35 @@ class SyncTab(QWidget):
         pair.setdefault("folder_items", {})[folder_rel] = folder_item
         return folder_item
 
-    def _populate_initial_tree(self, pair_id: str):
+    def _populate_initial_tree(self, pair_id: str) -> None:
         """Walk the local folder on disk and populate folder & file nodes so
-        the UI shows a nested tree immediately."""
+        the UI shows a nested tree immediately.
+        """
         pair = self._pairs.get(pair_id)
         if not pair:
             return
         local_root = pair.get("local")
-        if not local_root or not os.path.isdir(local_root):
+        if not local_root or not pathlib.Path(local_root).is_dir():
             return
         # Walk and create folder nodes first, then file items
-        for dirpath, dirs, files in os.walk(local_root):
+        for dirpath, _dirs, files in os.walk(local_root):
             rel_dir = os.path.relpath(dirpath, local_root).replace("\\", "/")
             if rel_dir == ".":
                 rel_dir = ""
             # create folder node (skip root)
             if rel_dir:
-                try:
+                with contextlib.suppress(Exception):
                     self._ensure_folder_item(pair_id, rel_dir)
-                except Exception:
-                    pass
             # create file nodes
             for fname in files:
-                abs_path = os.path.join(dirpath, fname)
+                abs_path = str(pathlib.Path(dirpath) / fname)
                 rel_path = os.path.relpath(abs_path, local_root).replace("\\", "/")
                 # mark synced if present in manifest, otherwise blank
                 status = "Synced ✓" if rel_path in (pair.get("manifest") or {}) else ""
-                try:
+                with contextlib.suppress(Exception):
                     self._ensure_file_item(pair_id, rel_path, status)
-                except Exception:
-                    pass
 
-    def _set_file_status(self, pair_id: str, rel_path: str, status: str):
+    def _set_file_status(self, pair_id: str, rel_path: str, status: str) -> None:
         pair = self._pairs.get(pair_id)
         if not pair:
             return
@@ -780,7 +833,13 @@ class SyncTab(QWidget):
             color = "#4ade80" if "✓" in status else get_accent()
             item.setForeground(1, QColor(color))
 
-    def _set_file_detail(self, pair_id: str, rel_path: str, speed: str, size: str):
+    def _set_file_detail(
+        self,
+        pair_id: str,
+        rel_path: str,
+        speed: str,
+        size: str,
+    ) -> None:
         pair = self._pairs.get(pair_id)
         if not pair:
             return
@@ -788,7 +847,7 @@ class SyncTab(QWidget):
         if item:
             item.setText(2, f"{speed}  {size}".strip())
 
-    def _refresh_pair_badge(self, pair_id: str):
+    def _refresh_pair_badge(self, pair_id: str) -> None:
         pair = self._pairs.get(pair_id)
         if not pair:
             return
@@ -812,10 +871,10 @@ class SyncTab(QWidget):
         if state == _ST_UPLOADING:
             bps = pair.get("_speed_bps", 0.0)
             if bps > 0:
-                if bps < 1024:
+                if bps < _KB:
                     speed_str = f"{bps:.3f} B/s"
-                elif bps < 1024**2:
-                    speed_str = f"{bps / 1024:.3f} KB/s"
+                elif bps < _KB**2:
+                    speed_str = f"{bps / _KB:.3f} KB/s"
                 else:
                     speed_str = f"{bps / 1024**2:.3f} MB/s"
                 root.setText(2, speed_str)
@@ -827,28 +886,27 @@ class SyncTab(QWidget):
         elif state == _ST_ERROR:
             root.setText(2, pair.get("error_msg", "")[:40])
             root.setForeground(2, QColor("#f87171"))
-        else:
-            # When idle, show "Up to date" if we have a manifest / synced files
-            if state == _ST_IDLE:
-                has_synced = bool(pair.get("manifest") or pair.get("file_items"))
-                if has_synced:
-                    root.setText(2, "Up to date")
-                    root.setForeground(2, QColor("#4ade80"))
-                else:
-                    root.setText(2, "")
+        # When idle, show "Up to date" if we have a manifest / synced files
+        elif state == _ST_IDLE:
+            has_synced = bool(pair.get("manifest") or pair.get("file_items"))
+            if has_synced:
+                root.setText(2, "Up to date")
+                root.setForeground(2, QColor("#4ade80"))
             else:
                 root.setText(2, "")
+        else:
+            root.setText(2, "")
 
     # ── Selection / context menu ──────────────────────────────────────────────
 
-    def _on_selection_changed(self):
+    def _on_selection_changed(self) -> None:
         items = self.tree.selectedItems()
         has = bool(items)
         self.remove_btn.setEnabled(has)
         # Enable refresh btn when selection exists, otherwise allow global refresh
         self.refresh_btn.setEnabled(True)
 
-    def _context_menu(self, pos):
+    def _context_menu(self, pos: QPoint) -> None:
         item = self.tree.itemAt(pos)
         if not item:
             return
@@ -867,7 +925,7 @@ class SyncTab(QWidget):
         menu.setStyleSheet(
             "QMenu { background:#1f1f1f; border:1px solid #3a3a3a; border-radius:8px; color:#f0f0f0; font-size:12px; }"
             "QMenu::item { padding:6px 8px; }"
-            "QMenu::item:selected { background:#332b1a; }"
+            "QMenu::item:selected { background:#332b1a; }",
         )
 
         from ..theme import get_accent
@@ -886,11 +944,12 @@ class SyncTab(QWidget):
         s2.triggered.connect(partial(self._refresh_action, pair_id))
         menu.addSeparator()
         menu.addAction(
-            lucide_icon("trash-2", "#f87171", 12), "Remove"
+            lucide_icon("trash-2", "#f87171", 12),
+            "Remove",
         ).triggered.connect(self._remove_selected)
         menu.exec(self.tree.viewport().mapToGlobal(pos))
 
-    def _refresh_action(self, pair_id: str | None = None):
+    def _refresh_action(self, pair_id: str | None = None) -> None:
         """Refresh either all pairs (if pair_id is None) or the selected/supplied pair(s)."""
         if pair_id:
             # refresh single
@@ -903,8 +962,9 @@ class SyncTab(QWidget):
             seen = set()
             for it in items:
                 pid = it.data(0, Qt.ItemDataRole.UserRole)
-                if pid is None and it.parent():
-                    pid = it.parent().data(0, Qt.ItemDataRole.UserRole)
+                parent = it.parent()
+                if pid is None and parent:
+                    pid = parent.data(0, Qt.ItemDataRole.UserRole)
                 if pid and pid not in seen:
                     seen.add(pid)
                     self._scan_pair(pid)
@@ -916,7 +976,7 @@ class SyncTab(QWidget):
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
-    def _load_pairs(self):
+    def _load_pairs(self) -> None:
         from PySide6.QtCore import QSettings
 
         s = QSettings(ORG_NAME, APP_NAME)
@@ -925,13 +985,14 @@ class SyncTab(QWidget):
             return
         try:
             pairs = json.loads(raw)
-        except Exception:
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _load_pairs: {e}")
             return
         for p in pairs:
             pair_id = f"{p['local']}::{p['remote']}"
             if pair_id in self._pairs:
                 continue
-            if not os.path.isdir(p.get("local", "")):
+            if not pathlib.Path(p.get("local", "")).is_dir():
                 continue  # local folder gone — skip silently
             self._register_pair(
                 pair_id=pair_id,
@@ -943,51 +1004,48 @@ class SyncTab(QWidget):
             # Populate child file rows from the saved manifest so users can
             # expand a pair and see previously uploaded files as "Synced ✓".
             try:
-                pair = self._pairs.get(pair_id)
+                self._pairs.get(pair_id)
                 manifest = p.get("manifest", {}) or {}
                 for rel_path in sorted(manifest.keys()):
                     # ensure child exists and mark as synced
                     self._ensure_file_item(pair_id, rel_path, "Synced ✓")
                     self._set_file_detail(pair_id, rel_path, "", "")
-            except Exception:
-                pass
+            except (AttributeError, TypeError, RuntimeError) as e:
+                write_debug_log(f"[Silenced] _load_pairs: {e}")
         self._set_status(
             f"{len(self._pairs)} pair{'s' if len(self._pairs) != 1 else ''} watched"
             if self._pairs
-            else "No folders watched"
+            else "No folders watched",
         )
 
-    def _save_pairs(self):
+    def _save_pairs(self) -> None:
         from PySide6.QtCore import QSettings
 
         s = QSettings(ORG_NAME, APP_NAME)
-        data = []
-        for pair_id, pair in self._pairs.items():
-            data.append(
-                {
-                    "local": pair["local"],
-                    "remote": pair["remote"],
-                    "manifest": pair["manifest"],
-                    "paused": pair["paused"],
-                }
-            )
-        try:
+        data = [
+            {
+                "local": pair["local"],
+                "remote": pair["remote"],
+                "manifest": pair["manifest"],
+                "paused": pair["paused"],
+            }
+            for pair in self._pairs.values()
+        ]
+        with contextlib.suppress(Exception):
             s.setValue("sync_pairs", json.dumps(data))
-        except Exception:
-            pass
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _set_status(self, msg: str):
+    def _set_status(self, msg: str) -> None:
         self.status_lbl.setText(msg)
 
-    def _log(self, msg: str):
+    def _log(self, msg: str) -> None:
         if msg.startswith("[DEBUG]") and not self._sync_settings_provider.get_debug():
             return
         self.footer_lbl.setText(msg)
         self.footer_lbl.show()
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         self._scan_timer.stop()
         for pair_id in list(self._pairs):
             self._stop_pair(pair_id)

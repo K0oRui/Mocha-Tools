@@ -1,14 +1,17 @@
-"""
-tabs/remote_tab.py — Server-side remote download / ingest tab for MochaTools.
+"""tabs/remote_tab.py — Server-side remote download / ingest tab for MochaTools.
 
 Starts server-side remote downloads and displays transfer jobs.
 """
 
-import os
-from functools import partial
-from urllib.parse import urlparse, unquote
+from __future__ import annotations
 
-from PySide6.QtCore import Qt, QSize, QTimer
+import contextlib
+import pathlib
+from functools import partial
+from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote, urlparse
+
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -21,23 +24,37 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
-    QAbstractScrollArea,
-    QSizePolicy,
 )
 
 from ..dialogs import FolderBrowserDialog
-from ..workers import RemoteWorker
+from ..logging_utils import write_debug_log
 from ..ui.icons import lucide_icon
+from ..workers import RemoteWorker
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from ..mocha_client import MochaClient
+
+# Consecutive polls a watched job may miss before it's considered finished
+_MAX_MISSED_CHECKS = 2
 
 
 class RemoteTab(QWidget):
     """Starts server-side remote downloads and displays transfer jobs."""
 
-    def __init__(self, client, on_ingest_done=None, on_share_created=None, parent=None):
+    def __init__(
+        self,
+        client: MochaClient,
+        on_ingest_done: Callable[[str], None] | None = None,
+        on_share_created: Callable[[], None] | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._client = client
         self._workers = []
@@ -50,7 +67,7 @@ class RemoteTab(QWidget):
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
-    def _build_ui(self):
+    def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -88,7 +105,7 @@ class RemoteTab(QWidget):
         self.refresh_timer.setInterval(5000)
         self.refresh_timer.timeout.connect(self.refresh_jobs)
 
-    def _build_ingest_card(self, parent_lay: QVBoxLayout):
+    def _build_ingest_card(self, parent_lay: QVBoxLayout) -> None:
         card = self._make_card()
         lay = QVBoxLayout(card)
         lay.setSpacing(8)
@@ -126,8 +143,6 @@ class RemoteTab(QWidget):
         dest_row.addWidget(browse_btn)
         lay.addLayout(dest_row)
 
-        from ..theme import notifier
-
         self.ingest_btn = QPushButton("  Remote ingest")
         self.ingest_btn.setObjectName("upload_btn")
         # Icon should be dark (match button text) so it remains visible on the accent background
@@ -144,7 +159,7 @@ class RemoteTab(QWidget):
         lay.addWidget(self.result_bar)
         parent_lay.addWidget(card)
 
-    def _build_jobs_toolbar(self, parent_lay: QVBoxLayout):
+    def _build_jobs_toolbar(self, parent_lay: QVBoxLayout) -> None:
         tb = QHBoxLayout()
         tb.setSpacing(4)
 
@@ -175,18 +190,16 @@ class RemoteTab(QWidget):
 
         self.status_lbl = QLabel("")
         self.status_lbl.setStyleSheet(
-            f"color: {accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;"
+            f"color: {accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;",
         )
         tb.addWidget(self.status_lbl)
         # parent_lay may be an outer layout or the inner scroll area layout;
         # accept either by adding the QHBoxLayout to the provided layout.
         parent_lay.addLayout(tb)
-        try:
+        with contextlib.suppress(Exception):
             notifier().accent_changed.connect(self._on_accent_changed)
-        except Exception:
-            pass
 
-    def _on_accent_changed(self, old, new):
+    def _on_accent_changed(self, _old: str, _new: str) -> None:
         try:
             from ..theme import accent_qcolor, get_accent
 
@@ -196,12 +209,12 @@ class RemoteTab(QWidget):
             from ..theme import get_font
 
             self.status_lbl.setStyleSheet(
-                f"color: {accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;"
+                f"color: {accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;",
             )
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError, ImportError, ValueError) as e:
+            write_debug_log(f"[Silenced] _on_accent_changed: {e}")
 
-    def _build_jobs_tree(self, parent_lay: QVBoxLayout):
+    def _build_jobs_tree(self, parent_lay: QVBoxLayout) -> None:
         self.tree = QTreeWidget()
         self.tree.setColumnCount(4)
         self.tree.setHeaderLabels(["File", "Status", "Progress", "Job ID"])
@@ -225,13 +238,14 @@ class RemoteTab(QWidget):
             # tree expand to take available space so it isn't rendered tiny.
             self.tree.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             self.tree.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Expanding,
             )
             # Provide a reasonable minimum so the jobs area is usable even
             # when there are few or no items yet.
             self.tree.setMinimumHeight(200)
-        except Exception:
-            pass
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _build_jobs_tree: {e}")
         parent_lay.addWidget(self.tree, 1)
 
     def _make_card(self) -> QFrame:
@@ -241,7 +255,7 @@ class RemoteTab(QWidget):
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
-    def _browse_dest(self):
+    def _browse_dest(self) -> None:
         if not self._client.has_api_key:
             self._status("⚠ Enter your API key in Settings first.")
             return
@@ -254,7 +268,7 @@ class RemoteTab(QWidget):
         if dlg.exec():
             self.path_edit.setText(dlg.selected)
 
-    def _start_ingest(self):
+    def _start_ingest(self) -> None:
         source_url = self.url_edit.text().strip()
         if not self._client.has_api_key:
             self._status("⚠ Enter your API key in Settings first.")
@@ -263,7 +277,7 @@ class RemoteTab(QWidget):
             self._status("⚠ Paste a source URL first.")
             return
         file_name = self.file_name_edit.text().strip() or self._filename_from_url(
-            source_url
+            source_url,
         )
         if not file_name:
             self._status("⚠ Enter a filename for this URL.")
@@ -279,14 +293,14 @@ class RemoteTab(QWidget):
             path=self._normalized_path(),
         )
 
-    def refresh_jobs(self):
+    def refresh_jobs(self) -> None:
         if not self._client.has_api_key:
             self._status("⚠ Enter your API key in Settings first.")
             return
         self._status("Loading jobs…")
         self._run_worker("jobs", active_only=self.active_only_cb.isChecked())
 
-    def _cancel_selected(self):
+    def _cancel_selected(self) -> None:
         meta = self._selected_meta()
         if not meta:
             return
@@ -305,7 +319,7 @@ class RemoteTab(QWidget):
 
     # ── Worker dispatch ───────────────────────────────────────────────────────
 
-    def _run_worker(self, op: str, **kwargs):
+    def _run_worker(self, op: str, **kwargs: Any) -> None:
         w = RemoteWorker(op, self._client, **kwargs)
         w.done.connect(self._on_done)
         w.error.connect(self._on_error)
@@ -313,14 +327,14 @@ class RemoteTab(QWidget):
         self._workers.append(w)
         w.start()
 
-    def _on_active_only_toggled(self, _checked: bool):
+    def _on_active_only_toggled(self, _checked: bool) -> None:
         self.refresh_jobs()
 
-    def _remove_worker(self, w):
+    def _remove_worker(self, w: RemoteWorker) -> None:
         if w in self._workers:
             self._workers.remove(w)
 
-    def _on_done(self, result: dict):
+    def _on_done(self, result: dict) -> None:
         op = result.get("op")
         if op == "ingest":
             self.ingest_btn.setEnabled(True)
@@ -354,14 +368,14 @@ class RemoteTab(QWidget):
             self._status("✓ Job cancelled")
             self.refresh_jobs()
 
-    def _on_error(self, msg: str):
+    def _on_error(self, msg: str) -> None:
         self.ingest_btn.setEnabled(True)
         self._status(f"✗ {msg}")
         QMessageBox.warning(self, "Remote Ingest Error", msg)
 
     # ── Jobs table ────────────────────────────────────────────────────────────
 
-    def _populate_jobs(self, data):
+    def _populate_jobs(self, data: Any) -> None:
         jobs = data.get("jobs", data) if isinstance(data, dict) else data
         if not isinstance(jobs, list):
             jobs = []
@@ -393,7 +407,7 @@ class RemoteTab(QWidget):
             progress_text = f"{progress}%" if progress not in (None, "") else "—"
 
             item = QTreeWidgetItem(
-                [str(name), str(status), str(progress_text), str(job_id)]
+                [str(name), str(status), str(progress_text), str(job_id)],
             )
             item.setData(0, Qt.ItemDataRole.UserRole, {**job, "job_id": str(job_id)})
             status_lower = str(status).lower()
@@ -415,7 +429,7 @@ class RemoteTab(QWidget):
             self.refresh_timer.stop()
         self._on_selection_changed()
 
-    def _update_watched_jobs(self, active_job_ids: set[str]):
+    def _update_watched_jobs(self, active_job_ids: set[str]) -> None:
         if not self.active_only_cb.isChecked():
             return
         finished = []
@@ -424,13 +438,13 @@ class RemoteTab(QWidget):
                 state["seen"] = True
                 continue
             state["checks"] += 1
-            if state["seen"] or state["checks"] >= 2:
+            if state["seen"] or state["checks"] >= _MAX_MISSED_CHECKS:
                 finished.append(job_id)
         for job_id in finished:
             state = self._watched_jobs.pop(job_id)
             self._notify_ingest_finished(state["name"], job_id)
 
-    def _notify_ingest_finished(self, name: str, job_id: str):
+    def _notify_ingest_finished(self, name: str, job_id: str) -> None:
         self.result_bar.setText(f"Finished: {name}  Job: {job_id}")
         self.result_bar.show()
         self._status(f"✓ Remote ingest finished: {name}")
@@ -439,12 +453,14 @@ class RemoteTab(QWidget):
         play_sound_event("sound_remote_ingest")
         if self._is_active:
             QMessageBox.information(
-                self, "Remote Ingest Finished", f"{name} finished ingesting."
+                self,
+                "Remote Ingest Finished",
+                f"{name} finished ingesting.",
             )
 
     # ── Selection ─────────────────────────────────────────────────────────────
 
-    def _on_selection_changed(self):
+    def _on_selection_changed(self) -> None:
         meta = self._selected_meta()
         self.cancel_btn.setEnabled(bool(meta and meta.get("job_id")))
 
@@ -454,7 +470,7 @@ class RemoteTab(QWidget):
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
-    def set_active(self, active: bool):
+    def set_active(self, active: bool) -> None:
         self._is_active = active
         if active:
             self.refresh_jobs()
@@ -472,7 +488,7 @@ class RemoteTab(QWidget):
     @staticmethod
     def _filename_from_url(source_url: str) -> str:
         parsed = urlparse(source_url)
-        return unquote(os.path.basename(parsed.path.rstrip("/")))
+        return unquote(pathlib.Path(parsed.path.rstrip("/")).name)
 
-    def _status(self, msg: str):
+    def _status(self, msg: str) -> None:
         self.status_lbl.setText(msg)
