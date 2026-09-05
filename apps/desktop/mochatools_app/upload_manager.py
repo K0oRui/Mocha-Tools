@@ -53,7 +53,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .constants import HARDCODED_BASE_URL
 from .dialogs import FolderBrowserDialog
 from .logging_utils import write_debug_log
 from .theme import get_accent
@@ -365,13 +364,11 @@ def install_upload(win, ctx):
 
     # ── Browse destination ──────────────────────────────────────────────────
     def _browse_upload_dest():
-        api_key = win.api_key_edit.text().strip()
-        if not api_key:
+        if not ctx.client.has_api_key:
             win._log("⚠ Enter your API key in Settings before browsing folders.")
             return
         dlg = FolderBrowserDialog(
-            api_key,
-            HARDCODED_BASE_URL,
+            ctx.client,
             win.upload_path_edit.text().strip() or "/",
             parent=win,
         )
@@ -468,9 +465,8 @@ def install_upload(win, ctx):
     # ── Start / cancel ──────────────────────────────────────────────────────
     def _start_upload():
 
-        api_key = win.api_key_edit.text().strip()
         upload_path = win.upload_path_edit.text().strip() or "/"
-        if not api_key:
+        if not ctx.client.has_api_key:
             win._log("⚠ Please enter an API key.")
             return
         if not ctx.selected_files:
@@ -521,8 +517,7 @@ def install_upload(win, ctx):
         ctx.upload_grand_total = grand_total
 
         w = UploadWorker(
-            api_key,
-            HARDCODED_BASE_URL,
+            ctx.client,
             file_pairs,
             win.create_share_cb.isChecked(),
             expiry_hours,
@@ -641,12 +636,7 @@ def install_upload(win, ctx):
         from .remote_cache import cache as _cache
 
         _cache.invalidate("list", path=folder)
-        win._poller.add(
-            "list",
-            lambda: win.api_key_edit.text().strip(),
-            HARDCODED_BASE_URL,
-            path=folder,
-        )
+        win._poller.add("list", path=folder)
         win._poller.force_refresh("list", path=folder)
         win.files_tab.notify_upload_done(folder)
 
@@ -665,12 +655,11 @@ def install_upload(win, ctx):
     # ── Storage capacity ────────────────────────────────────────────────────
     def _refresh_storage():
 
-        api_key = win.api_key_edit.text().strip()
-        if not api_key:
+        if not ctx.client.has_api_key:
             return
         if ctx.storage_worker and ctx.storage_worker.isRunning():
             return
-        w = StorageWorker(api_key, HARDCODED_BASE_URL)
+        w = StorageWorker(ctx.client)
         w.done.connect(win._on_storage_done)
         w.error.connect(win._on_storage_error)
         w.finished.connect(lambda: setattr(ctx, "storage_worker", None))

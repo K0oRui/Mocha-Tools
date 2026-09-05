@@ -197,6 +197,10 @@ def setup_tray(win, ctx):
     if not QSystemTrayIcon.isSystemTrayAvailable():
         ctx.tray_icon = None
         ctx.quitting = False
+        win._on_tray_setting_toggled = lambda enabled: None
+        win._tray_enabled = lambda: False
+        win._restore_from_tray = lambda: None
+        win._quit_from_tray = lambda: None
         return
 
     tray = QSystemTrayIcon(win)

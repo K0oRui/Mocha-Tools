@@ -16,8 +16,8 @@ from typing import Any, Callable
 
 from PySide6.QtCore import QThread, Signal, QObject
 
-POLL_INTERVAL = 5          # seconds between refreshes
-_CACHE_VERSION = 0         # bumped on invalidation so stale renders never block
+POLL_INTERVAL = 5  # seconds between refreshes
+_CACHE_VERSION = 0  # bumped on invalidation so stale renders never block
 
 
 # ── Cache store ───────────────────────────────────────────────────────────────
@@ -25,7 +25,7 @@ class _CacheStore:
     """Thread-safe key → {data, ts, version} dictionary."""
 
     def __init__(self):
-        self._lock  = threading.Lock()
+        self._lock = threading.Lock()
         self._data: dict[str, dict] = {}
 
     def _key(self, op: str, **kwargs) -> str:
@@ -42,7 +42,7 @@ class _CacheStore:
         with self._lock:
             self._data[self._key(op, **kwargs)] = {
                 "data": data,
-                "ts":   time.monotonic(),
+                "ts": time.monotonic(),
             }
 
     def invalidate(self, op: str, **kwargs):
@@ -78,7 +78,7 @@ class _SubscriberRegistry:
     """
 
     def __init__(self):
-        self._lock  = threading.Lock()
+        self._lock = threading.Lock()
         self._subs: dict[str, list[Callable]] = {}
 
     def _key(self, op: str, **kwargs) -> str:
@@ -118,57 +118,30 @@ class CachePollWorker(QThread):
     Fetches one (op, kwargs) slot and emits refreshed(op, data, kwargs_tuple).
     Used by the poller to do network I/O off the main thread.
     """
-    refreshed = Signal(str, object, object)   # op, data, kwargs_dict
 
-    def __init__(self, op: str, api_key: str, base_url: str, kwargs: dict):
+    refreshed = Signal(str, object, object)  # op, data, kwargs_dict
+
+    def __init__(self, op: str, client, kwargs: dict):
         super().__init__()
-        self.op       = op
-        self.api_key  = api_key
-        self.base_url = base_url.rstrip("/")
-        self.kwargs   = kwargs
-
-    # (connect_timeout, read_timeout) — fail fast on unreachable hosts without
-    # cutting off slow-but-alive transfers.
-    _TIMEOUT = (5, 60)
+        self.op = op
+        self._client = client
+        self.kwargs = kwargs
 
     def run(self):
-        import requests as _req
-        headers = {"Authorization": f"Bearer {self.api_key}"}
         try:
             if self.op == "list":
                 path = self.kwargs.get("path", "/")
-                resp = _req.get(
-                    f"{self.base_url}/api/files",
-                    headers=headers,
-                    params={"path": path, "includeSubfolders": "0"},
-                    timeout=self._TIMEOUT,
-                )
-                resp.raise_for_status()
-                data = resp.json()
+                data = self._client.list_files(path)
 
             elif self.op == "shares":
-                resp = _req.get(
-                    f"{self.base_url}/api/shares",
-                    headers=headers,
-                    timeout=self._TIMEOUT,
-                )
-                resp.raise_for_status()
-                data = resp.json()
+                data = self._client.list_shares()
 
             elif self.op == "jobs":
                 active_only = self.kwargs.get("active_only", True)
-                params = {"active": "true"} if active_only else {}
-                resp = _req.get(
-                    f"{self.base_url}/api/admin/transfer-jobs",
-                    headers=headers,
-                    params=params,
-                    timeout=self._TIMEOUT,
-                )
-                resp.raise_for_status()
-                data = resp.json()
+                data = self._client.list_transfer_jobs(active_only=active_only)
 
             else:
-                return   # unknown op — skip
+                return  # unknown op — skip
 
             cache.set(self.op, data, **self.kwargs)
             self.refreshed.emit(self.op, data, self.kwargs)
@@ -185,43 +158,43 @@ class CachePoller(QObject):
     re-fetches each one every POLL_INTERVAL seconds.
 
     Usage:
-        poller = CachePoller()
-        poller.add("list",   get_api_key, BASE_URL, path="/")
-        poller.add("shares", get_api_key, BASE_URL)
+        poller = CachePoller(client)
+        poller.add("list",   path="/")
+        poller.add("shares")
         poller.start()
         poller.stop()
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, client, parent=None):
         super().__init__(parent)
-        self._slots:    list[dict] = []
-        self._workers:  list[CachePollWorker] = []
-        self._timer     = None
-        self._lock      = threading.Lock()
+        self._client: object = client
+        self._slots: list[dict] = []
+        self._workers: list[CachePollWorker] = []
+        self._timer = None
+        self._lock = threading.Lock()
 
-    def add(self, op: str, get_api_key: Callable[[], str],
-            base_url: str, **kwargs):
+    def add(self, op: str, **kwargs):
         """Register a slot to be polled.  Idempotent."""
         with self._lock:
             for s in self._slots:
                 if s["op"] == op and s["kwargs"] == kwargs:
                     return
-            self._slots.append({
-                "op":          op,
-                "get_api_key": get_api_key,
-                "base_url":    base_url,
-                "kwargs":      kwargs,
-            })
+            self._slots.append(
+                {
+                    "op": op,
+                    "kwargs": kwargs,
+                }
+            )
 
     def remove(self, op: str, **kwargs):
         with self._lock:
             self._slots = [
-                s for s in self._slots
-                if not (s["op"] == op and s["kwargs"] == kwargs)
+                s for s in self._slots if not (s["op"] == op and s["kwargs"] == kwargs)
             ]
 
     def start(self):
         from PySide6.QtCore import QTimer
+
         if self._timer is None:
             self._timer = QTimer()
             self._timer.setInterval(POLL_INTERVAL * 1000)
@@ -251,15 +224,11 @@ class CachePoller(QObject):
         self._workers = [w for w in self._workers if not w.isFinished()]
 
         for slot in slots:
-            api_key = slot["get_api_key"]()
-            if not api_key:
-                continue
-            w = CachePollWorker(
-                slot["op"], api_key, slot["base_url"], slot["kwargs"]
-            )
+            w = CachePollWorker(slot["op"], self._client, slot["kwargs"])
             w.refreshed.connect(self._on_refreshed)
-            w.finished.connect(lambda _w=w: self._workers.remove(_w)
-                               if _w in self._workers else None)
+            w.finished.connect(
+                lambda _w=w: self._workers.remove(_w) if _w in self._workers else None
+            )
             self._workers.append(w)
             w.start()
 

@@ -34,8 +34,9 @@ from PySide6.QtWidgets import (
 from .constants import (
     APP_NAME,
     APP_VERSION,
-    HARDCODED_BASE_URL,
 )
+from .logging_utils import write_debug_log
+from .mocha_client import MochaClient
 from .remote_cache import CachePoller, cache
 from .tabs import (
     FilesBrowserTab,
@@ -82,6 +83,9 @@ class AppContext:
     selected_root: str = ""
     share_result_url: str = ""
 
+    # Shared API client (all HTTP goes through this)
+    client: object | None = None
+
     # Worker references (transient — set during operations)
     upload_worker: object | None = None
     storage_worker: StorageWorker | None = None
@@ -116,6 +120,10 @@ class MochaTools(QMainWindow):
         self.resize(760, 900)
 
         self.ctx = AppContext()
+        self.ctx.client = MochaClient(
+            get_api_key=lambda: self.api_key_edit.text().strip(),
+            logger=write_debug_log,
+        )
 
         self._poller: CachePoller | None = None
         self._storage_timer: QTimer | None = None
@@ -154,20 +162,20 @@ class MochaTools(QMainWindow):
         settings_tab = build_settings_tab(self)
 
         self.files_tab = FilesBrowserTab(
-            get_api_key=lambda: self.api_key_edit.text().strip(),
+            client=self.ctx.client,
             get_upload_path=lambda: self.upload_path_edit.text().strip(),
             set_upload_path=lambda p: self.upload_path_edit.setText(p),
         )
         self.remote_tab = RemoteTab(
-            get_api_key=lambda: self.api_key_edit.text().strip(),
+            client=self.ctx.client,
             on_ingest_done=self._on_upload_done,
             on_share_created=self._on_share_created,
         )
         self.shares_tab = SharesTab(
-            get_api_key=lambda: self.api_key_edit.text().strip(),
+            client=self.ctx.client,
         )
         self.sync_tab = SyncTab(
-            get_api_key=lambda: self.api_key_edit.text().strip(),
+            client=self.ctx.client,
             get_sync_settings=lambda: (
                 self.sync_conc_spin.value(),
                 self.sync_chunk_spin.value(),
@@ -177,7 +185,7 @@ class MochaTools(QMainWindow):
         )
 
         self.mass_upload_section = MassUploadSection(
-            get_api_key=lambda: self.api_key_edit.text().strip(),
+            client=self.ctx.client,
             get_mass_settings=lambda: (
                 self.mass_conc_spin.value(),
                 self.mass_chunk_spin.value(),
@@ -205,16 +213,9 @@ class MochaTools(QMainWindow):
         self.tabs.addTab(settings_tab, "Settings")
 
         # ── Remote cache poller ─────────────────────────────────────────────
-        self._poller = CachePoller(self)
-        self._poller.add(
-            "shares", lambda: self.api_key_edit.text().strip(), HARDCODED_BASE_URL
-        )
-        self._poller.add(
-            "list",
-            lambda: self.api_key_edit.text().strip(),
-            HARDCODED_BASE_URL,
-            path="/",
-        )
+        self._poller = CachePoller(self.ctx.client, self)
+        self._poller.add("shares")
+        self._poller.add("list", path="/")
         self.files_tab.attach_cache_poller(self._poller)
         self.shares_tab.attach_cache_poller(self._poller)
 
@@ -250,8 +251,7 @@ class MochaTools(QMainWindow):
 
     def _on_tab_changed(self, index: int):
         self.remote_tab.set_active(index == 1)
-        api_key = self.api_key_edit.text().strip()
-        if not api_key:
+        if not self.ctx.client.has_api_key:
             return
         if index in (2, 3) and self._poller:
             self._poller.start()

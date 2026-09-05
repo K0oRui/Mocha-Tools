@@ -1,5 +1,3 @@
-import requests
-
 from PySide6.QtCore import Qt, QThread, QTimer, QPoint, Signal
 from PySide6.QtGui import QColor, QMouseEvent
 from PySide6.QtWidgets import (
@@ -23,6 +21,7 @@ from .ui import lucide_icon
 # Keep references to in-flight fetch threads here so dialogs can be destroyed
 # without the QThread objects being garbage-collected while still running.
 _OUTSTANDING_FETCH_WORKERS = []
+
 
 # ── Shared: Mocha-styled frameless dialog base ────────────────────────────────
 class MochaDialog(QDialog):
@@ -57,23 +56,28 @@ class MochaDialog(QDialog):
 
         try:
             from .theme import get_accent, get_font
+
             _dot_color = get_accent()
             _fs = int(get_font()[1])
         except Exception:
             _dot_color = "#c8a96e"
             _fs = 13
         dot = QLabel("◆")
-        dot.setStyleSheet(f"color:{_dot_color}; font-size:{max(8, _fs-3)}px; background:transparent;")
+        dot.setStyleSheet(
+            f"color:{_dot_color}; font-size:{max(8, _fs - 3)}px; background:transparent;"
+        )
         tb_lay.addWidget(dot)
 
         if title:
             title_lbl = QLabel()
             title_lbl.setStyleSheet(
-                f"color:#dcd6cc; font-size:{max(9, _fs-2)}px; font-weight:600;"
+                f"color:#dcd6cc; font-size:{max(9, _fs - 2)}px; font-weight:600;"
                 f" background:transparent; margin-left:6px;"
             )
             metrics = title_lbl.fontMetrics()
-            title_lbl.setText(metrics.elidedText(title, Qt.TextElideMode.ElideRight, 320))
+            title_lbl.setText(
+                metrics.elidedText(title, Qt.TextElideMode.ElideRight, 320)
+            )
             title_lbl.setToolTip(title)
             tb_lay.addWidget(title_lbl)
             self._title_lbl = title_lbl
@@ -85,6 +89,7 @@ class MochaDialog(QDialog):
         close_btn = QPushButton()
         try:
             from .theme import get_accent
+
             _xcol = get_accent()
         except Exception:
             _xcol = "#c8a96e"
@@ -115,13 +120,15 @@ class MochaDialog(QDialog):
         grip_row.addWidget(grip)
         self.content_layout.addLayout(grip_row)
 
-        tb.mousePressEvent   = self._tb_press
-        tb.mouseMoveEvent    = self._tb_move
+        tb.mousePressEvent = self._tb_press
+        tb.mouseMoveEvent = self._tb_move
         tb.mouseReleaseEvent = self._tb_release
 
     def _tb_press(self, ev: QMouseEvent):
         if ev.button() == Qt.MouseButton.LeftButton:
-            self._drag_pos = ev.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            self._drag_pos = (
+                ev.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            )
 
     def _tb_move(self, ev: QMouseEvent):
         if self._drag_pos and ev.buttons() == Qt.MouseButton.LeftButton:
@@ -145,6 +152,7 @@ def apply_mocha_titlebar(dialog: QDialog, title: str):
 
     try:
         from .theme import get_accent, get_font
+
         _dot_color = get_accent()
         _fs = int(get_font()[1])
     except Exception:
@@ -159,12 +167,14 @@ def apply_mocha_titlebar(dialog: QDialog, title: str):
     tb_lay.setSpacing(6)
 
     dot = QLabel("◆")
-    dot.setStyleSheet(f"color:{_dot_color}; font-size:{max(8, _fs-3)}px; background:transparent;")
+    dot.setStyleSheet(
+        f"color:{_dot_color}; font-size:{max(8, _fs - 3)}px; background:transparent;"
+    )
     tb_lay.addWidget(dot)
 
     title_lbl = QLabel()
     title_lbl.setStyleSheet(
-        f"color:#dcd6cc; font-size:{max(9, _fs-2)}px; font-weight:600;"
+        f"color:#dcd6cc; font-size:{max(9, _fs - 2)}px; font-weight:600;"
         f" background:transparent; margin-left:6px;"
     )
     metrics = title_lbl.fontMetrics()
@@ -175,6 +185,7 @@ def apply_mocha_titlebar(dialog: QDialog, title: str):
 
     try:
         from .theme import get_accent as _ga
+
         _xcol = _ga()
     except Exception:
         _xcol = "#c8a96e"
@@ -200,7 +211,9 @@ def apply_mocha_titlebar(dialog: QDialog, title: str):
 
     def _press(ev: QMouseEvent):
         if ev.button() == Qt.MouseButton.LeftButton:
-            drag_state["pos"] = ev.globalPosition().toPoint() - dialog.frameGeometry().topLeft()
+            drag_state["pos"] = (
+                ev.globalPosition().toPoint() - dialog.frameGeometry().topLeft()
+            )
 
     def _move(ev: QMouseEvent):
         if drag_state["pos"] and ev.buttons() == Qt.MouseButton.LeftButton:
@@ -226,12 +239,15 @@ def _gold_btn(text: str, width=160) -> QPushButton:
     btn.setFixedSize(width, 36)
     try:
         from .theme import get_accent
+
         acc = get_accent()
     except Exception:
         from .theme import DEFAULT_ACCENT
+
         acc = DEFAULT_ACCENT
     try:
         from .theme import get_font
+
         fsz = int(get_font()[1])
     except Exception:
         fsz = 13
@@ -247,6 +263,7 @@ def _grey_btn(text: str, width=160) -> QPushButton:
     btn.setFixedSize(width, 36)
     try:
         from .theme import get_font
+
         fsz = int(get_font()[1])
     except Exception:
         fsz = 13
@@ -260,53 +277,23 @@ def _grey_btn(text: str, width=160) -> QPushButton:
 # ── Background worker for folder listings ─────────────────────────────────────
 class _FolderFetchWorker(QThread):
     """
-    Fetches one folder listing off the main thread.
-
-    Uses a class-level persistent requests.Session so the underlying
-    TCP+TLS connection is reused across navigations and dialog openings.
-    Without this, every folder navigation pays the full TLS handshake cost
-    (200-400 ms extra on a typical connection) on top of the API round-trip.
+    Fetches one folder listing off the main thread using the shared client.
 
     A cancel token (single-element list) lets the caller suppress the result
     if the user has already navigated elsewhere before the response arrives.
     """
-    done = Signal(str, object)   # (path, data_dict | Exception)
 
-    # Persistent session shared across all workers — keeps the TCP+TLS
-    # connection alive so subsequent fetches skip the handshake entirely.
-    _session: "requests.Session | None" = None
+    done = Signal(str, object)  # (path, data_dict | Exception)
 
-    @classmethod
-    def _get_session(cls) -> "requests.Session":
-        if cls._session is None:
-            adapter = requests.adapters.HTTPAdapter(
-                pool_connections=8,
-                pool_maxsize=16,
-                max_retries=1,
-            )
-            cls._session = requests.Session()
-            cls._session.mount("https://", adapter)
-            cls._session.mount("http://",  adapter)
-        return cls._session
-
-    def __init__(self, api_key: str, base_url: str, path: str, cancel_token: list):
+    def __init__(self, client, path: str, cancel_token: list):
         super().__init__()
-        self.api_key      = api_key
-        self.base_url     = base_url.rstrip("/")
-        self.path         = path
-        self._cancel      = cancel_token
+        self._client = client
+        self.path = path
+        self._cancel = cancel_token
 
     def run(self):
         try:
-            session = self._get_session()
-            resp = session.get(
-                f"{self.base_url}/api/files",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                params={"path": self.path, "includeSubfolders": "0"},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            data = self._client.list_files(self.path)
 
             if not self._cancel[0]:
                 self.done.emit(self.path, data)
@@ -323,17 +310,16 @@ class FolderBrowserDialog(MochaDialog):
     # Maps path -> folder list data so re-visiting a folder is instant.
     _path_cache: dict = {}
 
-    def __init__(self, api_key, base_url, current_path="/", parent=None):
+    def __init__(self, client, current_path="/", parent=None):
         super().__init__("Browse remote folders", parent, min_size=(460, 440))
-        self.api_key  = api_key
-        self.base_url = base_url.rstrip("/")
-        self.current  = current_path or "/"
+        self._client = client
+        self.current = current_path or "/"
         self.selected = self.current
         self._worker: _FolderFetchWorker | None = None
         self._cancel_token: list = [False]
         self._dead_workers: list[_FolderFetchWorker] = []
-        self._closed: bool = False       # prevents use-after-close in deferred slots
-        self._navigating: bool = False   # suppresses auto-highlight during render
+        self._closed: bool = False  # prevents use-after-close in deferred slots
+        self._navigating: bool = False  # suppresses auto-highlight during render
 
         lay = self.content_layout
         grip_item = lay.takeAt(lay.count() - 1)
@@ -344,22 +330,30 @@ class FolderBrowserDialog(MochaDialog):
 
         try:
             from .theme import get_accent
+
             _path_icon_col = get_accent()
         except Exception:
             from .theme import DEFAULT_ACCENT
+
             _path_icon_col = DEFAULT_ACCENT
         self.path_icon = QLabel()
-        self.path_icon.setPixmap(lucide_icon("folder", _path_icon_col, 16).pixmap(16, 16))
+        self.path_icon.setPixmap(
+            lucide_icon("folder", _path_icon_col, 16).pixmap(16, 16)
+        )
         self.path_icon.setStyleSheet("background:transparent;")
         path_row.addWidget(self.path_icon)
 
         try:
             from .theme import notifier
+
             def _refresh_path_icon(old, new):
                 try:
-                    self.path_icon.setPixmap(lucide_icon("folder", new, 16).pixmap(16, 16))
+                    self.path_icon.setPixmap(
+                        lucide_icon("folder", new, 16).pixmap(16, 16)
+                    )
                 except RuntimeError:
                     pass
+
             self._refresh_path_icon = _refresh_path_icon
             notifier().accent_changed.connect(self._refresh_path_icon)
         except Exception:
@@ -374,8 +368,10 @@ class FolderBrowserDialog(MochaDialog):
         go_btn.setFixedSize(48, 34)
         try:
             from .theme import get_accent
+
             acc = get_accent()
             from .styles import compute_accent_variants
+
             _, acc_hov, _ = compute_accent_variants(acc)
         except Exception:
             acc = "#c8a96e"
@@ -393,10 +389,12 @@ class FolderBrowserDialog(MochaDialog):
         self.list = QListWidget()
         try:
             from .theme import get_accent
+
             acc = get_accent()
             acc_hov = acc + "33"
         except Exception:
             from .theme import DEFAULT_ACCENT
+
             acc = DEFAULT_ACCENT
             acc_hov = DEFAULT_ACCENT + "33"
         self.list.setStyleSheet(f"""
@@ -413,6 +411,7 @@ class FolderBrowserDialog(MochaDialog):
         # Ensure folder icons update if the accent changes at runtime
         try:
             from .theme import notifier
+
             def _refresh_list(old, new):
                 try:
                     for i in range(self.list.count()):
@@ -428,6 +427,7 @@ class FolderBrowserDialog(MochaDialog):
                                 pass
                 except RuntimeError:
                     pass
+
             self._refresh_list_cb = _refresh_list
             notifier().accent_changed.connect(self._refresh_list_cb)
         except Exception:
@@ -436,7 +436,10 @@ class FolderBrowserDialog(MochaDialog):
         # ── Status ────────────────────────────────────────────────────────────
         self.status_lbl = QLabel("")
         from .theme import accent_qcolor, notifier
-        self.status_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:11px; background:transparent;")
+
+        self.status_lbl.setStyleSheet(
+            f"color:{accent_qcolor().name()}; font-size:11px; background:transparent;"
+        )
         lay.addWidget(self.status_lbl)
 
         # ── Buttons ───────────────────────────────────────────────────────────
@@ -481,7 +484,7 @@ class FolderBrowserDialog(MochaDialog):
             self._dead_workers.append(self._worker)
             self._worker = None
 
-        self.current  = path
+        self.current = path
         self.selected = path
         self.path_edit.setText(path)
         self._ok_btn.setEnabled(True)
@@ -491,14 +494,15 @@ class FolderBrowserDialog(MochaDialog):
             self._render(path, FolderBrowserDialog._path_cache[path])
             self.status_lbl.setText(
                 self.status_lbl.text().rstrip("…") + "  (refreshing…)"
-                if self.status_lbl.text() else "Refreshing…"
+                if self.status_lbl.text()
+                else "Refreshing…"
             )
         else:
             self.list.clear()
             self.status_lbl.setText("Loading…")
 
         # Always fetch fresh in the background
-        w = _FolderFetchWorker(self.api_key, self.base_url, path, self._cancel_token)
+        w = _FolderFetchWorker(self._client, path, self._cancel_token)
         w.done.connect(self._on_fetch_done)
         self._worker = w
         # retain a module-level reference to avoid QThread: Destroyed while running
@@ -534,7 +538,11 @@ class FolderBrowserDialog(MochaDialog):
         # Remove finished worker references so list doesn't grow unbounded
         try:
             global _OUTSTANDING_FETCH_WORKERS
-            _OUTSTANDING_FETCH_WORKERS = [w for w in _OUTSTANDING_FETCH_WORKERS if not getattr(w, 'isFinished', lambda: True)()]
+            _OUTSTANDING_FETCH_WORKERS = [
+                w
+                for w in _OUTSTANDING_FETCH_WORKERS
+                if not getattr(w, "isFinished", lambda: True)()
+            ]
         except Exception:
             pass
 
@@ -546,6 +554,7 @@ class FolderBrowserDialog(MochaDialog):
         if cls._dialog_folder_icon is None:
             try:
                 from .theme import get_accent
+
                 cls._dialog_folder_icon = lucide_icon("folder", get_accent(), 12)
             except Exception:
                 pass
@@ -558,6 +567,7 @@ class FolderBrowserDialog(MochaDialog):
 
         folder_icon = self._get_dialog_folder_icon()
         from .theme import accent_qcolor
+
         accent = accent_qcolor()
 
         # "▲ .." entry
@@ -577,19 +587,27 @@ class FolderBrowserDialog(MochaDialog):
         folder_entries = data.get("folders") if isinstance(data, dict) else []
         if not folder_entries and isinstance(data, list):
             folder_entries = data
-        for entry in (folder_entries or []):
+        for entry in folder_entries or []:
             if isinstance(entry, str):
                 name = entry.rstrip("/").split("/")[-1]
-                fullpath = entry if entry.startswith("/") else (
-                    (path.rstrip("/") + "/" + name) if path != "/" else ("/" + name)
+                fullpath = (
+                    entry
+                    if entry.startswith("/")
+                    else (
+                        (path.rstrip("/") + "/" + name) if path != "/" else ("/" + name)
+                    )
                 )
             elif isinstance(entry, dict):
                 name = (
-                    entry.get("name") or entry.get("original_name")
-                    or entry.get("originalName") or entry.get("file_name") or ""
+                    entry.get("name")
+                    or entry.get("original_name")
+                    or entry.get("originalName")
+                    or entry.get("file_name")
+                    or ""
                 )
                 fullpath = (
-                    entry.get("path") or entry.get("fullPath")
+                    entry.get("path")
+                    or entry.get("fullPath")
                     or (path.rstrip("/") + "/" + name)
                 )
             else:
@@ -652,9 +670,10 @@ class FolderBrowserDialog(MochaDialog):
         # disconnect notifier callbacks to prevent use-after-free
         try:
             from .theme import notifier
-            if hasattr(self, '_refresh_path_icon'):
+
+            if hasattr(self, "_refresh_path_icon"):
                 notifier().accent_changed.disconnect(self._refresh_path_icon)
-            if hasattr(self, '_refresh_list_cb'):
+            if hasattr(self, "_refresh_list_cb"):
                 notifier().accent_changed.disconnect(self._refresh_list_cb)
         except Exception:
             pass
@@ -684,21 +703,28 @@ class ShareLinkDialog(MochaDialog):
         header = QLabel("✓  Share link ready")
         try:
             from .theme import get_accent, get_font
+
             fam, fsz = get_font()
-            header.setStyleSheet(f"color:{get_accent()}; font-size:{int(fsz)}px; font-weight:700; background:transparent;")
+            header.setStyleSheet(
+                f"color:{get_accent()}; font-size:{int(fsz)}px; font-weight:700; background:transparent;"
+            )
         except Exception:
-            header.setStyleSheet("color:#4ade80; font-size:14px; font-weight:700; background:transparent;")
+            header.setStyleSheet(
+                "color:#4ade80; font-size:14px; font-weight:700; background:transparent;"
+            )
         lay.addWidget(header)
 
         self.url_edit = QLineEdit(url)
         self.url_edit.setReadOnly(True)
         try:
             from .theme import get_accent
+
             _url_col = get_accent()
         except Exception:
             _url_col = "#c8a96e"
         try:
             from .theme import get_font
+
             fsz = int(get_font()[1])
         except Exception:
             fsz = 12
@@ -755,7 +781,10 @@ class LocalPathDialog(MochaDialog):
         hint = QLabel("Type the destination folder path:")
         try:
             from .theme import accent_qcolor
-            hint.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:12px; background:transparent;")
+
+            hint.setStyleSheet(
+                f"color:{accent_qcolor().name()}; font-size:12px; background:transparent;"
+            )
         except Exception:
             hint.setStyleSheet("color:#9c9484; font-size:12px; background:transparent;")
         lay.addWidget(hint)
@@ -768,9 +797,14 @@ class LocalPathDialog(MochaDialog):
         self.status_lbl = QLabel("")
         try:
             from .theme import accent_qcolor
-            self.status_lbl.setStyleSheet(f"color:{accent_qcolor().name()}; font-size:11px; background:transparent;")
+
+            self.status_lbl.setStyleSheet(
+                f"color:{accent_qcolor().name()}; font-size:11px; background:transparent;"
+            )
         except Exception:
-            self.status_lbl.setStyleSheet("color:#f87171; font-size:11px; background:transparent;")
+            self.status_lbl.setStyleSheet(
+                "color:#f87171; font-size:11px; background:transparent;"
+            )
         lay.addWidget(self.status_lbl)
 
         btn_row = QHBoxLayout()
@@ -788,6 +822,7 @@ class LocalPathDialog(MochaDialog):
 
     def _on_accept(self):
         import os
+
         path = self.path_edit.text().strip()
         if not path:
             self.status_lbl.setText("Path cannot be empty.")

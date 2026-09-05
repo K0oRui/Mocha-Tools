@@ -10,12 +10,24 @@ from urllib.parse import urlparse, unquote
 from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QFrame, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QTreeWidget, QTreeWidgetItem,
-    QVBoxLayout, QWidget, QAbstractScrollArea, QSizePolicy,
+    QAbstractItemView,
+    QCheckBox,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+    QAbstractScrollArea,
+    QSizePolicy,
 )
 
-from ..constants import HARDCODED_BASE_URL
 from ..dialogs import FolderBrowserDialog
 from ..workers import RemoteWorker
 from ..ui.icons import lucide_icon
@@ -24,16 +36,15 @@ from ..ui.icons import lucide_icon
 class RemoteTab(QWidget):
     """Starts server-side remote downloads and displays transfer jobs."""
 
-    def __init__(self, get_api_key, on_ingest_done=None, on_share_created=None, parent=None):
+    def __init__(self, client, on_ingest_done=None, on_share_created=None, parent=None):
         super().__init__(parent)
-        self.get_api_key      = get_api_key
-        self.base_url         = HARDCODED_BASE_URL
-        self._workers         = []
-        self._is_active       = False
-        self._watched_jobs    = {}
+        self._client = client
+        self._workers = []
+        self._is_active = False
+        self._watched_jobs = {}
         # Callbacks wired by app.py for cache invalidation
-        self._on_ingest_done_cb    = on_ingest_done   # (dest_folder: str) -> None
-        self._on_share_created_cb  = on_share_created # () -> None
+        self._on_ingest_done_cb = on_ingest_done  # (dest_folder: str) -> None
+        self._on_share_created_cb = on_share_created  # () -> None
         self._build_ui()
 
     # ── UI ────────────────────────────────────────────────────────────────────
@@ -78,7 +89,7 @@ class RemoteTab(QWidget):
 
     def _build_ingest_card(self, parent_lay: QVBoxLayout):
         card = self._make_card()
-        lay  = QVBoxLayout(card)
+        lay = QVBoxLayout(card)
         lay.setSpacing(8)
 
         url_row = QHBoxLayout()
@@ -115,6 +126,7 @@ class RemoteTab(QWidget):
         lay.addLayout(dest_row)
 
         from ..theme import notifier
+
         self.ingest_btn = QPushButton("  Remote ingest")
         self.ingest_btn.setObjectName("upload_btn")
         # Icon should be dark (match button text) so it remains visible on the accent background
@@ -136,6 +148,7 @@ class RemoteTab(QWidget):
         tb.setSpacing(4)
 
         from ..theme import get_accent, notifier
+
         self.refresh_btn = QPushButton("  Refresh Jobs")
         self.refresh_btn.setObjectName("tb_btn")
         self.refresh_btn.setIcon(lucide_icon("refresh-cw", get_accent(), 13))
@@ -158,25 +171,34 @@ class RemoteTab(QWidget):
         tb.addStretch()
 
         from ..theme import accent_qcolor, get_font
+
         self.status_lbl = QLabel("")
-        self.status_lbl.setStyleSheet(f"color: {accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;")
+        self.status_lbl.setStyleSheet(
+            f"color: {accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;"
+        )
         tb.addWidget(self.status_lbl)
         # parent_lay may be an outer layout or the inner scroll area layout;
         # accept either by adding the QHBoxLayout to the provided layout.
         parent_lay.addLayout(tb)
         try:
-            notifier().accent_changed.connect(lambda _old, _new: self._on_accent_changed(_old, _new))
+            notifier().accent_changed.connect(
+                lambda _old, _new: self._on_accent_changed(_old, _new)
+            )
         except Exception:
             pass
 
     def _on_accent_changed(self, old, new):
         try:
-            from ..theme import accent_qcolor
+            from ..theme import accent_qcolor, get_accent
+
             # Keep ingest icon dark to match the button text color
             self.ingest_btn.setIcon(lucide_icon("download-cloud", "#111010", 15))
             self.refresh_btn.setIcon(lucide_icon("refresh-cw", get_accent(), 13))
             from ..theme import get_font
-            self.status_lbl.setStyleSheet(f"color: {accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;")
+
+            self.status_lbl.setStyleSheet(
+                f"color: {accent_qcolor().name()}; font-size:{int(get_font()[1])}px; background:transparent;"
+            )
         except Exception:
             pass
 
@@ -191,10 +213,10 @@ class RemoteTab(QWidget):
         hdr = self.tree.header()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         hdr.setStretchLastSection(True)
-        hdr.resizeSection(0, 280)   # File
-        hdr.resizeSection(1, 100)   # Status
-        hdr.resizeSection(2, 90)    # Progress
-        hdr.resizeSection(3, 160)   # Job ID
+        hdr.resizeSection(0, 280)  # File
+        hdr.resizeSection(1, 100)  # Status
+        hdr.resizeSection(2, 90)  # Progress
+        hdr.resizeSection(3, 160)  # Job ID
         # When the jobs tree is inside the scroll area, disable its own
         # vertical scrollbar and let the outer QScrollArea provide scrolling
         # for the whole page. Also adjust size to contents so the tree grows
@@ -203,7 +225,9 @@ class RemoteTab(QWidget):
             # Let the outer scroll area handle vertical scrolling; make the
             # tree expand to take available space so it isn't rendered tiny.
             self.tree.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            self.tree.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            self.tree.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+            )
             # Provide a reasonable minimum so the jobs area is usable even
             # when there are few or no items yet.
             self.tree.setMinimumHeight(200)
@@ -219,12 +243,11 @@ class RemoteTab(QWidget):
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def _browse_dest(self):
-        api_key = self.get_api_key()
-        if not api_key:
+        if not self._client.has_api_key:
             self._status("⚠ Enter your API key in Settings first.")
             return
         dlg = FolderBrowserDialog(
-            api_key, self.base_url,
+            self._client,
             self.path_edit.text().strip() or "/",
             parent=self,
         )
@@ -233,15 +256,16 @@ class RemoteTab(QWidget):
             self.path_edit.setText(dlg.selected)
 
     def _start_ingest(self):
-        api_key    = self.get_api_key()
         source_url = self.url_edit.text().strip()
-        if not api_key:
+        if not self._client.has_api_key:
             self._status("⚠ Enter your API key in Settings first.")
             return
         if not source_url:
             self._status("⚠ Paste a source URL first.")
             return
-        file_name = self.file_name_edit.text().strip() or self._filename_from_url(source_url)
+        file_name = self.file_name_edit.text().strip() or self._filename_from_url(
+            source_url
+        )
         if not file_name:
             self._status("⚠ Enter a filename for this URL.")
             return
@@ -257,7 +281,7 @@ class RemoteTab(QWidget):
         )
 
     def refresh_jobs(self):
-        if not self.get_api_key():
+        if not self._client.has_api_key:
             self._status("⚠ Enter your API key in Settings first.")
             return
         self._status("Loading jobs…")
@@ -267,11 +291,15 @@ class RemoteTab(QWidget):
         meta = self._selected_meta()
         if not meta:
             return
-        if QMessageBox.question(
-            self, "Cancel Transfer",
-            f"Cancel transfer job {meta['job_id']!r}?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        ) != QMessageBox.StandardButton.Yes:
+        if (
+            QMessageBox.question(
+                self,
+                "Cancel Transfer",
+                f"Cancel transfer job {meta['job_id']!r}?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
             return
         self._status("Cancelling job…")
         self._run_worker("cancel", job_id=meta["job_id"])
@@ -279,10 +307,12 @@ class RemoteTab(QWidget):
     # ── Worker dispatch ───────────────────────────────────────────────────────
 
     def _run_worker(self, op: str, **kwargs):
-        w = RemoteWorker(op, self.get_api_key(), self.base_url, **kwargs)
+        w = RemoteWorker(op, self._client, **kwargs)
         w.done.connect(self._on_done)
         w.error.connect(self._on_error)
-        w.finished.connect(lambda: self._workers.remove(w) if w in self._workers else None)
+        w.finished.connect(
+            lambda: self._workers.remove(w) if w in self._workers else None
+        )
         self._workers.append(w)
         w.start()
 
@@ -290,15 +320,22 @@ class RemoteTab(QWidget):
         op = result.get("op")
         if op == "ingest":
             self.ingest_btn.setEnabled(True)
-            data          = result.get("data") or {}
-            job_id        = data.get("jobId") or data.get("id") or ""
-            original_name = (data.get("originalName") or data.get("fileName")
-                             or self.file_name_edit.text().strip())
+            data = result.get("data") or {}
+            job_id = data.get("jobId") or data.get("id") or ""
+            original_name = (
+                data.get("originalName")
+                or data.get("fileName")
+                or self.file_name_edit.text().strip()
+            )
             self.result_bar.setText(f"Queued: {original_name}  Job: {job_id or '—'}")
             self.result_bar.show()
             self._status("✓ Remote ingest queued")
             if job_id:
-                self._watched_jobs[str(job_id)] = {"name": original_name, "seen": False, "checks": 0}
+                self._watched_jobs[str(job_id)] = {
+                    "name": original_name,
+                    "seen": False,
+                    "checks": 0,
+                }
             # Notify app that the destination folder cache should be invalidated
             if self._on_ingest_done_cb is not None:
                 dest_folder = self._normalized_path()
@@ -336,10 +373,14 @@ class RemoteTab(QWidget):
             if job_id:
                 active_job_ids.add(str(job_id))
             name = (
-                job.get("originalName") or job.get("fileName") or job.get("file_name")
-                or job.get("name") or job.get("sourceUrl") or "—"
+                job.get("originalName")
+                or job.get("fileName")
+                or job.get("file_name")
+                or job.get("name")
+                or job.get("sourceUrl")
+                or "—"
             )
-            status   = job.get("status") or job.get("state") or "—"
+            status = job.get("status") or job.get("state") or "—"
             progress = job.get("progress")
             if progress is None:
                 progress = job.get("percent")
@@ -347,7 +388,9 @@ class RemoteTab(QWidget):
                 progress = job.get("progressPercent")
             progress_text = f"{progress}%" if progress not in (None, "") else "—"
 
-            item = QTreeWidgetItem([str(name), str(status), str(progress_text), str(job_id)])
+            item = QTreeWidgetItem(
+                [str(name), str(status), str(progress_text), str(job_id)]
+            )
             item.setData(0, Qt.ItemDataRole.UserRole, {**job, "job_id": str(job_id)})
             status_lower = str(status).lower()
             if status_lower in ("failed", "error", "cancelled", "canceled"):
@@ -388,9 +431,12 @@ class RemoteTab(QWidget):
         self.result_bar.show()
         self._status(f"✓ Remote ingest finished: {name}")
         from ..sound_player import play_sound_event
+
         play_sound_event("sound_remote_ingest")
         if self._is_active:
-            QMessageBox.information(self, "Remote Ingest Finished", f"{name} finished ingesting.")
+            QMessageBox.information(
+                self, "Remote Ingest Finished", f"{name} finished ingesting."
+            )
 
     # ── Selection ─────────────────────────────────────────────────────────────
 
