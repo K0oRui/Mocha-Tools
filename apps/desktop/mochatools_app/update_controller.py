@@ -18,6 +18,8 @@ Attached on ``win``:
   win._trigger_test_update()
 """
 
+from functools import partial
+
 from PySide6.QtCore import QSettings, Qt, QThread
 from PySide6.QtWidgets import (
     QApplication,
@@ -122,13 +124,13 @@ def _show_update_available_popup(win, ctx, tag: str, notes: str):
 
     result_holder = {"clicked": None}
 
-    def _set_clicked(name):
+    def _set_clicked(name, _checked=False):
         result_holder["clicked"] = name
         dlg.accept()
 
-    update_btn.clicked.connect(lambda: _set_clicked("update"))
-    skip_btn.clicked.connect(lambda: _set_clicked("skip"))
-    later_btn.clicked.connect(lambda: _set_clicked("later"))
+    update_btn.clicked.connect(partial(_set_clicked, "update"))
+    skip_btn.clicked.connect(partial(_set_clicked, "skip"))
+    later_btn.clicked.connect(partial(_set_clicked, "later"))
 
     dlg.exec()
     clicked = result_holder["clicked"]
@@ -197,7 +199,7 @@ def check_for_updates(win, ctx, silent: bool = False):
     w.update_available.connect(_on_available)
     w.up_to_date.connect(_on_up_to_date)
     w.error.connect(_on_error)
-    w.finished.connect(lambda: win.check_update_btn.setEnabled(True))
+    w.finished.connect(partial(win.check_update_btn.setEnabled, True))
     w.start()
 
 
@@ -266,6 +268,10 @@ def _on_update_done(win, ctx):
         f"Mocha Tools {ctx.update_tag} has been installed.\n\n"
         "Please restart the application to apply the update.",
     )
+
+
+def _on_ready_to_restart(win, ctx, _path: str):
+    _on_update_done(win, ctx)
 
 
 def _on_update_dl_error(win, msg: str):
@@ -362,11 +368,9 @@ def trigger_test_update(win, ctx):
         w = UpdateDownloadWorker(url, tag)
         w.progress.connect(win.update_progress.setValue)
         w.status.connect(win.update_status_lbl.setText)
-        w.done.connect(lambda: _on_update_done(win, ctx))
-        w.ready_to_restart.connect(
-            lambda bp: _on_update_done(win, ctx)  # same flow
-        )
-        w.error.connect(lambda msg: _on_update_dl_error(win, msg))
+        w.done.connect(partial(_on_update_done, win, ctx))
+        w.ready_to_restart.connect(partial(_on_ready_to_restart, win, ctx))
+        w.error.connect(partial(_on_update_dl_error, win))
         w.start()
         ctx.update_dl_worker = w
 

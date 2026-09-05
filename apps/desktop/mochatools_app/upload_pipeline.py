@@ -22,6 +22,7 @@ job ID and the optional ``ref`` they attached to the job.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import partial
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
@@ -97,6 +98,7 @@ class UploadManager(QObject):
         self._draining: list[UploadWorker] = []
         self._drain_timer: QTimer | None = None
         self._next_id = 1
+        self._subscribers: dict[int, dict] = {}
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -107,6 +109,21 @@ class UploadManager(QObject):
         self._pending.append((job_id, job))
         self._schedule()
         return job_id
+
+    def subscribe(self, job_id: int, callbacks: dict) -> None:
+        """Register per-job callbacks routed by this manager.
+
+        ``callbacks`` keys: ``progress``, ``speed``, ``bytes``, ``status``,
+        ``done``, ``error``.  Each value is a callable receiving the payload
+        args of the matching worker signal (without the job id/ref prefix).
+        The ``done``/``error`` callbacks fire once and the subscription is
+        removed automatically.
+        """
+        self._subscribers[job_id] = callbacks
+
+    def unsubscribe(self, job_id: int) -> None:
+        """Drop a per-job subscription (no-op if not subscribed)."""
+        self._subscribers.pop(job_id, None)
 
     def cancel(self, job_id: int):
         """Cancel one job: stop its worker if active, drop it if pending."""
@@ -175,41 +192,63 @@ class UploadManager(QObject):
         setattr(w, "_job_ref", job.ref)
         setattr(w, "_job_source", job.source)
 
-        w.progress.connect(
-            lambda pct, jid=job_id, ref=job.ref: self.job_progress.emit(jid, ref, pct)
-        )
-        w.speed.connect(
-            lambda bps, jid=job_id, ref=job.ref: self.job_speed.emit(jid, ref, bps)
-        )
-        w.status.connect(
-            lambda msg, jid=job_id, ref=job.ref: self.job_status.emit(jid, ref, msg)
-        )
-        w.finished.connect(
-            lambda result, jid=job_id, ref=job.ref: self._on_done(jid, ref, result)
-        )
-        w.error.connect(
-            lambda msg, jid=job_id, ref=job.ref: self._on_error(jid, ref, msg)
-        )
+        w.progress.connect(partial(self.job_progress.emit, job_id, job.ref))
+        w.speed.connect(partial(self.job_speed.emit, job_id, job.ref))
+        w.status.connect(partial(self.job_status.emit, job_id, job.ref))
+        w.finished.connect(partial(self._on_done, job_id, job.ref))
+        w.error.connect(partial(self._on_error, job_id, job.ref))
         if hasattr(w, "bytes_progress"):
-            w.bytes_progress.connect(
-                lambda done, total, jid=job_id, ref=job.ref: self.job_bytes.emit(
-                    jid, ref, done, total
-                )
-            )
+            w.bytes_progress.connect(partial(self.job_bytes.emit, job_id, job.ref))
+
+        w.progress.connect(partial(self._dispatch, job_id, "progress"))
+        w.speed.connect(partial(self._dispatch, job_id, "speed"))
+        w.status.connect(partial(self._dispatch, job_id, "status"))
+        if hasattr(w, "bytes_progress"):
+            w.bytes_progress.connect(partial(self._dispatch, job_id, "bytes"))
 
         self._active[job_id] = w
         w.start()
+
+    # ── Per-subscriber routing ──────────────────────────────────────────────
+
+    def _dispatch(self, job_id: int, kind: str, *args):
+        """Forward a worker payload to the job's subscriber, if any."""
+        sub = self._subscribers.get(job_id)
+        if sub is None:
+            return
+        cb = sub.get(kind)
+        if cb is not None:
+            try:
+                cb(*args)
+            except Exception:
+                pass
 
     # ── Worker completion ───────────────────────────────────────────────────
 
     def _on_done(self, job_id: int, ref, result: dict):
         self._active.pop(job_id, None)
         self.job_done.emit(job_id, ref, result)
+        sub = self._subscribers.pop(job_id, None)
+        if sub is not None:
+            cb = sub.get("done")
+            if cb is not None:
+                try:
+                    cb(result)
+                except Exception:
+                    pass
         self._schedule()
 
     def _on_error(self, job_id: int, ref, msg: str):
         self._active.pop(job_id, None)
         self.job_error.emit(job_id, ref, msg)
+        sub = self._subscribers.pop(job_id, None)
+        if sub is not None:
+            cb = sub.get("error")
+            if cb is not None:
+                try:
+                    cb(msg)
+                except Exception:
+                    pass
         self._schedule()
 
     # ── Cancelled-worker cleanup ───────────────────────────────────────────

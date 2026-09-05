@@ -5,6 +5,7 @@ Embedded into the Upload tab of MochaTools; not a standalone tab.
 """
 
 import os
+from functools import partial
 
 from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtGui import QColor
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from ..constants import DEFAULT_CHUNK_SIZE_MB, DEFAULT_MAX_CHUNKS
 from ..logging_utils import write_debug_log
+from ..providers import DefaultMassSettingsProvider
 from ..upload_pipeline import PRIORITY_MASS, UploadJob
 from ..dialogs import FolderBrowserDialog
 from ..ui import lucide_icon
@@ -43,8 +45,7 @@ class MassUploadSection(QWidget):
     def __init__(
         self,
         client,
-        get_mass_settings=None,
-        get_debug=None,
+        mass_settings_provider=None,
         on_upload_done=None,
         parent=None,
         embedded: bool = True,
@@ -53,10 +54,10 @@ class MassUploadSection(QWidget):
         super().__init__(parent)
         self._client = client
         self._manager = upload_manager
-        self.get_mass_settings = get_mass_settings or (
-            lambda: (1, DEFAULT_CHUNK_SIZE_MB, DEFAULT_MAX_CHUNKS)
+        self._mass_settings_provider = (
+            mass_settings_provider
+            or DefaultMassSettingsProvider(DEFAULT_CHUNK_SIZE_MB, DEFAULT_MAX_CHUNKS)
         )
-        self.get_debug = get_debug or (lambda: False)
         # on_upload_done(remote_dest: str) — called when each file finishes
         self._on_upload_done_cb = on_upload_done
         self._queue: list[dict] = []
@@ -196,9 +197,7 @@ class MassUploadSection(QWidget):
         qtb.addWidget(self._queue_lbl)
         parent_lay.addLayout(qtb)
         try:
-            notifier().accent_changed.connect(
-                lambda _old, _new: self._on_accent_changed(_old, _new)
-            )
+            notifier().accent_changed.connect(self._on_accent_changed)
         except Exception:
             pass
 
@@ -325,7 +324,7 @@ class MassUploadSection(QWidget):
     def _log(self, msg: str):
         if msg.startswith("[DEBUG]"):
             write_debug_log(msg)
-            if not self.get_debug():
+            if not self._mass_settings_provider.get_debug():
                 return
         self._log_lbl.setText(msg)
 
@@ -495,7 +494,7 @@ class MassUploadSection(QWidget):
             edit_dest.setEnabled(
                 entry and entry.get("status") not in ("uploading", "done")
             )
-            edit_dest.triggered.connect(lambda: self._edit_dest(item, 0))
+            edit_dest.triggered.connect(partial(self._edit_dest, item, 0))
 
             menu.addSeparator()
 
@@ -622,7 +621,7 @@ class MassUploadSection(QWidget):
         entry["_xfr"] = f"0 B / {self._fmt(entry['_bytes_total'])}"
         entry["item"].setText(self._COL_STATUS, f"Uploading…  ·  {entry['_xfr']}")
         entry["item"].setForeground(3, accent_qcolor())
-        _conc, chunk_mb, max_chunks = self.get_mass_settings()
+        _conc, chunk_mb, max_chunks = self._mass_settings_provider.get_mass_settings()
         job = UploadJob(
             file_pairs=[(entry["local"], entry["dest"])],
             chunk_size_mb=chunk_mb,

@@ -5,6 +5,7 @@ Starts server-side remote downloads and displays transfer jobs.
 """
 
 import os
+from functools import partial
 from urllib.parse import urlparse, unquote
 
 from PySide6.QtCore import Qt, QSize, QTimer
@@ -166,7 +167,7 @@ class RemoteTab(QWidget):
 
         self.active_only_cb = QCheckBox("Active only")
         self.active_only_cb.setChecked(True)
-        self.active_only_cb.toggled.connect(lambda _: self.refresh_jobs())
+        self.active_only_cb.toggled.connect(self._on_active_only_toggled)
         tb.addWidget(self.active_only_cb)
         tb.addStretch()
 
@@ -181,9 +182,7 @@ class RemoteTab(QWidget):
         # accept either by adding the QHBoxLayout to the provided layout.
         parent_lay.addLayout(tb)
         try:
-            notifier().accent_changed.connect(
-                lambda _old, _new: self._on_accent_changed(_old, _new)
-            )
+            notifier().accent_changed.connect(self._on_accent_changed)
         except Exception:
             pass
 
@@ -310,11 +309,16 @@ class RemoteTab(QWidget):
         w = RemoteWorker(op, self._client, **kwargs)
         w.done.connect(self._on_done)
         w.error.connect(self._on_error)
-        w.finished.connect(
-            lambda: self._workers.remove(w) if w in self._workers else None
-        )
+        w.finished.connect(partial(self._remove_worker, w))
         self._workers.append(w)
         w.start()
+
+    def _on_active_only_toggled(self, _checked: bool):
+        self.refresh_jobs()
+
+    def _remove_worker(self, w):
+        if w in self._workers:
+            self._workers.remove(w)
 
     def _on_done(self, result: dict):
         op = result.get("op")

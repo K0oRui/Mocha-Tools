@@ -7,6 +7,7 @@ Public API
 """
 
 import sys
+from functools import partial
 
 from PySide6.QtCore import QSize, QTimer
 from PySide6.QtGui import QColor, QFont, QPalette
@@ -250,6 +251,6 @@ def main():
         getattr(win, "check_updates_on_launch_cb", None) is None
         or win.check_updates_on_launch_cb.isChecked()
     ):
-        QTimer.singleShot(2000, lambda: win._check_for_updates(silent=True))
+        QTimer.singleShot(2000, partial(win._check_for_updates, silent=True))
 
     sys.exit(app.exec())

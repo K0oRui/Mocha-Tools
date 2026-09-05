@@ -17,6 +17,7 @@ navigation we:
 """
 
 import os
+from functools import partial
 
 import requests
 
@@ -930,11 +931,10 @@ class FilesBrowserTab(QWidget):
       • Download file (direct or via browser)
     """
 
-    def __init__(self, client, get_upload_path, set_upload_path, parent=None):
+    def __init__(self, client, upload_path_provider, parent=None):
         super().__init__(parent)
         self._client = client
-        self.get_upload_path = get_upload_path
-        self.set_upload_path = set_upload_path
+        self._upload_path_provider = upload_path_provider
         self.current_path = "/"
         self._workers = []
         self._shares_map = {}
@@ -1214,7 +1214,7 @@ class FilesBrowserTab(QWidget):
         if cb is not None:
             cb.setText(self._current_share_url)
         self.copy_share_btn.setText("Copied!")
-        QTimer.singleShot(1500, lambda: self.copy_share_btn.setText("Copy link"))
+        QTimer.singleShot(1500, partial(self.copy_share_btn.setText, "Copy link"))
 
     def _tb(
         self, label: str, icon_name: str, slot, danger: bool = False
@@ -1334,11 +1334,13 @@ class FilesBrowserTab(QWidget):
         w = FilesWorker(op, self._client, **kwargs)
         w.done.connect(self._on_worker_done)
         w.error.connect(self._on_worker_error)
-        w.finished.connect(
-            lambda: self._workers.remove(w) if w in self._workers else None
-        )
+        w.finished.connect(partial(self._remove_worker, w))
         self._workers.append(w)
         w.start()
+
+    def _remove_worker(self, w):
+        if w in self._workers:
+            self._workers.remove(w)
 
     def _on_worker_done(self, result: dict):
         op = result.get("op")
@@ -2034,15 +2036,16 @@ class FilesBrowserTab(QWidget):
 
         w.done.connect(_on_done)
         w.error.connect(_on_err)
-        w.speed.connect(
-            lambda bps: self._status(
-                f"Downloading {name}… {bps / 1024 / 1024:.3f} MB/s"
-                if bps >= 1024 * 1024
-                else f"Downloading {name}… {bps / 1024:.3f} KB/s"
-            )
-        )
+        w.speed.connect(partial(self._on_download_speed, name))
         self._dl_workers.append(w)
         w.start()
+
+    def _on_download_speed(self, name: str, bps: float):
+        self._status(
+            f"Downloading {name}… {bps / 1024 / 1024:.3f} MB/s"
+            if bps >= 1024 * 1024
+            else f"Downloading {name}… {bps / 1024:.3f} KB/s"
+        )
 
     def _context_menu(self, pos):
         item = self.tree.itemAt(pos)

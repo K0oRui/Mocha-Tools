@@ -7,12 +7,22 @@ ui/widgets.py — Reusable custom Qt widgets for MochaTools.
 """
 
 import os
+from functools import partial
 
 from PySide6.QtCore import Qt, QSize, Signal, QUrl
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QDesktopServices
 from PySide6.QtWidgets import (
-    QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow,
-    QMenu, QPushButton, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMenu,
+    QPushButton,
+    QSizePolicy,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 from .icons import lucide_icon
@@ -20,6 +30,7 @@ from ..workers import UploadWorker
 
 
 # ── Drop Zone ─────────────────────────────────────────────────────────────────
+
 
 class DropZone(QFrame):
     """
@@ -45,7 +56,10 @@ class DropZone(QFrame):
         self._icon_label = QLabel("↑")
         self._icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         from ..theme import get_accent as _ga
-        self._icon_label.setStyleSheet(f"color: {_ga()}; font-size: 28px; font-weight: 700; background: transparent;")
+
+        self._icon_label.setStyleSheet(
+            f"color: {_ga()}; font-size: 28px; font-weight: 700; background: transparent;"
+        )
 
         row = QHBoxLayout()
         row.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -58,15 +72,22 @@ class DropZone(QFrame):
         # Ensure labels that rely on stylesheet tokens update when the font changes
         try:
             from ..theme import get_font, notifier
+
             fam, fsz = get_font()
             bold.setStyleSheet(f"font-size:{int(fsz)}px; background:transparent;")
             rest.setStyleSheet(f"font-size:{int(fsz)}px; background:transparent;")
+
             def _on_font_changed(_fam, sz):
                 try:
-                    bold.setStyleSheet(f"font-size:{int(sz)}px; background:transparent;")
-                    rest.setStyleSheet(f"font-size:{int(sz)}px; background:transparent;")
+                    bold.setStyleSheet(
+                        f"font-size:{int(sz)}px; background:transparent;"
+                    )
+                    rest.setStyleSheet(
+                        f"font-size:{int(sz)}px; background:transparent;"
+                    )
                 except Exception:
                     pass
+
             notifier().font_changed.connect(_on_font_changed)
         except Exception:
             pass
@@ -76,8 +97,10 @@ class DropZone(QFrame):
         self.file_label = QLabel("")
         self.file_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         from ..theme import get_accent
+
         try:
             from ..theme import get_font
+
             fsz = int(get_font()[1])
         except Exception:
             fsz = 12
@@ -86,6 +109,7 @@ class DropZone(QFrame):
         )
         try:
             from ..theme import notifier
+
             def _on_font_changed(_fam, sz):
                 try:
                     self.file_label.setStyleSheet(
@@ -93,11 +117,13 @@ class DropZone(QFrame):
                     )
                 except Exception:
                     pass
+
             notifier().font_changed.connect(_on_font_changed)
         except Exception:
             pass
         try:
             from ..theme import notifier
+
             def _on_accent_changed(_old, _new):
                 try:
                     # Re-polish outer drop zone so stylesheet rules targeting #drop_zone update
@@ -123,6 +149,7 @@ class DropZone(QFrame):
                     )
                 except Exception:
                     pass
+
             notifier().accent_changed.connect(_on_accent_changed)
         except Exception:
             pass
@@ -163,13 +190,22 @@ class DropZone(QFrame):
     def _browse(self):
         menu = QMenu(self)
         from ..theme import get_accent
-        act_file   = menu.addAction(lucide_icon("copy", get_accent(), 12), "Select files…")
-        act_folder = menu.addAction(lucide_icon("folder", get_accent(), 12), "Select folder…")
+
+        act_file = menu.addAction(
+            lucide_icon("copy", get_accent(), 12), "Select files…"
+        )
+        act_folder = menu.addAction(
+            lucide_icon("folder", get_accent(), 12), "Select folder…"
+        )
         chosen = menu.exec(self.mapToGlobal(self.rect().center()))
         if chosen == act_file:
             paths, _ = QFileDialog.getOpenFileNames(self, "Select files")
             if paths:
-                root = os.path.commonpath(paths) if len(paths) > 1 else os.path.dirname(paths[0])
+                root = (
+                    os.path.commonpath(paths)
+                    if len(paths) > 1
+                    else os.path.dirname(paths[0])
+                )
                 if os.path.isfile(root):
                     root = os.path.dirname(root)
                 self._set_paths(paths, root, is_folder=False)
@@ -200,22 +236,29 @@ class DropZone(QFrame):
             return
         name = os.path.basename(root.rstrip("/\\"))
         if len(file_list) == 1 and not is_folder:
-            size  = os.path.getsize(file_list[0])
-            label = f"{os.path.basename(file_list[0])}  ({UploadWorker._fmt_size(size)})"
+            size = os.path.getsize(file_list[0])
+            label = (
+                f"{os.path.basename(file_list[0])}  ({UploadWorker._fmt_size(size)})"
+            )
             selected_root = root
         elif is_folder:
             total = sum(os.path.getsize(p) for p in file_list)
-            label = f"{name}/  —  {len(file_list)} files  ({UploadWorker._fmt_size(total)})"
+            label = (
+                f"{name}/  —  {len(file_list)} files  ({UploadWorker._fmt_size(total)})"
+            )
             selected_root = os.path.dirname(root.rstrip("/\\"))
         else:
             total = sum(os.path.getsize(p) for p in file_list)
-            label = f"{len(file_list)} files selected  ({UploadWorker._fmt_size(total)})"
+            label = (
+                f"{len(file_list)} files selected  ({UploadWorker._fmt_size(total)})"
+            )
             selected_root = root
         self.file_label.setText(label)
         self.selection_changed.emit(file_list, selected_root)
 
 
 # ── Full-Width Tab Widget ─────────────────────────────────────────────────────
+
 
 class FullWidthTabWidget(QWidget):
     """
@@ -253,10 +296,11 @@ class FullWidthTabWidget(QWidget):
         # update tab styles when accent changes
         try:
             from ..theme import notifier
-            notifier().accent_changed.connect(lambda _old, _new: self._refresh_tab_styles())
+
+            notifier().accent_changed.connect(self._refresh_tab_styles)
             try:
                 # also refresh tab styles when the font size/family changes
-                notifier().font_changed.connect(lambda _fam, _sz: self._refresh_tab_styles())
+                notifier().font_changed.connect(self._refresh_tab_styles)
             except Exception:
                 pass
             try:
@@ -265,8 +309,8 @@ class FullWidthTabWidget(QWidget):
                 # these were previously hardcoded to mocha hex values and
                 # never refreshed, which is why the tab bar stayed stuck on
                 # the old theme even after the rest of the app switched.
-                notifier().background_changed.connect(lambda _old, _new: self._refresh_bar_background())
-                notifier().background_changed.connect(lambda _old, _new: self._refresh_tab_styles())
+                notifier().background_changed.connect(self._refresh_bar_background)
+                notifier().background_changed.connect(self._refresh_tab_styles)
             except Exception:
                 pass
         except Exception:
@@ -277,6 +321,7 @@ class FullWidthTabWidget(QWidget):
         the active background theme palette instead of a hardcoded mocha hex."""
         try:
             from ..theme import get_background_palette
+
             pal = get_background_palette()
             bg0 = pal["bg0"]
             bg1 = pal["bg1"]
@@ -307,7 +352,7 @@ class FullWidthTabWidget(QWidget):
         btn.setObjectName("tab_btn")
         btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn.setStyleSheet(self._btn_style(False))
-        btn.clicked.connect(lambda _checked, i=idx: self.setCurrentIndex(i))
+        btn.clicked.connect(partial(self._select_tab, idx))
         self._bar_lay.addWidget(btn)
         self._stack.addWidget(widget)
         self._tabs.append((btn, widget))
@@ -321,11 +366,20 @@ class FullWidthTabWidget(QWidget):
             self._tabs[index][0].setIconSize(QSize(14, 14))
 
     # Compat shims so callers don't need to know this isn't a real QTabWidget
-    def setIconSize(self, size): pass
-    def tabBar(self): return self
-    def setExpanding(self, _): pass
-    def setDrawBase(self, _): pass
-    def setCornerWidget(self, *_): pass
+    def setIconSize(self, size):
+        pass
+
+    def tabBar(self):
+        return self
+
+    def setExpanding(self, _):
+        pass
+
+    def setDrawBase(self, _):
+        pass
+
+    def setCornerWidget(self, *_):
+        pass
 
     def currentIndex(self) -> int:
         return self._current
@@ -336,7 +390,7 @@ class FullWidthTabWidget(QWidget):
         old = self._current
         self._current = index
         for i, (btn, _) in enumerate(self._tabs):
-            active = (i == index)
+            active = i == index
             btn.setChecked(active)
             btn.setStyleSheet(self._btn_style(active))
         self._stack.setCurrentIndex(index)
@@ -345,9 +399,12 @@ class FullWidthTabWidget(QWidget):
         # ensure button styles reflect any possible accent change
         self._refresh_tab_styles()
 
+    def _select_tab(self, index: int, _checked: bool = False):
+        self.setCurrentIndex(index)
+
     def _refresh_tab_styles(self):
         for i, (btn, _) in enumerate(self._tabs):
-            active = (i == self._current)
+            active = i == self._current
             btn.setStyleSheet(self._btn_style(active))
 
     @staticmethod
@@ -361,23 +418,31 @@ class FullWidthTabWidget(QWidget):
         try:
             from ..theme import get_accent, get_font
             from ..styles import compute_accent_variants
+
             acc, hov, _ = compute_accent_variants(get_accent())
             fam, fsz = get_font()
         except Exception:
             from ..theme import DEFAULT_ACCENT, DEFAULT_FONT_SIZE
             from ..styles import compute_accent_variants
+
             acc, hov, _ = compute_accent_variants(DEFAULT_ACCENT)
             fsz = DEFAULT_FONT_SIZE
 
         try:
             from ..theme import get_background_palette
+
             pal = get_background_palette()
             text_dim = pal["text_dim"]
             text_muted = pal["text_muted"]
             border2 = pal["border2"]
             bg3 = pal["bg3"]
         except Exception:
-            text_dim, text_muted, border2, bg3 = "#5a5650", "#9c9484", "#3d3a35", "#1e1c19"
+            text_dim, text_muted, border2, bg3 = (
+                "#5a5650",
+                "#9c9484",
+                "#3d3a35",
+                "#1e1c19",
+            )
 
         # Derive accent-tinted rgba fills for the active pill + hover state.
         def _rgba(hex_str, alpha):
@@ -388,7 +453,7 @@ class FullWidthTabWidget(QWidget):
             except Exception:
                 return hex_str
 
-        pill = _rgba(acc, 34)          # active pill fill (~13% accent)
+        pill = _rgba(acc, 34)  # active pill fill (~13% accent)
         pill_hover = _rgba(acc, 48)
         hover_bg = _rgba(border2, 45)  # inactive hover fill
 
@@ -409,12 +474,13 @@ class FullWidthTabWidget(QWidget):
 
 # ── Custom Title Bar ──────────────────────────────────────────────────────────
 
+
 class CustomTitleBar(QFrame):
     """Frameless window titlebar with drag-to-move, minimise, maximise, and close."""
 
     def __init__(self, window: QMainWindow, app_name: str, version: str, parent=None):
         super().__init__(parent)
-        self._window   = window
+        self._window = window
         self.setObjectName("titlebar")
         self.setFixedHeight(34)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -426,13 +492,18 @@ class CustomTitleBar(QFrame):
         # Coffee icon (clickable) + app name — keep original QLabel appearance
         self._icon_lbl = QLabel()
         from ..theme import get_accent
-        self._icon_lbl.setPixmap(lucide_icon("coffee", get_accent(), 15).pixmap(QSize(15, 15)))
+
+        self._icon_lbl.setPixmap(
+            lucide_icon("coffee", get_accent(), 15).pixmap(QSize(15, 15))
+        )
         self._icon_lbl.setStyleSheet("background:transparent; padding-right:6px;")
         self._icon_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
         self._icon_lbl.setToolTip("Open https://mocha.my")
+
         def _icon_clicked(event):
             if event.button() == Qt.MouseButton.LeftButton:
                 QDesktopServices.openUrl(QUrl("https://mocha.my"))
+
         self._icon_lbl.mousePressEvent = _icon_clicked
         lay.addWidget(self._icon_lbl)
 
@@ -452,7 +523,9 @@ class CustomTitleBar(QFrame):
 
         self._eta_lbl = QLabel("")
         self._eta_lbl.setObjectName("title_eta")
-        self._eta_lbl.setStyleSheet("background:transparent; margin-bottom:3px; margin-right:10px;")
+        self._eta_lbl.setStyleSheet(
+            "background:transparent; margin-bottom:3px; margin-right:10px;"
+        )
         self._eta_lbl.hide()
         lay.addWidget(self._eta_lbl)
 
@@ -473,9 +546,15 @@ class CustomTitleBar(QFrame):
         except Exception:
             self._native_frame = False
 
-        self._min_btn = self._make_btn("tb_minmax", "minus",  "#5a5650", 13, "Minimise",        window.showMinimized)
-        self._max_btn = self._make_btn("tb_minmax", "square", "#5a5650", 11, "Maximise",        self._toggle_maximise)
-        self._cls_btn = self._make_btn("tb_close",  "x",      "#5a5650", 13, "Close",           window.close)
+        self._min_btn = self._make_btn(
+            "tb_minmax", "minus", "#5a5650", 13, "Minimise", window.showMinimized
+        )
+        self._max_btn = self._make_btn(
+            "tb_minmax", "square", "#5a5650", 11, "Maximise", self._toggle_maximise
+        )
+        self._cls_btn = self._make_btn(
+            "tb_close", "x", "#5a5650", 13, "Close", window.close
+        )
 
         if self._native_frame:
             # Native frame: the OS draws the window controls, so hide ours and
@@ -487,7 +566,9 @@ class CustomTitleBar(QFrame):
             for btn in (self._min_btn, self._max_btn, self._cls_btn):
                 lay.addWidget(btn)
 
-    def _make_btn(self, obj_name, icon_name, color, icon_size, tooltip, slot) -> QPushButton:
+    def _make_btn(
+        self, obj_name, icon_name, color, icon_size, tooltip, slot
+    ) -> QPushButton:
         btn = QPushButton()
         btn.setObjectName(obj_name)
         btn.setIcon(lucide_icon(icon_name, color, icon_size))
@@ -535,10 +616,13 @@ class CustomTitleBar(QFrame):
         """Called by app to refresh titlebar icons when the accent changes."""
         try:
             from ..theme import get_accent
+
             acc = get_accent()
             # update coffee icon (keep it tinted with accent)
             try:
-                self._icon_lbl.setPixmap(lucide_icon("coffee", acc, 15).pixmap(QSize(15, 15)))
+                self._icon_lbl.setPixmap(
+                    lucide_icon("coffee", acc, 15).pixmap(QSize(15, 15))
+                )
             except Exception:
                 pass
             # refresh min/max/close icons as well
@@ -597,7 +681,10 @@ class CustomTitleBar(QFrame):
         except Exception:
             pass
         try:
-            if event.button() == Qt.MouseButton.LeftButton and not self._window.isMaximized():
+            if (
+                event.button() == Qt.MouseButton.LeftButton
+                and not self._window.isMaximized()
+            ):
                 try:
                     gp = event.globalPosition().toPoint()
                 except Exception:

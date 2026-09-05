@@ -34,6 +34,7 @@ Attached on ``win`` during install_upload:
 """
 
 import os
+from functools import partial
 
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtWidgets import (
@@ -115,8 +116,8 @@ def build_upload_tab(win) -> QWidget:
         _b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         _b.setCursor(Qt.CursorShape.PointingHandCursor)
 
-    win._mode_single_btn.clicked.connect(lambda: win._set_upload_mode("single"))
-    win._mode_multi_btn.clicked.connect(lambda: win._set_upload_mode("multi"))
+    win._mode_single_btn.clicked.connect(partial(win._set_upload_mode, "single"))
+    win._mode_multi_btn.clicked.connect(partial(win._set_upload_mode, "multi"))
     mode_row.addWidget(win._mode_single_btn)
     mode_row.addWidget(win._mode_multi_btn)
     main.addLayout(mode_row)
@@ -320,7 +321,7 @@ def install_upload(win, ctx):
     from .settings import save_settings
 
     # ── Mode toggle ─────────────────────────────────────────────────────────
-    def _set_upload_mode(mode: str):
+    def _set_upload_mode(mode: str, _checked=False):
         multi = mode == "multi"
         try:
             win._single_box.setVisible(not multi)
@@ -450,7 +451,7 @@ def install_upload(win, ctx):
         if cb is not None:
             cb.setText(ctx.share_result_url)
         win.copy_share_result_btn.setText("Copied!")
-        QTimer.singleShot(1500, lambda: win.copy_share_result_btn.setText("Copy link"))
+        QTimer.singleShot(1500, partial(win.copy_share_result_btn.setText, "Copy link"))
 
     win._copy_share_result = _copy_share_result
 
@@ -464,7 +465,10 @@ def install_upload(win, ctx):
     win._set_uploading = _set_uploading
 
     # ── Start / cancel ──────────────────────────────────────────────────────
+    _current_job_id: int | None = None
+
     def _start_upload():
+        nonlocal _current_job_id
 
         upload_path = win.upload_path_edit.text().strip() or "/"
         if not ctx.client.has_api_key:
@@ -526,14 +530,27 @@ def install_upload(win, ctx):
             max_chunks=win.max_chunks_spin.value(),
             source="single",
         )
-        ctx.upload_job_id = ctx.upload_manager.enqueue(job)
+        _current_job_id = ctx.upload_manager.enqueue(job)
+        ctx.upload_manager.subscribe(
+            _current_job_id,
+            {
+                "progress": _on_progress,
+                "speed": _on_speed,
+                "bytes": _on_bytes_progress,
+                "status": win._log,
+                "done": _on_finished,
+                "error": _on_error,
+            },
+        )
 
     win._start_upload = _start_upload
 
     def _cancel_upload():
-        if ctx.upload_job_id is not None:
-            ctx.upload_manager.cancel(ctx.upload_job_id)
-            ctx.upload_job_id = None
+        nonlocal _current_job_id
+        if _current_job_id is not None:
+            ctx.upload_manager.cancel(_current_job_id)
+            ctx.upload_manager.unsubscribe(_current_job_id)
+            _current_job_id = None
         win._set_uploading(False)
         win._badge("Cancelled", "#9ca3af")
         win.progress_bar.setValue(0)
@@ -571,8 +588,9 @@ def install_upload(win, ctx):
     win._on_speed = _on_speed
 
     def _on_finished(result: dict):
+        nonlocal _current_job_id
+        _current_job_id = None
         ctx.is_uploading = False
-        ctx.upload_job_id = None
         win._badge("Complete", "#4ade80")
         win.transferred_label.setText("")
         win._log(f"✓ Done! File ID: {result.get('file_id', '')}")
@@ -598,8 +616,9 @@ def install_upload(win, ctx):
     win._on_finished = _on_finished
 
     def _on_error(msg: str):
+        nonlocal _current_job_id
+        _current_job_id = None
         ctx.is_uploading = False
-        ctx.upload_job_id = None
         win._badge("Error", "#f87171")
         win.transferred_label.setText("")
         win._log(f"✗ Error: {msg}")
@@ -645,7 +664,7 @@ def install_upload(win, ctx):
         w = StorageWorker(ctx.client)
         w.done.connect(win._on_storage_done)
         w.error.connect(win._on_storage_error)
-        w.finished.connect(lambda: setattr(ctx, "storage_worker", None))
+        w.finished.connect(partial(setattr, ctx, "storage_worker", None))
         ctx.storage_worker = w
         w.start()
 
@@ -669,38 +688,5 @@ def install_upload(win, ctx):
     win._on_storage_error = _on_storage_error
 
     # ── Shared pipeline wiring ─────────────────────────────────────────────
-    # The single-file tab has at most one active job, so handlers filter on
-    # the current job ID.  Mass/sync tabs will subscribe to the same signals
-    # with their own job-ID routing.
-    mgr = ctx.upload_manager
-    if mgr is not None:
-        mgr.job_progress.connect(
-            lambda jid, ref, pct: (
-                win._on_progress(pct) if jid == ctx.upload_job_id else None
-            )
-        )
-        mgr.job_speed.connect(
-            lambda jid, ref, bps: (
-                win._on_speed(bps) if jid == ctx.upload_job_id else None
-            )
-        )
-        mgr.job_bytes.connect(
-            lambda jid, ref, done, total: (
-                win._on_bytes_progress(done, total)
-                if jid == ctx.upload_job_id
-                else None
-            )
-        )
-        mgr.job_status.connect(
-            lambda jid, ref, msg: win._log(msg) if jid == ctx.upload_job_id else None
-        )
-        mgr.job_done.connect(
-            lambda jid, ref, result: (
-                win._on_finished(result) if jid == ctx.upload_job_id else None
-            )
-        )
-        mgr.job_error.connect(
-            lambda jid, ref, msg: (
-                win._on_error(msg) if jid == ctx.upload_job_id else None
-            )
-        )
+    # The single-file tab subscribes per job via UploadManager.subscribe();
+    # mass/sync tabs route the global job signals through their own job maps.

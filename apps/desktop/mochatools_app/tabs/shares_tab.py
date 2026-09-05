@@ -11,6 +11,8 @@ fresh data in the background.  Deletes are applied optimistically to
 both the tree and the cache store before the worker confirms.
 """
 
+from functools import partial
+
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
@@ -91,9 +93,7 @@ class SharesTab(QWidget):
         tb.addWidget(self.status_lbl)
         parent_lay.addLayout(tb)
         try:
-            notifier().accent_changed.connect(
-                lambda _old, _new: self._on_accent_changed(_old, _new)
-            )
+            notifier().accent_changed.connect(self._on_accent_changed)
         except Exception:
             pass
 
@@ -225,10 +225,8 @@ class SharesTab(QWidget):
                     pass
             w = FilesWorker("shares", self._client)
             w.done.connect(self._on_done)
-            w.error.connect(lambda msg: self._status(f"✗ {msg}"))
-            w.finished.connect(
-                lambda: self._workers.remove(w) if w in self._workers else None
-            )
+            w.error.connect(self._on_refresh_error)
+            w.finished.connect(partial(self._remove_worker, w))
             self._workers.append(w)
             w.start()
 
@@ -315,6 +313,13 @@ class SharesTab(QWidget):
         self._status(f"✗ {msg}")
         QMessageBox.warning(self, "Error", msg)
 
+    def _on_refresh_error(self, msg: str):
+        self._status(f"✗ {msg}")
+
+    def _remove_worker(self, w):
+        if w in self._workers:
+            self._workers.remove(w)
+
     # ── Selection ─────────────────────────────────────────────────────────────
 
     def _on_selection_changed(self):
@@ -362,9 +367,7 @@ class SharesTab(QWidget):
         w = FilesWorker("toggle_shares", self._client, items=items)
         w.done.connect(self._on_toggle_done)
         w.error.connect(self._on_error)
-        w.finished.connect(
-            lambda: self._workers.remove(w) if w in self._workers else None
-        )
+        w.finished.connect(partial(self._remove_worker, w))
         self._workers.append(w)
         w.start()
 
@@ -408,9 +411,7 @@ class SharesTab(QWidget):
         w = FilesWorker("delete_shares", self._client, tokens=tokens)
         w.done.connect(self._on_delete_done)
         w.error.connect(self._on_error)
-        w.finished.connect(
-            lambda: self._workers.remove(w) if w in self._workers else None
-        )
+        w.finished.connect(partial(self._remove_worker, w))
         self._workers.append(w)
         w.start()
 

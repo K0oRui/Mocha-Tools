@@ -21,6 +21,7 @@ reach into ``win`` for cross-cutting state.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import partial
 
 from PySide6.QtCore import QEvent, QSize, Qt, QTimer
 from PySide6.QtWidgets import (
@@ -37,6 +38,12 @@ from .constants import (
 )
 from .logging_utils import write_debug_log
 from .mocha_client import MochaClient
+from .providers import (
+    WidgetApiKeyProvider,
+    WidgetMassSettingsProvider,
+    WidgetSyncSettingsProvider,
+    WidgetUploadPathProvider,
+)
 from .remote_cache import CachePoller, cache
 from .tabs import (
     FilesBrowserTab,
@@ -76,7 +83,6 @@ class AppContext:
 
     # Upload runtime state
     is_uploading: bool = False
-    upload_job_id: int | None = None
     last_speed_bps: float = 0.0
     last_bytes_done: int = 0
     last_bytes_total: int = 0
@@ -124,11 +130,6 @@ class MochaTools(QMainWindow):
         self.resize(760, 900)
 
         self.ctx = AppContext()
-        self.ctx.client = MochaClient(
-            get_api_key=lambda: self.api_key_edit.text().strip(),
-            logger=write_debug_log,
-        )
-        self.ctx.upload_manager = UploadManager(self.ctx.client, parent=self)
 
         self._poller: CachePoller | None = None
         self._storage_timer: QTimer | None = None
@@ -136,6 +137,13 @@ class MochaTools(QMainWindow):
         install_upload(self, self.ctx)
         install_update_controller(self, self.ctx)
         setup_tray(self, self.ctx)
+
+        self.ctx.client = MochaClient(
+            api_key_provider=WidgetApiKeyProvider(self),
+            logger=write_debug_log,
+        )
+        self.ctx.upload_manager = UploadManager(self.ctx.client, parent=self)
+
         self._build_ui()
         load_settings(self)
         try:
@@ -166,13 +174,12 @@ class MochaTools(QMainWindow):
         upload_tab = build_upload_tab(self)
         settings_tab = build_settings_tab(self)
         self.global_conc_spin.valueChanged.connect(
-            lambda v: self.ctx.upload_manager.set_concurrency(v)
+            self.ctx.upload_manager.set_concurrency
         )
 
         self.files_tab = FilesBrowserTab(
             client=self.ctx.client,
-            get_upload_path=lambda: self.upload_path_edit.text().strip(),
-            set_upload_path=lambda p: self.upload_path_edit.setText(p),
+            upload_path_provider=WidgetUploadPathProvider(self.upload_path_edit),
         )
         self.remote_tab = RemoteTab(
             client=self.ctx.client,
@@ -184,23 +191,21 @@ class MochaTools(QMainWindow):
         )
         self.sync_tab = SyncTab(
             client=self.ctx.client,
-            get_sync_settings=lambda: (
-                1,
-                self.sync_chunk_spin.value(),
-                self.sync_maxchunk_spin.value(),
+            sync_settings_provider=WidgetSyncSettingsProvider(
+                self.sync_chunk_spin,
+                self.sync_maxchunk_spin,
+                self.debug_cb,
             ),
-            get_debug=lambda: self.debug_cb.isChecked(),
             upload_manager=self.ctx.upload_manager,
         )
 
         self.mass_upload_section = MassUploadSection(
             client=self.ctx.client,
-            get_mass_settings=lambda: (
-                1,
-                self.mass_chunk_spin.value(),
-                self.mass_maxchunk_spin.value(),
+            mass_settings_provider=WidgetMassSettingsProvider(
+                self.mass_chunk_spin,
+                self.mass_maxchunk_spin,
+                self.debug_cb,
             ),
-            get_debug=lambda: self.debug_cb.isChecked(),
             on_upload_done=self._on_upload_done,
             embedded=True,
             upload_manager=self.ctx.upload_manager,
@@ -305,7 +310,7 @@ class MochaTools(QMainWindow):
             except Exception:
                 pass
             try:
-                QTimer.singleShot(0, lambda: apply_window_rounding(self))
+                QTimer.singleShot(0, partial(apply_window_rounding, self))
             except Exception:
                 pass
             if self.isMinimized() and self._tray_enabled():

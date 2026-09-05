@@ -22,6 +22,8 @@ Attached on ``win`` during setup_tray:
   win._sync_tab_status()
 """
 
+from functools import partial
+
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
@@ -259,7 +261,7 @@ def setup_tray(win, ctx):
     # 1 s tooltip timer
     timer = QTimer(win)
     timer.setInterval(1000)
-    timer.timeout.connect(lambda: _refresh_tray_tooltip(win, ctx))
+    timer.timeout.connect(partial(_refresh_tray_tooltip, win, ctx))
     timer.start()
     ctx.tray_tooltip_timer = timer
 

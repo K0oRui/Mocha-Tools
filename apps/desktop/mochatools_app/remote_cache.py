@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import threading
 import time
+from functools import partial
 from typing import Any, Callable
 
 from PySide6.QtCore import QThread, Signal, QObject
@@ -226,11 +227,13 @@ class CachePoller(QObject):
         for slot in slots:
             w = CachePollWorker(slot["op"], self._client, slot["kwargs"])
             w.refreshed.connect(self._on_refreshed)
-            w.finished.connect(
-                lambda _w=w: self._workers.remove(_w) if _w in self._workers else None
-            )
+            w.finished.connect(partial(self._remove_worker, w))
             self._workers.append(w)
             w.start()
+
+    def _remove_worker(self, w):
+        if w in self._workers:
+            self._workers.remove(w)
 
     def _on_refreshed(self, op: str, data: object, kwargs: dict):
         registry.notify(op, data, **kwargs)

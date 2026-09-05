@@ -445,13 +445,11 @@ class UploadWorker(QThread):
         # across all parallel part workers rather than only on part completion.
         # Use the caller-supplied callback when available (run() injects a
         # cumulative wrapper so multi-file batches show the right grand total).
-        _bytes_cb = bytes_progress_cb or (
-            lambda done, total: self.bytes_progress.emit(done, total)
-        )
+        _bytes_cb = bytes_progress_cb or self.bytes_progress.emit
         tracker = ProgressTracker(
             file_size,
-            on_progress=lambda pct: self.progress.emit(pct),
-            on_speed=lambda bps: self.speed.emit(bps),
+            on_progress=self.progress.emit,
+            on_speed=self.speed.emit,
             on_bytes_progress=_bytes_cb,
         )
 

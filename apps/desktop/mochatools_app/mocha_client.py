@@ -45,9 +45,13 @@ class MochaClient:
     _TIMEOUT = (5, 60)  # (connect, read)
 
     def __init__(
-        self, get_api_key, base_url=HARDCODED_BASE_URL, timeout=_TIMEOUT, logger=None
+        self,
+        api_key_provider,
+        base_url=HARDCODED_BASE_URL,
+        timeout=_TIMEOUT,
+        logger=None,
     ):
-        self._get_api_key = get_api_key
+        self._api_key_provider = api_key_provider
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._logger = logger
@@ -62,7 +66,7 @@ class MochaClient:
     def has_api_key(self) -> bool:
         """True when the current API key is non-empty."""
         try:
-            return bool(self._get_api_key())
+            return bool(self._api_key_provider.get_api_key())
         except Exception:
             return False
 
@@ -75,7 +79,7 @@ class MochaClient:
                 pass
 
     def _headers(self, file_name=None):
-        headers = {"Authorization": f"Bearer {self._get_api_key()}"}
+        headers = {"Authorization": f"Bearer {self._api_key_provider.get_api_key()}"}
         if file_name:
             # RFC 5987 encode so apostrophes/accents/etc don't corrupt the header
             headers["x-file-name"] = quote(file_name, safe="")

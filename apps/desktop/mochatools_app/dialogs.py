@@ -1,3 +1,6 @@
+import webbrowser
+from functools import partial
+
 from PySide6.QtCore import Qt, QThread, QTimer, QPoint, Signal
 from PySide6.QtGui import QColor, QMouseEvent
 from PySide6.QtWidgets import (
@@ -743,7 +746,7 @@ class ShareLinkDialog(MochaDialog):
         btn_row.addWidget(self.copy_btn)
 
         open_btn = _grey_btn("↗  Open", width=100)
-        open_btn.clicked.connect(lambda: __import__("webbrowser").open(url))
+        open_btn.clicked.connect(partial(webbrowser.open, url))
         btn_row.addWidget(open_btn)
 
         close_btn = _grey_btn("Close", width=100)
@@ -760,7 +763,7 @@ class ShareLinkDialog(MochaDialog):
         if cb is not None:
             cb.setText(self.url)
         self.copy_btn.setText("✓  Copied!")
-        QTimer.singleShot(2000, lambda btn=self.copy_btn: btn.setText("⧉  Copy URL"))
+        QTimer.singleShot(2000, partial(self.copy_btn.setText, "⧉  Copy URL"))
 
 
 # ── Local path dialog (used in mass-upload file picker) ──────────────────────

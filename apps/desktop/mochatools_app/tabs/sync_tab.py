@@ -34,7 +34,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Callable
+from functools import partial
 
 from PySide6.QtCore import Qt, QSize, QThread, QTimer, Signal
 from PySide6.QtGui import QColor
@@ -126,18 +126,14 @@ class SyncTab(QWidget):
     def __init__(
         self,
         client,
-        get_sync_settings: Callable[
-            [], tuple[int, int, int]
-        ],  # (conc, chunk_mb, max_chunks)
-        get_debug: Callable[[], bool] = lambda: False,
+        sync_settings_provider,
         parent=None,
         upload_manager=None,
     ):
         super().__init__(parent)
         self._client = client
         self._manager = upload_manager
-        self.get_sync_settings = get_sync_settings
-        self.get_debug = get_debug
+        self._sync_settings_provider = sync_settings_provider
 
         # pair_id → {local, remote, status, manifest, worker, scan_worker,
         #             tree_item, file_items, paused, error_msg}
@@ -198,9 +194,7 @@ class SyncTab(QWidget):
         tb.addWidget(self.status_lbl)
         parent_lay.addLayout(tb)
         try:
-            notifier().accent_changed.connect(
-                lambda _old, _new: self._on_accent_changed(_old, _new)
-            )
+            notifier().accent_changed.connect(self._on_accent_changed)
         except Exception:
             pass
 
@@ -459,12 +453,14 @@ class SyncTab(QWidget):
 
         sw = _ScanWorker(pair_id, pair["local"], pair["manifest"])
         sw.found.connect(self._on_scan_done)
-        sw.finished.connect(
-            lambda _sw=sw: self._workers.remove(_sw) if _sw in self._workers else None
-        )
+        sw.finished.connect(partial(self._remove_worker, sw))
         pair["scan_worker"] = sw
         self._workers.append(sw)
         sw.start()
+
+    def _remove_worker(self, w):
+        if w in self._workers:
+            self._workers.remove(w)
 
     def _on_scan_done(self, pair_id: str, changed: list):
         pair = self._pairs.get(pair_id)
@@ -487,7 +483,7 @@ class SyncTab(QWidget):
             return
         assert self._manager is not None
 
-        _conc, chunk_mb, max_chunks = self.get_sync_settings()
+        _conc, chunk_mb, max_chunks = self._sync_settings_provider.get_sync_settings()
         remote_root = pair["remote"].rstrip("/")
 
         # Enqueue per-file uploads through the shared pipeline
@@ -878,16 +874,16 @@ class SyncTab(QWidget):
 
         if pair["paused"]:
             a = menu.addAction(lucide_icon("play", get_accent(), 12), "Resume")
-            a.triggered.connect(lambda: self._toggle_pause_pair(pair_id))
+            a.triggered.connect(partial(self._toggle_pause_pair, pair_id))
         else:
             a = menu.addAction(lucide_icon("pause", get_accent(), 12), "Pause")
-            a.triggered.connect(lambda: self._toggle_pause_pair(pair_id))
+            a.triggered.connect(partial(self._toggle_pause_pair, pair_id))
 
         s1 = menu.addAction(lucide_icon("refresh-cw", get_accent(), 12), "Sync now")
-        s1.triggered.connect(lambda: self._scan_pair(pair_id))
+        s1.triggered.connect(partial(self._scan_pair, pair_id))
 
         s2 = menu.addAction(lucide_icon("refresh-cw", get_accent(), 12), "Refresh")
-        s2.triggered.connect(lambda: self._refresh_action(pair_id))
+        s2.triggered.connect(partial(self._refresh_action, pair_id))
         menu.addSeparator()
         menu.addAction(
             lucide_icon("trash-2", "#f87171", 12), "Remove"
@@ -986,7 +982,7 @@ class SyncTab(QWidget):
         self.status_lbl.setText(msg)
 
     def _log(self, msg: str):
-        if msg.startswith("[DEBUG]") and not self.get_debug():
+        if msg.startswith("[DEBUG]") and not self._sync_settings_provider.get_debug():
             return
         self.footer_lbl.setText(msg)
         self.footer_lbl.show()

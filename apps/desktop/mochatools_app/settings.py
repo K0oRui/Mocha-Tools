@@ -27,6 +27,7 @@ Internal helpers
 
 import json
 import os
+from functools import partial
 
 from PySide6.QtCore import QEvent, QObject, QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPalette
@@ -87,6 +88,25 @@ def _sh(text: str) -> QLabel:
     lbl.setFixedHeight(18)
     lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
     return lbl
+
+
+def _style_install_btn(win, _old: str, _new: str):
+    try:
+        win.install_update_btn.setStyleSheet(
+            f"min-height:0px; padding:0px 16px; font-size:13px; font-weight:700;"
+            f"background:{_new}; color:#111010; border:none; border-radius:7px;"
+        )
+    except Exception:
+        pass
+
+
+def _raise_font_overlay(win):
+    try:
+        btn = getattr(win.font_combo, "_overlay_btn", None)
+        if btn:
+            btn.raise_()
+    except Exception:
+        pass
 
 
 def _card() -> QFrame:
@@ -372,8 +392,8 @@ def _install_lucide_spin_arrows(sb: QSpinBox):
 
         ov = _SpinOverlay(sb)
         sb._lucide_overlay = ov
-        QTimer.singleShot(40, lambda: ov._reposition())
-        QTimer.singleShot(120, lambda: ov._reposition())
+        QTimer.singleShot(40, partial(ov._reposition))
+        QTimer.singleShot(120, partial(ov._reposition))
         return ov
     except Exception:
         return None
@@ -630,12 +650,7 @@ def build_updates_tab(win, lay: QVBoxLayout):
     win.install_update_btn.hide()
     btn_row.addWidget(win.install_update_btn)
     try:
-        notifier().accent_changed.connect(
-            lambda _old, _new: win.install_update_btn.setStyleSheet(
-                f"min-height:0px; padding:0px 16px; font-size:13px; font-weight:700;"
-                f"background:{_new}; color:#111010; border:none; border-radius:7px;"
-            )
-        )
+        notifier().accent_changed.connect(partial(_style_install_btn, win))
     except Exception:
         pass
 
@@ -869,7 +884,7 @@ def build_appearance_tab(win, lay: QVBoxLayout):
                 btn.setStyleSheet("background: transparent; border: none;")
                 btn.setCursor(cmb.cursor())
                 btn.setFixedSize(26, 26)
-                btn.clicked.connect(lambda: cmb.showPopup())
+                btn.clicked.connect(partial(self._show_popup))
                 cmb._overlay_btn = btn
                 cmb.installEventFilter(self)
                 try:
@@ -900,6 +915,12 @@ def build_appearance_tab(win, lay: QVBoxLayout):
                 except Exception:
                     pass
 
+            def _show_popup(self, _checked=False):
+                try:
+                    self.cmb.showPopup()
+                except Exception:
+                    pass
+
         try:
             _ComboOverlay(win.font_combo)
         except Exception:
@@ -911,10 +932,7 @@ def build_appearance_tab(win, lay: QVBoxLayout):
         try:
             QTimer.singleShot(
                 40,
-                lambda: (
-                    getattr(win.font_combo, "_overlay_btn", None)
-                    and win.font_combo._overlay_btn.raise_()
-                ),
+                partial(_raise_font_overlay, win),
             )
         except Exception:
             pass
@@ -1269,7 +1287,7 @@ def build_settings_tab(win) -> QWidget:
         tabs.currentChanged.connect(_ensure_accent_spin_arrows)
     except Exception:
         pass
-    QTimer.singleShot(120, lambda: _ensure_accent_spin_arrows(None))
+    QTimer.singleShot(120, partial(_ensure_accent_spin_arrows, None))
 
     center_row.addWidget(tabs, 1)
     tab_lay.addLayout(center_row, 1)
