@@ -8,10 +8,11 @@ from __future__ import annotations
 import contextlib
 import os
 import pathlib
+import time
 from functools import partial
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QPoint, QSize, Qt
+from PySide6.QtCore import QPoint, QSize, Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -38,6 +39,7 @@ from ..providers import DefaultMassSettingsProvider, MassSettingsProvider
 from ..theme import accent_qcolor, get_accent, get_font, notifier
 from ..ui import lucide_icon
 from ..upload_pipeline import PRIORITY_MASS, UploadJob, UploadManager
+from ..utils import decay_speed
 
 _KB = 1024
 
@@ -75,9 +77,12 @@ class MassUploadSection(QWidget):
         self._job_map: dict[int, dict] = {}
         self._cancelled = False
         self._embedded = embedded
-        self._last_speed_bps: float = 0.0
         self._build_ui()
         self._connect_manager()
+        self._speed_decay_timer = QTimer(self)
+        self._speed_decay_timer.setInterval(1000)
+        self._speed_decay_timer.timeout.connect(self._refresh_decayed_speed)
+        self._speed_decay_timer.start()
 
     def _build_ui(self) -> None:
         # If embedded into another scroll area (the main Upload tab), avoid
@@ -645,7 +650,9 @@ class MassUploadSection(QWidget):
         if not self._client.has_api_key:
             self._log("⚠ Enter API key in Settings first.")
             return
-        pending = [e for e in self._queue if e.get("status") == "pending"]
+        pending = [
+            e for e in self._queue if e.get("status") in ("pending", "cancelled")
+        ]
         if not pending:
             self._log("⚠ No pending items in the queue.")
             return
@@ -671,16 +678,32 @@ class MassUploadSection(QWidget):
         self._update_overall_progress()
 
     def _on_job_speed(self, job_id: int, _ref: object, bps: float) -> None:
-        if self._job_map.get(job_id) is None:
+        entry = self._job_map.get(job_id)
+        if entry is None:
             return
-        self._last_speed_bps = bps
+        entry["_speed_bps"] = bps
+        entry["_speed_ts"] = time.monotonic()
+        self._speed_lbl.setText(self._fmt_speed(self._total_speed()))
+
+    def _total_speed(self, now: float | None = None) -> float:
+        return sum(
+            decay_speed(e.get("_speed_bps", 0.0), e.get("_speed_ts", 0.0), now)
+            for e in self._queue
+            if e.get("status") == "uploading"
+        )
+
+    def _refresh_decayed_speed(self) -> None:
+        if not any(e.get("status") == "uploading" for e in self._queue):
+            return
+        self._speed_lbl.setText(self._fmt_speed(self._total_speed()))
+
+    @staticmethod
+    def _fmt_speed(bps: float) -> str:
         if bps < _KB:
-            txt = f"{bps:.0f} B/s"
-        elif bps < _KB**2:
-            txt = f"{bps / _KB:.1f} KB/s"
-        else:
-            txt = f"{bps / 1024**2:.2f} MB/s"
-        self._speed_lbl.setText(txt)
+            return f"{bps:.0f} B/s"
+        if bps < _KB**2:
+            return f"{bps / _KB:.1f} KB/s"
+        return f"{bps / 1024**2:.2f} MB/s"
 
     def _on_job_status(self, job_id: int, _ref: object, msg: str) -> None:
         if self._job_map.get(job_id) is not None:

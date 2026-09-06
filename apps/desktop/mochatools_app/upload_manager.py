@@ -37,6 +37,7 @@ from __future__ import annotations
 import contextlib
 import os
 import pathlib
+import time
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -589,9 +590,26 @@ def install_upload(win: Any, ctx: AppContext) -> None:
         from .utils import fmt_speed
 
         ctx.last_speed_bps = bps
+        ctx.last_speed_ts = time.monotonic()
         win.speed_label.setText(fmt_speed(bps))
 
     win._on_speed = _on_speed
+
+    # Decay the displayed speed toward zero when the transfer stalls, so the
+    # label doesn't keep showing a stale value while no bytes are moving.
+    def _refresh_decayed_speed() -> None:
+        if not ctx.is_uploading:
+            return
+        from .utils import decay_speed, fmt_speed
+
+        win.speed_label.setText(
+            fmt_speed(decay_speed(ctx.last_speed_bps, ctx.last_speed_ts))
+        )
+
+    _speed_decay_timer = QTimer(win)
+    _speed_decay_timer.setInterval(1000)
+    _speed_decay_timer.timeout.connect(_refresh_decayed_speed)
+    _speed_decay_timer.start()
 
     def _on_finished(result: dict) -> None:
         nonlocal current_job_id
@@ -643,7 +661,6 @@ def install_upload(win: Any, ctx: AppContext) -> None:
         from .remote_cache import cache as _cache
 
         _cache.invalidate("list", path=folder)
-        win._poller.add("list", path=folder)
         win._poller.force_refresh("list", path=folder)
         win.files_tab.notify_upload_done(folder)
 

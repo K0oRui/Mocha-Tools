@@ -61,6 +61,7 @@ from ..constants import (
 from ..logging_utils import write_debug_log
 from ..ui.icons import lucide_icon
 from ..upload_pipeline import PRIORITY_SYNC, UploadJob, UploadManager
+from ..utils import decay_speed
 from ..workers import UploadWorker
 
 if TYPE_CHECKING:
@@ -152,10 +153,15 @@ class SyncTab(QWidget):
         self._scan_timer.setInterval(SCAN_INTERVAL * 1000)
         self._scan_timer.timeout.connect(self._scan_all)
 
+        self._speed_decay_timer = QTimer(self)
+        self._speed_decay_timer.setInterval(1000)
+        self._speed_decay_timer.timeout.connect(self._refresh_decayed_speeds)
+
         self._build_ui()
         self._load_pairs()
         self._connect_manager()
         self._scan_timer.start()
+        self._speed_decay_timer.start()
 
     # ── UI construction ───────────────────────────────────────────────────────
 
@@ -544,6 +550,7 @@ class SyncTab(QWidget):
         if not pair:
             return
         pair["_speed_bps"] = bps
+        pair["_speed_ts"] = time.monotonic()
         rel = rel_path or pair.get("_active_rel")
         if rel:
             if bps < _KB:
@@ -896,6 +903,35 @@ class SyncTab(QWidget):
                 root.setText(2, "")
         else:
             root.setText(2, "")
+
+    def _refresh_decayed_speeds(self) -> None:
+        """Re-render pair speeds with stall decay so a frozen transfer doesn't
+        keep showing its last value forever."""
+        now = time.monotonic()
+        for pair in self._pairs.values():
+            if pair.get("status") != _ST_UPLOADING:
+                continue
+            root = pair.get("tree_item")
+            if root is None:
+                continue
+            bps = decay_speed(
+                pair.get("_speed_bps", 0.0),
+                pair.get("_speed_ts", 0.0),
+                now,
+            )
+            if bps > 0:
+                if bps < _KB:
+                    speed_str = f"{bps:.3f} B/s"
+                elif bps < _KB**2:
+                    speed_str = f"{bps / _KB:.3f} KB/s"
+                else:
+                    speed_str = f"{bps / 1024**2:.3f} MB/s"
+                root.setText(2, speed_str)
+                from ..theme import accent_qcolor
+
+                root.setForeground(2, accent_qcolor())
+            else:
+                root.setText(2, "")
 
     # ── Selection / context menu ──────────────────────────────────────────────
 

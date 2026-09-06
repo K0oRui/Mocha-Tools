@@ -1287,6 +1287,8 @@ class FilesBrowserTab(QWidget):
 
         # Unsubscribe from the old path's list updates
         registry.unsubscribe("list", self._on_list_cache_update, path=self.current_path)
+        if hasattr(self, "_poller") and self._poller:
+            self._poller.remove("list", path=self.current_path)
 
         self.current_path = path
         self.path_edit.setText(path)

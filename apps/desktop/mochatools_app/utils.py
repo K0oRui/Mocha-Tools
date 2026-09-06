@@ -4,6 +4,7 @@ No Qt imports, no side effects, no dependency on the MochaTools instance.
 """
 
 import re
+import time
 
 # ── Release notes ────────────────────────────────────────────────────────────
 
@@ -70,6 +71,29 @@ def parse_release_notes_md(notes: str) -> str:
 # ── Formatting helpers ───────────────────────────────────────────────────────
 
 _KB = 1024
+
+# ── Stall-aware speed decay ──────────────────────────────────────────────────
+
+_STALL_GRACE_SECONDS = 1.0
+_STALL_DECAY_SECONDS = 4.0
+
+
+def decay_speed(bps: float, last_ts: float, now: float | None = None) -> float:
+    """Decay a last-known speed toward zero once samples stop arriving.
+
+    Upload workers only emit speed while bytes are moving, so a stalled
+    transfer would otherwise keep showing its last value forever.  After a
+    short grace period the speed falls linearly to zero, mirroring how the
+    5s sliding-window average would behave during a stall.
+    """
+    if bps <= 0:
+        return 0.0
+    if now is None:
+        now = time.monotonic()
+    elapsed = now - last_ts
+    if elapsed <= _STALL_GRACE_SECONDS:
+        return bps
+    return bps * max(0.0, 1.0 - (elapsed - _STALL_GRACE_SECONDS) / _STALL_DECAY_SECONDS)
 
 
 def fmt_bytes(n: int) -> str:

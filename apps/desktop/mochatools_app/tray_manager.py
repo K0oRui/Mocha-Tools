@@ -24,6 +24,7 @@ Attached on ``win`` during setup_tray:
 from __future__ import annotations
 
 import contextlib
+import time
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -35,7 +36,7 @@ from .constants import APP_NAME
 from .logging_utils import write_debug_log
 from .theme import get_accent
 from .ui import lucide_icon
-from .utils import fmt_eta, fmt_speed
+from .utils import decay_speed, fmt_eta, fmt_speed
 
 if TYPE_CHECKING:
     from .app import AppContext
@@ -60,7 +61,7 @@ def _upload_tab_status(
         if ctx.last_bytes_total
         else None
     )
-    return True, pct, ctx.last_speed_bps, remaining
+    return True, pct, decay_speed(ctx.last_speed_bps, ctx.last_speed_ts), remaining
 
 
 def _mass_upload_status(
@@ -71,18 +72,30 @@ def _mass_upload_status(
     sec = getattr(win, "mass_upload_section", None)
     if not sec:
         return False, 0.0, 0.0, None
-    active = bool(getattr(sec, "_active_workers", None))
-    if not active:
-        return False, 0.0, 0.0, None
     pct = 0.0
     with contextlib.suppress(Exception):
         pct = sec._prog_bar.value() / 1000.0
-    speed = getattr(sec, "_last_speed_bps", 0.0)
+    speed = 0.0
     remaining = None
     try:
         queue = getattr(sec, "_queue", [])
-        all_done = sum(e.get("_bytes_done", 0) for e in queue)
-        all_total = sum(e.get("_bytes_total", 0) for e in queue)
+        active = [e for e in queue if e.get("status") == "uploading"]
+        if not active:
+            return False, 0.0, 0.0, None
+        # Sum speeds across all in-flight uploads; the last job's speed alone
+        # would understate total throughput when several run concurrently.
+        now = time.monotonic()
+        speed = sum(
+            decay_speed(e.get("_speed_bps", 0.0), e.get("_speed_ts", 0.0), now)
+            for e in active
+        )
+        # Only count entries that still have bytes to send; failed/cancelled
+        # entries would otherwise inflate the ETA with bytes never uploaded.
+        pending = [
+            e for e in queue if e.get("status") not in ("done", "error", "cancelled")
+        ]
+        all_done = sum(e.get("_bytes_done", 0) for e in pending)
+        all_total = sum(e.get("_bytes_total", 0) for e in pending)
         if all_total:
             remaining = max(all_total - all_done, 0)
     except (AttributeError, TypeError, RuntimeError) as e:
@@ -102,7 +115,10 @@ def _sync_tab_status(
     active_pairs = [p for p in pairs.values() if p.get("status") == "uploading"]
     if not active_pairs:
         return False, 0.0, 0.0, None
-    speed = sum(p.get("_speed_bps", 0.0) for p in active_pairs)
+    speed = sum(
+        decay_speed(p.get("_speed_bps", 0.0), p.get("_speed_ts", 0.0))
+        for p in active_pairs
+    )
     pct = 0.0
     if len(active_pairs) == 1:
         p = active_pairs[0]
@@ -111,7 +127,7 @@ def _sync_tab_status(
             pct = (done / total) * 100.0
     remaining = None
     totals = [(p.get("_bytes_done", 0), p.get("_bytes_total", 0)) for p in active_pairs]
-    if all(total for _, total in totals):
+    if any(total for _, total in totals):
         remaining = sum(max(total - done, 0) for done, total in totals)
     return True, pct, speed, remaining
 

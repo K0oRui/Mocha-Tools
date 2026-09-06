@@ -22,7 +22,7 @@ from .logging_utils import write_debug_log
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-POLL_INTERVAL = 5  # seconds between refreshes
+POLL_INTERVAL = 15  # seconds between refreshes
 _CACHE_VERSION = 0  # bumped on invalidation so stale renders never block
 
 
@@ -192,6 +192,8 @@ class CachePoller(QObject):
             self._slots = [
                 s for s in self._slots if not (s["op"] == op and s["kwargs"] == kwargs)
             ]
+            if not self._slots:
+                self.stop()
 
     def start(self) -> None:
         from PySide6.QtCore import QTimer
@@ -224,7 +226,13 @@ class CachePoller(QObject):
         # Clean up finished workers
         self._workers = [w for w in self._workers if not w.isFinished()]
 
+        # Skip slots that already have an in-flight fetch, so a concurrent
+        # force_refresh + start() doesn't spawn duplicate requests.
+        in_flight = {(w.op, tuple(sorted(w.kwargs.items()))) for w in self._workers}
         for slot in slots:
+            key = (slot["op"], tuple(sorted(slot["kwargs"].items())))
+            if key in in_flight:
+                continue
             w = CachePollWorker(slot["op"], self._client, slot["kwargs"])
             w.refreshed.connect(self._on_refreshed)
             w.finished.connect(partial(self._remove_worker, w))

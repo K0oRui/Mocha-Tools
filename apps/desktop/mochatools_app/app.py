@@ -92,6 +92,7 @@ class AppContext:
     # Upload runtime state
     is_uploading: bool = False
     last_speed_bps: float = 0.0
+    last_speed_ts: float = 0.0
     last_bytes_done: int = 0
     last_bytes_total: int = 0
     upload_grand_total: int = 0
@@ -239,8 +240,6 @@ class MochaTools(QMainWindow):
 
         # ── Remote cache poller ─────────────────────────────────────────────
         self._poller = CachePoller(self.ctx.client, self)
-        self._poller.add("shares")
-        self._poller.add("list", path="/")
         self.files_tab.attach_cache_poller(self._poller)
         self.shares_tab.attach_cache_poller(self._poller)
 
@@ -278,8 +277,18 @@ class MochaTools(QMainWindow):
         self.remote_tab.set_active(index == 1)
         if not self.ctx.client.has_api_key:
             return
-        if index in (_TAB_FILES, _TAB_SHARES) and self._poller:
-            self._poller.start()
+        if self._poller:
+            if index == _TAB_FILES:
+                self._poller.add("list", path=self.files_tab.current_path)
+                self._poller.add("shares")
+                self._poller.start()
+            elif index == _TAB_SHARES:
+                self._poller.remove("list", path=self.files_tab.current_path)
+                self._poller.add("shares")
+                self._poller.start()
+            else:
+                self._poller.remove("list", path=self.files_tab.current_path)
+                self._poller.remove("shares")
         if index == _TAB_FILES:
             self.files_tab._navigate(self.files_tab.current_path)
         elif index == _TAB_SHARES:

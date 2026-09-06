@@ -33,6 +33,7 @@ _KB = 1024
 _MIN_SAMPLES = 2
 _HTTP_CONFLICT = 409
 _HTTP_SERVER_ERROR_MIN = 500
+_FOLDER_CREATE_CONCURRENCY = 8
 
 
 # ── Progress Tracker ─────────────────────────────────────────────────────────
@@ -97,7 +98,6 @@ class ProgressTracker:
         with self._lock:
             self._sent = min(self._sent + n_bytes, self._total)
             now = time.monotonic()
-            max(now - self._start, 0.001)
             if now - self._last_emit >= self.EMIT_INTERVAL:
                 self._last_emit = now
                 pct = min(self._sent / self._total * 100, 99.999)
@@ -222,14 +222,32 @@ class UploadWorker(QThread):
                 for _, dest in self.file_pairs
             },
         )
+        # Collect every ancestor path so each folder is created exactly once
+        # instead of re-walking the same chain for every destination.
+        all_dirs: set[str] = set()
         for d in dest_dirs:
             if d == "/":
                 continue
-            self.status.emit(f"[DEBUG] Creating folder: {d}")
+            parts = d.strip("/").split("/")
+            for depth in range(1, len(parts) + 1):
+                all_dirs.add("/" + "/".join(parts[:depth]))
+        if all_dirs:
+            self.status.emit(f"[DEBUG] Ensuring {len(all_dirs)} folders…")
+            by_depth: dict[int, list[str]] = {}
+            for d in all_dirs:
+                by_depth.setdefault(d.count("/"), []).append(d)
             try:
-                self._ensure_folder(d)
+                # Parents are guaranteed to exist by the previous depth level,
+                # so siblings at the same depth can be created in parallel.
+                with ThreadPoolExecutor(max_workers=_FOLDER_CREATE_CONCURRENCY) as pool:
+                    for depth in sorted(by_depth):
+                        futures = [
+                            pool.submit(self._ensure_folder, d) for d in by_depth[depth]
+                        ]
+                        for fut in as_completed(futures):
+                            fut.result()
             except Exception as e:  # noqa: BLE001
-                self.error.emit(f"Failed to create folder {d!r}: {e}")
+                self.error.emit(f"Failed to create folder: {e}")
                 return
 
         # ── Compute grand total bytes ─────────────────────────────────────────
@@ -241,7 +259,16 @@ class UploadWorker(QThread):
                 sz = 0
             file_sizes.append(sz)
         grand_total: int = sum(file_sizes)
-        bytes_done_offset: int = 0
+
+        # One tracker per job, shared across every file: progress stays
+        # cumulative and the speed window keeps its history, so multi-file
+        # uploads don't reset the bar or re-ramp the ETA at each file.
+        tracker = ProgressTracker(
+            grand_total,
+            on_progress=self.progress.emit,
+            on_speed=self.speed.emit,
+            on_bytes_progress=self.bytes_progress.emit,
+        )
 
         # ── Upload each file ──────────────────────────────────────────────────
         for idx, (local_path, dest_path) in enumerate(self.file_pairs, 1):
@@ -260,29 +287,17 @@ class UploadWorker(QThread):
                 self.status.emit(f"{prefix}{file_name}  ({self._fmt_size(file_size)})")
                 self.status.emit(f"[DEBUG] Remote dest: {dest_path}")
 
-                offset = bytes_done_offset
-                grand = grand_total
-
-                def _on_bytes(
-                    done_this_file: int,
-                    _total_this_file: int,
-                    offset: int = offset,
-                    grand: int = grand,
-                ) -> None:
-                    self.bytes_progress.emit(min(offset + done_this_file, grand), grand)
-
                 self.status.emit("[DEBUG] Strategy: multipart upload")
                 file_id = self._multipart_upload(
                     file_size,
                     local_path,
                     dest_path,
-                    bytes_progress_cb=_on_bytes,
+                    tracker,
                 )
 
                 if self._cancel or file_id is None:
                     return
 
-                bytes_done_offset += file_size
                 last_file_id = file_id
 
                 if self.create_share and idx == total_files:
@@ -294,6 +309,7 @@ class UploadWorker(QThread):
                 self.error.emit(f"{prefix}{file_name}: {e}")
                 return
 
+        tracker.finish()
         self.finished.emit({"file_id": last_file_id, "share_url": last_share_url})
 
     # ── multipart upload (> 50 MB) ───────────────────────────────────────────
@@ -302,7 +318,7 @@ class UploadWorker(QThread):
         file_size: int,
         local_path: str,
         dest_path: str,
-        bytes_progress_cb: Callable[[int, int], None] | None = None,
+        tracker: ProgressTracker,
     ) -> str | None:
         import mimetypes
 
@@ -387,7 +403,7 @@ class UploadWorker(QThread):
                 file_name,
                 dest_dir,
                 mime_type,
-                bytes_progress_cb=bytes_progress_cb,
+                tracker=tracker,
                 verify_file_unchanged=_verify_file_unchanged,
             )
         finally:
@@ -401,7 +417,7 @@ class UploadWorker(QThread):
         file_name: str,
         dest_dir: str,
         mime_type: str,
-        bytes_progress_cb: Callable[[int, int], None] | None = None,
+        tracker: ProgressTracker,
         verify_file_unchanged: Callable[[], None] | None = None,
     ) -> str | None:
 
@@ -498,18 +514,9 @@ class UploadWorker(QThread):
         )
         self.status.emit(f"[DEBUG] Session: {upload_id}")
 
-        # Shared progress tracker — fires UI updates as bytes leave the socket
+        # The job-level tracker fires UI updates as bytes leave the socket
         # across all parallel part workers rather than only on part completion.
-        # Use the caller-supplied callback when available (run() injects a
-        # cumulative wrapper so multi-file batches show the right grand total).
-        bytes_cb = bytes_progress_cb or self.bytes_progress.emit
-        tracker = ProgressTracker(
-            file_size,
-            on_progress=self.progress.emit,
-            on_speed=self.speed.emit,
-            on_bytes_progress=bytes_cb,
-        )
-
+        # It is shared across every file so progress and speed stay cumulative.
         parts = []
         active_parts: set[int] = set()
         active_lock = threading.Lock()
@@ -589,7 +596,6 @@ class UploadWorker(QThread):
         j = self._complete_multipart_upload(complete_payload)
         file_id = j.get("fileId") or j.get("id") or (j.get("file") or {}).get("id")
         self.status.emit(f"[DEBUG] Multipart complete. File ID: {file_id}")
-        tracker.finish()
         return file_id
 
     def _complete_multipart_upload(self, payload: dict) -> dict:
@@ -853,46 +859,49 @@ class UploadWorker(QThread):
         self.status.emit("[DEBUG] Upload aborted.")
 
     def _ensure_folder(self, path: str) -> None:
-        """Create a folder and all missing parents via POST /api/files/folders.
-        The API takes {"path": <parent>, "name": <folder_name>}.
-        409 (already exists) and connection/timeout errors are both treated as
-        non-fatal — the folder either exists already or the server will create
-        it implicitly when the file is uploaded.  Only hard 4xx client errors
+        """Create a single folder at ``path`` via POST /api/files/folders.
+
+        The API takes {"path": <parent>, "name": <folder_name>}.  409 (already
+        exists) and connection/timeout errors are both treated as non-fatal —
+        the folder either exists already or the server will create it
+        implicitly when the file is uploaded.  Only hard 4xx client errors
         (excluding 409) are re-raised.
         """
         parts = path.strip("/").split("/")
-        for depth in range(1, len(parts) + 1):
-            name = parts[depth - 1]
-            parent = ("/" + "/".join(parts[: depth - 1])).rstrip("/") or "/"
-            try:
-                self._client.create_folder(parent, name, logger=self.status.emit)
-                self.status.emit(f"[DEBUG] Created folder: {parent}/{name}")
-            except MochaAPIError as e:
-                if e.kind == "http" and e.status_code == _HTTP_CONFLICT:
-                    self.status.emit(f"[DEBUG] Folder already exists: {parent}/{name}")
-                elif (
-                    e.kind == "http"
-                    and e.status_code is not None
-                    and e.status_code < _HTTP_SERVER_ERROR_MIN
-                ):
-                    # Hard client error (e.g. 403, 422) — re-raise
-                    self.status.emit(
-                        f"[DEBUG] Folder create hard error {parent}/{name}: {e}",
-                    )
-                    raise
-                else:
-                    # 5xx or ambiguous — folder likely exists, press on
-                    self.status.emit(
-                        f"[DEBUG] Folder create non-fatal error {parent}/{name}: {e}",
-                    )
-            except (
-                requests.exceptions.ConnectionError,
-                requests.exceptions.Timeout,
-            ) as e:
-                # Network hiccup — folder almost certainly already exists
+        if not parts:
+            return
+        name = parts[-1]
+        parent = ("/" + "/".join(parts[:-1])).rstrip("/") or "/"
+        full = f"{parent}/{name}" if parent != "/" else f"/{name}"
+        try:
+            self._client.create_folder(parent, name, logger=self.status.emit)
+            self.status.emit(f"[DEBUG] Created folder: {full}")
+        except MochaAPIError as e:
+            if e.kind == "http" and e.status_code == _HTTP_CONFLICT:
+                self.status.emit(f"[DEBUG] Folder already exists: {full}")
+            elif (
+                e.kind == "http"
+                and e.status_code is not None
+                and e.status_code < _HTTP_SERVER_ERROR_MIN
+            ):
+                # Hard client error (e.g. 403, 422) — re-raise
                 self.status.emit(
-                    f"[DEBUG] Folder create connection error (ignored) {parent}/{name}: {e}",
+                    f"[DEBUG] Folder create hard error {full}: {e}",
                 )
+                raise
+            else:
+                # 5xx or ambiguous — folder likely exists, press on
+                self.status.emit(
+                    f"[DEBUG] Folder create non-fatal error {full}: {e}",
+                )
+        except (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+        ) as e:
+            # Network hiccup — folder almost certainly already exists
+            self.status.emit(
+                f"[DEBUG] Folder create connection error (ignored) {full}: {e}",
+            )
 
     def _move_file(self, file_id: str, dest_path: str) -> str:
         """Move an uploaded file to dest_path via POST /api/files/move."""
