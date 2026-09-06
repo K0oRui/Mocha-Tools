@@ -1,7 +1,7 @@
 """app.py — MochaTools main window and orchestrator.
 
 MochaTools is the application shell.  Tab content lives in
-mochatools_app/tabs/, shared widgets in mochatools_app/ui/,
+src/tabs/, shared widgets in src/ui/,
 and subsystems are factored out to:
 
   settings.py        - Settings tab UI + persistence

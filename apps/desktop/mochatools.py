@@ -1,4 +1,4 @@
-from mochatools_app.entrypoint import main
+from src.entrypoint import main
 
 if __name__ == "__main__":
     main()

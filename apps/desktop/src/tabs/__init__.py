@@ -1,6 +1,6 @@
 """tabs — per-tab widgets for MochaTools."""
 
-# settings.py lives at the mochatools_app package level
+# settings.py lives at the src package level
 from ..settings import (
     build_basic_tab,
     build_settings_tab,

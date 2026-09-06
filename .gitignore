@@ -9,9 +9,9 @@ __pycache__/
 # App-specific
 /apps/desktop/dist/
 /apps/desktop/.venv/
-/apps/desktop/mochatools_app/__pycache__/
-/apps/desktop/mochatools_app/tabs/__pycache__/
-/apps/desktop/mochatools_app/ui/__pycache__/
+/apps/desktop/src/__pycache__/
+/apps/desktop/src/tabs/__pycache__/
+/apps/desktop/src/ui/__pycache__/
 /apps/desktop/mochatools.log
 
 # Local API documentation

@@ -1,5 +1,5 @@
 {
-  "include": ["apps/desktop/mochatools_app"],
+  "include": ["apps/desktop/src"],
   "reportAttributeAccessIssue": "none",
   "reportOptionalMemberAccess": "none",
   "reportArgumentType": "none"

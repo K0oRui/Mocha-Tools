@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """builditems/stamp_version.py
 Called by build.yml before PyInstaller runs.
-Rewrites the APP_VERSION line in mochatools_app/constants.py,
+Rewrites the APP_VERSION line in src/constants.py,
 patches !define APP_VERSION in installer.nsi,
 patches APP_VERSION in installer.sh, and generates
 builditems/windows/version.txt for PyInstaller's --version-file.
@@ -34,7 +34,7 @@ def main() -> None:
     root = Path(__file__).parent.parent
 
     # ── 1. constants.py ───────────────────────────────────────────────────────
-    constants = root / "mochatools_app" / "constants.py"
+    constants = root / "src" / "constants.py"
     if not constants.exists():
         print(f"Not found: {constants}", file=sys.stderr)
         sys.exit(1)
