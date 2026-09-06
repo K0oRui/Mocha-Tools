@@ -14,6 +14,9 @@ __pycache__/
 /apps/desktop/mochatools_app/ui/__pycache__/
 /apps/desktop/mochatools.log
 
+# Local API documentation
+/DOCS/
+
 # Legacy / misc
 /Mocha Tools.zip
 /Mocha Tools.spec
