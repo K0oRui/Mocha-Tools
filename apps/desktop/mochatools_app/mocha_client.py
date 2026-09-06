@@ -218,13 +218,30 @@ class MochaClient:
         self,
         path: str = "/",
         timeout: float | tuple[float, float] | None = None,
+        max_pages: int = 100,
     ) -> dict:
-        return self._json(
-            "GET",
-            "/api/files",
-            params={"path": path, "includeSubfolders": "0"},
-            timeout=timeout,
-        )
+        """Fetch a folder listing, following cursor pagination until
+        ``hasMore`` is false.  Returns merged files/folders across pages.
+        """
+        files: list[dict] = []
+        folders: list[dict] = []
+        cursor: str | None = None
+        for _ in range(max_pages):
+            params: dict[str, str] = {"path": path, "includeSubfolders": "0"}
+            if cursor:
+                params["cursor"] = cursor
+            page = self._json("GET", "/api/files", params=params, timeout=timeout)
+            files.extend(page.get("files") or [])
+            folders.extend(page.get("folders") or [])
+            if not page.get("hasMore") or not page.get("nextCursor"):
+                break
+            cursor = page["nextCursor"]
+        return {
+            "files": files,
+            "folders": folders,
+            "nextCursor": None,
+            "hasMore": False,
+        }
 
     def delete_file(
         self,
@@ -284,7 +301,6 @@ class MochaClient:
         *,
         file_id: str | None = None,
         folder_path: str | None = None,
-        source_path: str | None = None,
         to_path: str,
         timeout: float | tuple[float, float] = 30,
         logger: Callable[[str], None] | None = None,
@@ -294,7 +310,8 @@ class MochaClient:
         elif file_id:
             payload = {"fileId": file_id, "toPath": to_path}
         else:
-            payload = {"sourcePath": source_path, "toPath": to_path}
+            msg = "move() requires either file_id or folder_path"
+            raise ValueError(msg)
         return self._json(
             "POST",
             "/api/files/move",
@@ -306,12 +323,16 @@ class MochaClient:
     def presigned_url(
         self,
         file_id: str,
+        disposition: str | None = None,
         timeout: float | tuple[float, float] | None = 15,
     ) -> str:
+        params: dict[str, str] = {"fileId": file_id}
+        if disposition:
+            params["disposition"] = disposition
         data = self._json(
             "GET",
             "/api/files/presigned",
-            params={"fileId": file_id},
+            params=params,
             timeout=timeout,
         )
         url = (
@@ -329,17 +350,27 @@ class MochaClient:
 
     def create_share(
         self,
-        file_id: str,
+        file_id: str | None = None,
+        folder_path: str | None = None,
         expires_in_hours: int | None = None,
         max_downloads: int = 0,
+        password: str | None = None,
         timeout: float | tuple[float, float] | None = 30,
         logger: Callable[[str], None] | None = None,
     ) -> dict:
-        payload: dict[str, Any] = {"fileId": file_id}
-        if expires_in_hours is not None:
-            payload["expiresInHours"] = expires_in_hours
+        if file_id:
+            payload: dict[str, Any] = {"fileId": file_id}
+        elif folder_path:
+            payload = {"folderPath": folder_path}
+        else:
+            msg = "create_share() requires either file_id or folder_path"
+            raise ValueError(msg)
+        # null = never expires (docs default is 24h when the field is omitted)
+        payload["expiresInHours"] = expires_in_hours
         if max_downloads and max_downloads > 0:
             payload["maxDownloads"] = max_downloads
+        if password:
+            payload["password"] = password
         return self._json(
             "POST",
             "/api/shares",
@@ -357,10 +388,20 @@ class MochaClient:
     def get_share(
         self,
         token: str,
+        access_token: str | None = None,
         timeout: float | tuple[float, float] | None = None,
     ) -> dict:
         # Share metadata is fetched without auth today; keep that behavior.
-        resp = self._request("GET", f"/api/shares/{token}", auth=False, timeout=timeout)
+        params: dict[str, str] = {}
+        if access_token:
+            params["accessToken"] = access_token
+        resp = self._request(
+            "GET",
+            f"/api/shares/{token}",
+            auth=False,
+            params=params,
+            timeout=timeout,
+        )
         try:
             return resp.json()
         except ValueError as e:
@@ -402,18 +443,22 @@ class MochaClient:
         path: str,
         size: int,
         mime_type: str,
+        direct_part_size_bytes: int | None = None,
         timeout: float | tuple[float, float] | None = 30,
         logger: Callable[[str], None] | None = None,
     ) -> dict:
+        payload: dict[str, Any] = {
+            "originalName": file_name,
+            "path": path,
+            "size": size,
+            "mimeType": mime_type,
+        }
+        if direct_part_size_bytes is not None:
+            payload["directPartSizeBytes"] = direct_part_size_bytes
         return self._json(
             "POST",
             "/api/files/multipart/init",
-            json={
-                "originalName": file_name,
-                "path": path,
-                "size": size,
-                "mimeType": mime_type,
-            },
+            json=payload,
             timeout=timeout,
             logger=logger,
         )
@@ -441,7 +486,6 @@ class MochaClient:
         logger: Callable[[str], None] | None = None,
     ) -> str:
         params = {
-            "strategy": session["strategy"],
             "uploadId": session["uploadId"],
             "key": session["key"],
             "nodeId": session["nodeId"],
@@ -480,7 +524,14 @@ class MochaClient:
         data = self._json(
             "POST",
             "/api/files/multipart/presigned",
-            json={**session, "partNumbers": [part_num]},
+            json={
+                "uploadId": session["uploadId"],
+                "key": session["key"],
+                "nodeId": session["nodeId"],
+                "originalName": session["originalName"],
+                "path": session["path"],
+                "partNumbers": [part_num],
+            },
             timeout=timeout,
             logger=logger,
         )

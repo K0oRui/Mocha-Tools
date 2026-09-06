@@ -418,6 +418,7 @@ class UploadWorker(QThread):
                     dest_dir,
                     file_size,
                     mime_type,
+                    direct_part_size_bytes=self._chunk_size,
                     logger=self.status.emit,
                 )
                 last_init_error = None
@@ -450,18 +451,16 @@ class UploadWorker(QThread):
         # Store the init response fields in one session payload so every
         # multipart request uses the same uploadId, key, nodeId, and path.
         # The backend uses those values to find the existing upload session.
-        strategy = init_data.get("strategy")
         upload_id = init_data.get("uploadId")
         key = init_data.get("key")
         node_id = init_data.get("nodeId")
-        direct = init_data.get("directUploadEnabled") is not False
+        direct = init_data.get("directPartUpload", True) is not False
 
-        if strategy not in ("s3", "webdav") or not upload_id or not key or not node_id:
+        if not upload_id or not key or not node_id:
             msg = f"Invalid multipart init response: {init_data}"
             raise RuntimeError(msg)
 
         session = {
-            "strategy": strategy,
             "uploadId": upload_id,
             "key": key,
             "nodeId": node_id,
@@ -471,11 +470,23 @@ class UploadWorker(QThread):
             "mimeType": mime_type,
         }
 
-        # Use configured chunk size; max concurrent parts is capped by _max_chunks.
-        # partSizeBytes from the server is the *maximum* allowed, not a requirement.
-        chunk_size = self._chunk_size
+        # Chunk by the server's part size (docs: chunk by the response's
+        # directPartSizeBytes, not the one you asked for).  Clamp to the
+        # configured chunk size so a smaller user setting is respected —
+        # an oversized part is rejected mid-body and surfaces as a write
+        # timeout.  Relay uploads chunk by partSizeBytes (50 MB max).
+        if direct:
+            server_part_size = init_data.get("directPartSizeBytes") or init_data.get(
+                "partSizeBytes"
+            )
+        else:
+            server_part_size = init_data.get("partSizeBytes")
+        if server_part_size:
+            chunk_size = min(self._chunk_size, int(server_part_size))
+        else:
+            chunk_size = self._chunk_size
         total_parts = math.ceil(file_size / chunk_size)
-        mode = "direct S3" if strategy == "s3" and direct else "server relay"
+        mode = "direct S3" if direct else "server relay"
         concurrency = self._multipart_concurrency(
             init_data,
             total_parts,
@@ -483,7 +494,7 @@ class UploadWorker(QThread):
             self._max_chunks,
         )
         self.status.emit(
-            f"[DEBUG] Multipart upload: {total_parts} parts… (strategy={strategy}, mode={mode}, partSize={self._fmt_size(chunk_size)}, concurrency={concurrency})",
+            f"[DEBUG] Multipart upload: {total_parts} parts… (mode={mode}, partSize={self._fmt_size(chunk_size)}, concurrency={concurrency})",
         )
         self.status.emit(f"[DEBUG] Session: {upload_id}")
 
@@ -523,7 +534,7 @@ class UploadWorker(QThread):
             self.status.emit(
                 f"[DEBUG] Chunk size for part {part_num}: {len(chunk)} bytes",
             )
-            if strategy == "s3" and direct:
+            if direct:
                 etag = self._upload_part_s3(session, part_num, chunk, tracker)
             else:
                 etag = self._upload_part_relay(session, part_num, chunk, tracker)
@@ -788,7 +799,7 @@ class UploadWorker(QThread):
         chunk: bytes,
         tracker: ProgressTracker,
     ) -> str | None:
-        """Upload one part directly to S3 via a presigned URL (strategy='s3')."""
+        """Upload one part directly to S3 via a presigned URL (directPartUpload)."""
         last_error: Exception | None = None
         for attempt in range(1, PART_UPLOAD_RETRIES + 1):
             if self._cancel:
@@ -1030,19 +1041,17 @@ class FilesWorker(QThread):
         to_path = new_path if new_path.endswith("/") else new_path.rstrip("/") + "/"
         if is_folder:
             # Folder move: {"folderPath": "/from/folder/", "toPath": "/to/"}
-            self._client.move(
-                folder_path=self.kwargs.get("source_path", ""),
-                to_path=to_path,
-            )
+            folder_path = self.kwargs.get("source_path", "")
+            if not folder_path:
+                msg = "Folder move requires a source folder path"
+                raise ValueError(msg)
+            self._client.move(folder_path=folder_path, to_path=to_path)
         elif file_id:
             # File move by ID (preferred): {"fileId": "...", "toPath": "/dest/"}
             self._client.move(file_id=file_id, to_path=to_path)
         else:
-            # File move by path fallback
-            self._client.move(
-                source_path=self.kwargs.get("source_path", ""),
-                to_path=to_path,
-            )
+            msg = "File move requires a file ID"
+            raise ValueError(msg)
         self.done.emit({"op": "move", "new_path": new_path})
 
     # label → hours mapping for the Files-tab share dialog
@@ -1062,7 +1071,7 @@ class FilesWorker(QThread):
         expiry_label = self.kwargs.get("expiry", "Never")
         expiry_hours = self._EXPIRY_LABEL_TO_HOURS.get(
             expiry_label,
-        )  # None → omit field
+        )  # None → expiresInHours: null (never expires)
         max_dl = self.kwargs.get("max_downloads", 0)
         data = self._client.create_share(
             file_id,
