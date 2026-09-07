@@ -6,29 +6,37 @@ Flow:
      If a newer version exists it emits update_available(tag, url, release_notes).
 
   2. When the user clicks "Update Now", UpdateDownloadWorker downloads
-     the correct asset for the running platform.
+     the correct asset for the running platform + variant.
 
-     - Windows: downloads the NSIS installer exe and emits
-       ready_to_restart(path) with a batch script that launches it
-       after this process exits.
-     - Linux: downloads the linux tarball and emits
-       ready_to_restart(path) with a shell script that extracts the
-       tarball and runs installer.sh in a terminal window after this
-       process exits, so the user can respond to any sudo/password
-       prompts interactively.
-     - macOS: replaces the .app bundle in-place and emits done().
+     - Windows portable: downloads MochaTools-Portable-<tag>.exe and emits
+       ready_to_restart(path) with a batch script that swaps the binary in
+       place and relaunches after this process exits (staged swap).
+     - Windows installer: downloads MochaTools-Setup-<tag>.exe and emits
+       ready_to_restart(path) with a batch script that runs the installer
+       silently (--silent) and relaunches after this process exits.
+     - Linux portable: downloads MochaTools-<tag>-linux.tar.gz and emits
+       ready_to_restart(path) with a shell script that swaps the binary in
+       place and relaunches after this process exits.
+     - Linux installer: downloads the .deb/.rpm and emits
+       ready_to_restart(path) with a shell script that installs it via
+       dpkg/rpm in a terminal window (needs root — cannot self-install).
+     - macOS: downloads MochaTools-<tag>-macOS-<arch>.dmg, mounts it, and
+       emits done(message) — the user drags the new .app over the old one
+       (macOS cannot self-replace a running app).
 
-Asset naming convention (must match build.yml):
-  Windows : MochaTools-Setup-<version>.exe      e.g. MochaTools-Setup-3.0.1.exe
-  Linux   : MochaTools-<version>-linux.tar.gz   e.g. MochaTools-3.0.1-linux.tar.gz
-  macOS   : macos-<arch>-<version>.zip          e.g. macos-arm64-3.0.1.zip
-              arch is one of: x86_64 | arm64 | universal
+Asset naming convention (must match release.yml / build.py):
+  Windows portable : MochaTools-Portable-<version>.exe
+  Windows installer: MochaTools-Setup-<version>.exe
+  Linux portable   : MochaTools-<version>-linux.tar.gz
+  Linux installer  : MochaTools-<version>-amd64.deb | MochaTools-<version>-x86_64.rpm
+  macOS            : MochaTools-<version>-macOS-<arch>.dmg
 """
 
 from __future__ import annotations
 
 import contextlib
 import ctypes
+import os
 import pathlib
 import platform
 import shutil
@@ -36,7 +44,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import zipfile
 
 import requests
 from packaging.version import Version
@@ -95,17 +102,44 @@ def _current_exe_override() -> str:
     return dummy_exe
 
 
-def _asset_prefix() -> str:
-    """Return the macOS arch-specific filename prefix used in GitHub release
-    assets, e.g. "macos-arm64-3.0.1.zip". Windows and Linux assets use their
-    own naming schemes handled directly in _asset_name().
+def _is_portable_windows() -> bool:
+    """True when running the portable (no-installer) Windows build.
+
+    The portable artifact is named ``MochaTools-Portable-<version>.exe``; the
+    installer-installed binary is ``Mocha Tools.exe``.
     """
-    machine = platform.machine().lower()
-    if machine == "arm64":
-        return "macos-arm64"
-    if machine == "x86_64":
-        return "macos-x86_64"
-    return "macos-universal"
+    if platform.system() != "Windows" or not _is_compiled():
+        return False
+    return "Portable" in pathlib.Path(_current_exe()).name
+
+
+def _is_portable_linux() -> bool:
+    """True when running a portable Linux build (tarball or AppImage).
+
+    The AppImage sets the ``APPIMAGE`` env var; the tarball ships a
+    ``.mochatools-portable`` marker file next to the binary.
+    """
+    if platform.system() != "Linux":
+        return False
+    if os.environ.get("APPIMAGE"):
+        return True
+    if not _is_compiled():
+        return False
+    return (pathlib.Path(_current_exe()).parent / ".mochatools-portable").exists()
+
+
+def _macos_arch() -> str:
+    """Return the macOS arch suffix used in release asset names."""
+    if platform.machine().lower() == "arm64":
+        return "arm64"
+    return "x86_64"
+
+
+def _linux_package() -> str:
+    """Return the native Linux package format: 'deb' or 'rpm'."""
+    if shutil.which("rpm") and not shutil.which("dpkg"):
+        return "rpm"
+    return "deb"
 
 
 def _asset_name(tag: str) -> str:
@@ -116,16 +150,20 @@ def _asset_name(tag: str) -> str:
         msg = "_asset_name() called with an empty tag"
         raise ValueError(msg)
 
-    if platform.system() == "Windows":
-        # Windows installer asset filename matches build.yml's ${{ env.VERSION }},
-        # e.g. tag "3.0.1" -> "MochaTools-Setup-3.0.1.exe"
+    system = platform.system()
+    if system == "Windows":
+        if _is_portable_windows():
+            return f"MochaTools-Portable-{tag}.exe"
         return f"MochaTools-Setup-{tag}.exe"
 
-    if platform.system() != "Darwin":
-        # Linux asset is the standalone tarball, e.g. "MochaTools-3.0.1-linux.tar.gz"
-        return f"MochaTools-{tag}-linux.tar.gz"
+    if system == "Darwin":
+        return f"MochaTools-{tag}-macOS-{_macos_arch()}.dmg"
 
-    return f"{_asset_prefix()}-{tag}.zip"
+    if _is_portable_linux():
+        return f"MochaTools-{tag}-linux.tar.gz"
+    if _linux_package() == "rpm":
+        return f"MochaTools-{tag}-x86_64.rpm"
+    return f"MochaTools-{tag}-amd64.deb"
 
 
 def _is_newer(latest: str, current: str) -> bool:
@@ -246,8 +284,8 @@ def launch_update_batch(bat_path: str, _test_mode: bool = False) -> None:
                 terminal emulator so the user can see progress and answer sudo
                 prompts.  Falls back to a bare background Popen if no terminal
                 is found, and raises RuntimeError if that also fails.
-    - macOS   : update is applied in-place by _install_macos; this function is
-                not normally called on that platform.
+    - macOS   : update is applied by mounting the DMG; this function is not
+                normally called on that platform.
     """
     if not bat_path or not pathlib.Path(bat_path).exists():
         return
@@ -274,7 +312,7 @@ def launch_update_batch(bat_path: str, _test_mode: bool = False) -> None:
 
     else:
         # Linux (and macOS fallback): the script is a .sh — open it in a
-        # terminal so the user can interact with installer.sh (sudo prompts, etc.)
+        # terminal so the user can interact with the installer (sudo prompts, etc.)
         launched = launch_update_terminal(bat_path)
         if not launched:
             # No graphical terminal found — run headlessly as a last resort.
@@ -297,8 +335,9 @@ def launch_update_batch(bat_path: str, _test_mode: bool = False) -> None:
 
 def launch_update_terminal(script_path: str) -> bool:
     """Launch a previously-prepared update shell script (see
-    UpdateDownloadWorker._install_linux) inside a terminal emulator so the
-    user can see output and respond to any sudo/password prompts.
+    UpdateDownloadWorker._install_linux_portable / _install_linux_package)
+    inside a terminal emulator so the user can see output and respond to any
+    sudo/password prompts.
 
     Returns True if a terminal was launched, False if none could be found
     (caller should show an error pointing the user at the script path).
@@ -350,14 +389,14 @@ def launch_update_terminal(script_path: str) -> bool:
 
 
 class UpdateDownloadWorker(QThread):
-    """Downloads the update asset and replaces the running binary."""
+    """Downloads the update asset and prepares the platform install."""
 
     progress = Signal(int)  # 0-100
     status = Signal(str)  # human-readable status text
-    done = Signal()  # update installed; caller should prompt restart
+    done = Signal(str)  # message; update prepared, user must finish manually
     ready_to_restart = Signal(str)  # path to a script ready to launch on restart
-    # (Windows: .bat that launches the installer exe;
-    #  Linux: .sh launched in a terminal that runs installer.sh)
+    # (Windows: .bat that swaps the binary or runs the installer;
+    #  Linux: .sh launched in a terminal that swaps the binary or installs)
     error = Signal(str)
 
     def __init__(
@@ -396,64 +435,115 @@ class UpdateDownloadWorker(QThread):
                 f"[TEST] Fake install dir: {pathlib.Path(target).parent!s}"
             )
 
-        # On Windows, ensure we have write permission (UAC elevation if needed).
-        # Probe the install directory rather than the target exe itself — the
-        # exe may be locked by the OS even though the directory is writable.
-        if system == "Windows":
-            try:
-                probe = str(pathlib.Path(target).parent / ".mocha_write_test")
-                pathlib.Path(probe).write_text("ok")
-                pathlib.Path(probe).unlink()
-            except PermissionError:
-                # We don't have write access — request elevation and bail
-                elevated = _ensure_admin_windows()
-                if not elevated:
-                    self.error.emit(
-                        "Administrator privileges are required to install the update.\n"
-                        "The app will re-launch with elevated permissions.",
-                    )
-                    return
-                # If we somehow are elevated but still can't write, report it
-                self.error.emit(
-                    "Cannot write to the installation directory even as administrator.\n"
-                    "Try running the updater manually.",
-                )
-                return
+        # On Windows, the installer variant writes to Program Files and needs
+        # elevation. Probe the install directory rather than the target exe
+        # itself — the exe may be locked by the OS even though the directory
+        # is writable. The portable variant lives in a user-writable folder.
+        if (
+            system == "Windows"
+            and not _is_portable_windows()
+            and not self._ensure_write_access(target)
+        ):
+            return
 
         # Build asset filename
+        if not self.tag:
+            self.error.emit("Update download failed: missing release tag.")
+            return
         try:
-            if self.tag:
-                asset_name = _asset_name(self.tag)
-            elif platform.system() == "Windows":
-                asset_name = "MochaTools-Setup-update.exe"
-            elif platform.system() == "Darwin":
-                asset_name = f"{_asset_prefix()}-update.zip"
-            else:
-                asset_name = "MochaTools-update-linux.tar.gz"
+            asset_name = _asset_name(self.tag)
         except ValueError as exc:
             self.error.emit(str(exc))
             return
 
-        # ── Download ──────────────────────────────────────────────────────────
+        downloaded = self._download(asset_name)
+        if downloaded is None:
+            return
+        tmp_dir, tmp_asset = downloaded
+
+        # ── Install ───────────────────────────────────────────────────────────
+        self.status.emit("Installing…")
+        self.progress.emit(92)
+
+        if system == "Windows":
+            if _is_portable_windows():
+                bat = self._install_windows_portable(tmp_asset, target, tmp_dir)
+            else:
+                bat = self._install_windows_installer(tmp_asset, target, tmp_dir)
+            self.progress.emit(100)
+            self.status.emit("Update ready. Restart to apply.")
+            self.ready_to_restart.emit(bat)
+            return
+        if system == "Darwin":
+            self._install_macos(tmp_asset)
+            self.progress.emit(100)
+            self.status.emit(
+                "Update downloaded. Drag the new Mocha Tools into Applications.",
+            )
+            self.done.emit(
+                "The new Mocha Tools volume is open in Finder.\n\n"
+                "Drag the new Mocha Tools app into your Applications folder "
+                "to finish the update.",
+            )
+            return
+        if _is_portable_linux():
+            script = self._install_linux_portable(tmp_asset, target, tmp_dir)
+            self.progress.emit(100)
+            self.status.emit("Update ready. Quit to apply.")
+            self.ready_to_restart.emit(script)
+            return
+        script = self._install_linux_package(tmp_asset, tmp_dir)
+        self.progress.emit(100)
+        self.status.emit("Update ready. Quit to install in terminal.")
+        self.ready_to_restart.emit(script)
+        return
+
+    def _ensure_write_access(self, target: str) -> bool:
+        """Probe the install directory for write access; request UAC elevation
+        if needed. Returns False when the caller should abort."""
+        try:
+            probe = str(pathlib.Path(target).parent / ".mocha_write_test")
+            pathlib.Path(probe).write_text("ok")
+            pathlib.Path(probe).unlink()
+        except PermissionError:
+            # We don't have write access — request elevation and bail
+            elevated = _ensure_admin_windows()
+            if not elevated:
+                self.error.emit(
+                    "Administrator privileges are required to install the update.\n"
+                    "The app will re-launch with elevated permissions.",
+                )
+                return False
+            # If we somehow are elevated but still can't write, report it
+            self.error.emit(
+                "Cannot write to the installation directory even as administrator.\n"
+                "Try running the updater manually.",
+            )
+            return False
+        return True
+
+    def _download(self, asset_name: str) -> tuple[str, str] | None:
+        """Download the asset to a temp dir; returns (tmp_dir, tmp_asset) or
+        None on error."""
         self.status.emit("Downloading update…")
         try:
             resp = requests.get(self.download_url, stream=True, timeout=120)
             resp.raise_for_status()
         except requests.exceptions.Timeout:
             self.error.emit("Download timed out. Check your connection and try again.")
-            return
+            return None
         except requests.exceptions.ConnectionError:
             self.error.emit(
                 "Could not reach the download server. Check your internet connection.",
             )
-            return
+            return None
         except requests.exceptions.HTTPError as e:
             code = e.response.status_code if e.response is not None else "?"
             self.error.emit(f"Download failed: server returned HTTP {code}.")
-            return
+            return None
         except Exception as e:  # noqa: BLE001
             self.error.emit(f"Download failed: {e}")
-            return
+            return None
 
         total = int(resp.headers.get("content-length", 0))
         fetched = 0
@@ -470,39 +560,19 @@ class UpdateDownloadWorker(QThread):
                             self.progress.emit(int(fetched / total * 90))
         except Exception as e:  # noqa: BLE001
             self.error.emit(f"Failed writing download: {e}")
-            return
-
-        # ── Install ───────────────────────────────────────────────────────────
-        self.status.emit("Installing…")
-        self.progress.emit(92)
-
-        if system == "Windows":
-            bat = self._install_windows(tmp_asset, target, tmp_dir)
-            self.progress.emit(100)
-            self.status.emit("Update ready. Restart to apply.")
-            self.ready_to_restart.emit(bat)
-            return
-        if system == "Darwin":
-            self._install_macos(tmp_asset, target, tmp_dir)
-            self.progress.emit(100)
-            self.status.emit("Update installed. Restart to apply.")
-            self.done.emit()
-            return
-        script = self._install_linux(tmp_asset, target, tmp_dir)
-        self.progress.emit(100)
-        self.status.emit("Update ready. Quit to continue in terminal.")
-        self.ready_to_restart.emit(script)
-        return
+            return None
+        return tmp_dir, tmp_asset
 
     # ── Platform installers ──────────────────────────────────────────────────
 
-    def _install_windows(self, installer_path: str, target: str, tmp_dir: str) -> str:
-        """The downloaded asset IS the NSIS setup installer (MochaTools-Setup-x.x.x.exe)
-        — no zip, no extraction needed. We just need to wait for our process to
-        exit, then launch the installer.
+    def _install_windows_portable(
+        self, portable_path: str, target: str, tmp_dir: str
+    ) -> str:
+        """Stage the new portable exe and write a batch that swaps it in and
+        relaunches once this process exits (staged swap on next launch).
         """
-        if not pathlib.Path(installer_path).exists():
-            msg = f"Downloaded installer not found: {installer_path}"
+        if not pathlib.Path(portable_path).exists():
+            msg = f"Downloaded update not found: {portable_path}"
             raise RuntimeError(msg)
 
         bat = str(pathlib.Path(tmp_dir) / "update.bat")
@@ -515,25 +585,16 @@ class UpdateDownloadWorker(QThread):
             "setlocal",
             'call :log "=== Mocha Tools updater started ==="',
             "",
-            'call :log "App already exited, proceeding..."',
-            "",
             'call :log "Waiting 3s for file locks to clear..."',
             "timeout /t 3 /nobreak >NUL",
             "",
-            f'call :log "Launching installer: {installer_path}"',
-            *(
-                []
-                if test_mode
-                else [
-                    f'start "" "{installer_path}"',
-                ]
-            ),
+            f'call :log "Replacing binary: {target}"',
+            *([] if test_mode else [f'copy /Y "{portable_path}" "{target}"']),
+            "",
+            'call :log "Relaunching..."',
+            *([] if test_mode else [f'start "" "{target}"']),
             "",
             'call :log "Done."',
-            "goto end",
-            "",
-            ":fail",
-            'call :log "FAILED - see %LOG%"',
             "goto end",
             "",
             ":log",
@@ -552,46 +613,77 @@ class UpdateDownloadWorker(QThread):
         # clicks "Restart".
         return bat
 
-    def _install_macos(self, zip_path: str, target: str, tmp_dir: str) -> None:
-        extract_dir = str(pathlib.Path(tmp_dir) / "extracted")
-        pathlib.Path(extract_dir).mkdir(exist_ok=True, parents=True)
-
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(extract_dir)
-
-        new_app = next(
-            (
-                str(e)
-                for e in pathlib.Path(extract_dir).iterdir()
-                if e.name.endswith(".app")
-            ),
-            None,
-        )
-        if not new_app:
-            msg = "No .app bundle found inside the downloaded zip."
+    def _install_windows_installer(
+        self, installer_path: str, target: str, tmp_dir: str
+    ) -> str:
+        """The downloaded asset IS the custom Mocha Tools installer
+        (MochaTools-Setup-x.x.x.exe). Run it silently (--silent) once this
+        process exits, then relaunch the freshly-installed app.
+        """
+        if not pathlib.Path(installer_path).exists():
+            msg = f"Downloaded installer not found: {installer_path}"
             raise RuntimeError(msg)
 
-        backup = target + ".bak"
-        if pathlib.Path(backup).exists():
-            shutil.rmtree(backup)
-        shutil.move(target, backup)
-        shutil.move(new_app, target)
+        bat = str(pathlib.Path(tmp_dir) / "update.bat")
+        test_mode = "--test-update" in sys.argv and not _is_compiled()
+        log = str(pathlib.Path(target).parent / "update.log")
 
-        subprocess.run(
-            ["xattr", "-dr", "com.apple.quarantine", target],
-            check=False,
-        )
+        lines = [
+            "@echo off",
+            f'set "LOG={log}"',
+            "setlocal",
+            'call :log "=== Mocha Tools updater started ==="',
+            "",
+            'call :log "Waiting 3s for file locks to clear..."',
+            "timeout /t 3 /nobreak >NUL",
+            "",
+            f'call :log "Running installer: {installer_path}"',
+            *([] if test_mode else [f'start "" /wait "{installer_path}" --silent']),
+            "",
+            'call :log "Relaunching..."',
+            *([] if test_mode else [f'start "" "{target}"']),
+            "",
+            'call :log "Done."',
+            "goto end",
+            "",
+            ":log",
+            r"echo %~1",
+            r'echo %~1 >>"%LOG%"',
+            "exit /b",
+            "",
+            ":end",
+            "endlocal",
+        ]
 
-    def _install_linux(self, tarball_path: str, _target: str, tmp_dir: str) -> str:
-        """Write a small shell script that, once this app has quit, extracts the
-        downloaded tarball and runs its installer.sh. The script is launched
-        in a terminal window (see launch_update_terminal) so the user can
-        watch progress and respond to any sudo password prompts.
+        script = "\r\n".join(lines) + "\r\n"
+        pathlib.Path(bat).write_text(script, newline="", encoding="utf-8")
 
-        tarball layout (see build.yml):
+        # Don't launch yet — the batch script will be spawned when the user
+        # clicks "Restart".
+        return bat
+
+    def _install_macos(self, dmg_path: str) -> None:
+        """Mount the downloaded DMG and open it in Finder so the user can drag
+        the new .app over the old one. macOS cannot self-replace a running app.
+        """
+        if not pathlib.Path(dmg_path).exists():
+            msg = f"Downloaded update not found: {dmg_path}"
+            raise RuntimeError(msg)
+
+        # `open` on a .dmg mounts it and reveals the volume in Finder.
+        subprocess.run(["open", dmg_path], check=True)
+
+    def _install_linux_portable(
+        self, tarball_path: str, target: str, tmp_dir: str
+    ) -> str:
+        """Write a shell script that, once this app has quit, extracts the new
+        portable binary from the tarball, swaps it in place, and relaunches.
+
+        tarball layout (see linux_tarball.py):
           Mocha-Tools-linux        ← new binary
           installer.sh
-          builditems/debian_ubuntu/icon.png (optional)
+          .mochatools-portable     ← portable marker
+          build/debian_ubuntu/icon.png (optional)
 
         Returns the path to the generated shell script.
         """
@@ -609,56 +701,79 @@ class UpdateDownloadWorker(QThread):
             "#!/bin/bash",
             f'LOG="{log}"',
             f'TMP_DIR="{tmp_dir}"',
+            f'TARGET="{target}"',
             'echo "=== Mocha Tools updater started ===" | tee -a "$LOG"',
             "",
-            # Kill any running mochatools process
-            'echo "Checking for running mochatools process..." | tee -a "$LOG"',
-            'if pgrep -x "mochatools" > /dev/null 2>&1; then',
-            '  echo "Stopping running mochatools..." | tee -a "$LOG"',
-            '  pkill -x "mochatools" 2>/dev/null || true',
-            "  sleep 2",
-            "  # Force kill if still running",
-            '  if pgrep -x "mochatools" > /dev/null 2>&1; then',
-            '    pkill -9 -x "mochatools" 2>/dev/null || true',
-            "    sleep 1",
+            # Wait for the running app to exit (it quits right after launching us)
+            'echo "Waiting for the app to exit..." | tee -a "$LOG"',
+            "for i in $(seq 1 15); do",
+            '  if ! pgrep -f "$(basename "$TARGET")" > /dev/null 2>&1; then',
+            "    break",
             "  fi",
-            '  echo "Process stopped." | tee -a "$LOG"',
-            "else",
-            '  echo "No running instance found." | tee -a "$LOG"',
-            "fi",
+            "  sleep 1",
+            "done",
             "",
             f'mkdir -p "{extract_dir}"',
             'echo "Extracting update..." | tee -a "$LOG"',
             f'tar -xzf "{tarball_path}" -C "{extract_dir}"',
             "",
-            'if [ ! -f "'
-            + str(pathlib.Path(extract_dir) / "installer.sh")
-            + '" ]; then',
-            '  echo "ERROR: installer.sh not found in update archive." | tee -a "$LOG"',
-            '  read -n 1 -s -r -p "Press any key to close..."',
-            "  exit 1",
-            "fi",
+            'echo "Replacing binary..." | tee -a "$LOG"',
+            *([] if test_mode else [f'cp "{extract_dir}/Mocha-Tools-linux" "$TARGET"']),
+            'chmod +x "$TARGET"',
             "",
-            f'cd "{extract_dir}"',
-            'chmod +x installer.sh "Mocha-Tools-linux" 2>/dev/null',
+            'echo "Relaunching..." | tee -a "$LOG"',
+            *([] if test_mode else ['"$TARGET" &']),
             "",
-            # installer.sh handles its own sudo escalation via exec sudo
-            'echo "Running installer..." | tee -a "$LOG"',
-            "echo",
-            *(
-                []
-                if test_mode
-                else [
-                    "./installer.sh",
-                ]
-            ),
-            "",
-            # Cleanup temp directory
             'echo "Cleaning up..." | tee -a "$LOG"',
             'rm -rf "$TMP_DIR"',
             "",
             "echo",
-            'echo "Update complete. You can close this window and relaunch Mocha Tools."',
+            'echo "Update complete. You can close this window."',
+        ]
+
+        script = "\n".join(lines) + "\n"
+        pathlib.Path(script_path).write_text(script, encoding="utf-8")
+        pathlib.Path(script_path).chmod(
+            pathlib.Path(script_path).stat().st_mode
+            | stat.S_IEXEC
+            | stat.S_IXGRP
+            | stat.S_IXOTH
+        )
+
+        return script_path
+
+    def _install_linux_package(self, package_path: str, tmp_dir: str) -> str:
+        """Write a shell script that installs the downloaded .deb/.rpm via
+        dpkg/rpm in a terminal window. Needs root — cannot self-install.
+        """
+        if not pathlib.Path(package_path).exists():
+            msg = f"Downloaded update not found: {package_path}"
+            raise RuntimeError(msg)
+
+        test_mode = "--test-update" in sys.argv and not _is_compiled()
+        log = str(pathlib.Path(tempfile.gettempdir()) / "mochatools_update.log")
+
+        script_path = str(pathlib.Path(tmp_dir) / "update.sh")
+
+        if _linux_package() == "rpm":
+            install_cmd = f'sudo rpm -Uvh "{package_path}"'
+        else:
+            install_cmd = f'sudo dpkg -i "{package_path}"'
+
+        lines = [
+            "#!/bin/bash",
+            f'LOG="{log}"',
+            f'TMP_DIR="{tmp_dir}"',
+            'echo "=== Mocha Tools updater started ===" | tee -a "$LOG"',
+            "",
+            'echo "Installing update (root required)..." | tee -a "$LOG"',
+            *([] if test_mode else [install_cmd]),
+            "",
+            'echo "Cleaning up..." | tee -a "$LOG"',
+            'rm -rf "$TMP_DIR"',
+            "",
+            "echo",
+            'echo "Update complete. You can relaunch Mocha Tools."',
             'read -n 1 -s -r -p "Press any key to close..."',
         ]
 

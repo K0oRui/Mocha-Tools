@@ -1,0 +1,318 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version number (e.g. 7.1.0)"
+        required: true
+        type: string
+      prerelease:
+        description: "Release type"
+        required: true
+        default: "full"
+        type: choice
+        options:
+          - full
+          - prerelease
+      build_windows:
+        description: "Build Windows (portable + custom installer)"
+        required: false
+        default: true
+        type: boolean
+      build_linux:
+        description: "Build Linux (tarball + AppImage + .deb + .rpm)"
+        required: false
+        default: true
+        type: boolean
+      build_macos:
+        description: "Build macOS (DMG + .pkg, arm64 + x86_64)"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Bump version: regenerate VERSION from git log, stamp manifests, commit, push
+  # ─────────────────────────────────────────────────────────────────────────────
+  bump-version:
+    name: Bump Version & Commit
+    runs-on: ubuntu-latest
+    outputs:
+      commit-sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install build dependencies
+        run: pip install pyyaml
+
+      - name: Generate VERSION file
+        run: |
+          python apps/desktop/build/changelog.py \
+            --from 17cab03 \
+            --version "${{ inputs.version }}" \
+            --format yaml > apps/desktop/VERSION
+
+      - name: Generate release notes
+        run: |
+          python apps/desktop/build/changelog.py \
+            --from 17cab03 \
+            --version "${{ inputs.version }}" \
+            --format markdown > release-notes.md
+
+      - name: Stamp version into manifests
+        run: python apps/desktop/build/build.py --stamp-only
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-notes
+          path: release-notes.md
+
+      - name: Commit and push
+        id: commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add apps/desktop/VERSION apps/desktop/src/constants.py \
+            apps/desktop/installer apps/desktop/installer.sh \
+            apps/desktop/build/macos/Info.plist
+          if git diff --cached --quiet; then
+            echo "No version changes to commit"
+          else
+            git commit -m "chore: bump version to ${{ inputs.version }}"
+            git push
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Windows — portable exe + custom installer
+  # ─────────────────────────────────────────────────────────────────────────────
+  build-windows:
+    name: Build (Windows)
+    needs: bump-version
+    if: inputs.build_windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.bump-version.outputs.commit-sha }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r apps/desktop/requirements.txt
+
+      - name: Build (portable + installer)
+        shell: bash
+        run: |
+          python apps/desktop/build/build.py \
+            --platform windows --variant all \
+            --version "${{ inputs.version }}" --jobs 2
+
+      - name: Upload portable exe
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-portable
+          path: apps/desktop/dist/MochaTools-Portable-*.exe
+          if-no-files-found: error
+
+      - name: Upload installer exe
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-installer
+          path: apps/desktop/dist/MochaTools-Setup-*.exe
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Linux — tarball + AppImage (portable), .deb + .rpm (installer)
+  # ─────────────────────────────────────────────────────────────────────────────
+  build-linux:
+    name: Build (Linux)
+    needs: bump-version
+    if: inputs.build_linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.bump-version.outputs.commit-sha }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r apps/desktop/requirements.txt
+
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev build-essential patchelf libfuse2
+          sudo gem install fpm --no-document
+          wget -q \
+            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage \
+            -O /usr/local/bin/appimagetool
+          chmod +x /usr/local/bin/appimagetool
+
+      - name: Build (portable + installer)
+        run: |
+          python apps/desktop/build/build.py \
+            --platform linux --variant all \
+            --version "${{ inputs.version }}" --jobs 4
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-tarball
+          path: apps/desktop/dist/MochaTools-*-linux.tar.gz
+          if-no-files-found: error
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-appimage
+          path: apps/desktop/dist/MochaTools-*-x86_64.AppImage
+          if-no-files-found: error
+
+      - name: Upload .deb
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-deb
+          path: apps/desktop/dist/MochaTools-*-amd64.deb
+          if-no-files-found: error
+
+      - name: Upload .rpm
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-rpm
+          path: apps/desktop/dist/MochaTools-*-x86_64.rpm
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # macOS arm64 (Apple Silicon) — DMG + .pkg
+  # ─────────────────────────────────────────────────────────────────────────────
+  build-macos-arm64:
+    name: Build (macOS arm64)
+    needs: bump-version
+    if: inputs.build_macos
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.bump-version.outputs.commit-sha }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r apps/desktop/requirements.txt
+
+      - name: Build (portable + installer)
+        run: |
+          python apps/desktop/build/build.py \
+            --platform macos --variant all \
+            --version "${{ inputs.version }}" --jobs 3
+
+      - name: Upload DMG + pkg
+        uses: actions/upload-artifact@v6
+        with:
+          name: macos-arm64
+          path: |
+            apps/desktop/dist/MochaTools-*-macOS-arm64.dmg
+            apps/desktop/dist/MochaTools-*-macOS-arm64.pkg
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # macOS x86_64 (Intel) — DMG + .pkg
+  # ─────────────────────────────────────────────────────────────────────────────
+  build-macos-x86:
+    name: Build (macOS x86_64)
+    needs: bump-version
+    if: inputs.build_macos
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.bump-version.outputs.commit-sha }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r apps/desktop/requirements.txt
+
+      - name: Build (portable + installer)
+        run: |
+          python apps/desktop/build/build.py \
+            --platform macos --variant all \
+            --version "${{ inputs.version }}" --jobs 3
+
+      - name: Upload DMG + pkg
+        uses: actions/upload-artifact@v6
+        with:
+          name: macos-x86_64
+          path: |
+            apps/desktop/dist/MochaTools-*-macOS-x86_64.dmg
+            apps/desktop/dist/MochaTools-*-macOS-x86_64.pkg
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Draft GitHub Release — collects all platform builds
+  # ─────────────────────────────────────────────────────────────────────────────
+  release:
+    name: Release
+    needs: [build-windows, build-linux, build-macos-arm64, build-macos-x86]
+    if: always() && !failure() && !cancelled()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete stale draft release
+        run: |
+          gh api "repos/${{ github.repository }}/releases" \
+            --jq '.[] | select(.tag_name == "v${{ inputs.version }}" and .draft) | .id' \
+            | xargs -r -I{} gh api -X DELETE "repos/${{ github.repository }}/releases/{}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download release notes
+        uses: actions/download-artifact@v7
+        with:
+          name: release-notes
+          path: release-notes
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ inputs.version }}
+          name: Mocha Tools v${{ inputs.version }}
+          prerelease: ${{ inputs.prerelease == 'prerelease' }}
+          body_path: release-notes/release-notes.md
+          files: |
+            artifacts/windows-portable/*
+            artifacts/windows-installer/*
+            artifacts/linux-tarball/*
+            artifacts/linux-appimage/*
+            artifacts/linux-deb/*
+            artifacts/linux-rpm/*
+            artifacts/macos-arm64/*
+            artifacts/macos-x86_64/*

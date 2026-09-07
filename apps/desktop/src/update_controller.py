@@ -229,15 +229,14 @@ def _install_update(win: Any, ctx: AppContext) -> None:
     win.update_progress.setValue(0)
     win.update_progress.show()
 
-    def _on_done() -> None:
+    def _on_done(message: str) -> None:
         win.update_progress.setValue(100)
         win.install_update_btn.hide()
         win.release_info_btn.hide()
         QMessageBox.information(
             win,
-            "Update installed",
-            f"Mocha Tools {ctx.update_tag} has been installed.\n\n"
-            "Please restart the application to apply the update.",
+            "Update ready",
+            f"Mocha Tools {ctx.update_tag}:\n\n{message}",
         )
 
     def _on_ready(bat_path: str) -> None:
@@ -273,21 +272,20 @@ def _install_update(win: Any, ctx: AppContext) -> None:
     ctx.update_bat_path = ""
 
 
-def _on_update_done(win: Any, ctx: AppContext) -> None:
+def _on_update_done(win: Any, ctx: AppContext, message: str) -> None:
     """Also callable from the ``done`` signal directly."""
     win.update_progress.setValue(100)
     win.install_update_btn.hide()
     win.release_info_btn.hide()
     QMessageBox.information(
         win,
-        "Update installed",
-        f"Mocha Tools {ctx.update_tag} has been installed.\n\n"
-        "Please restart the application to apply the update.",
+        "Update ready",
+        f"Mocha Tools {ctx.update_tag}:\n\n{message}",
     )
 
 
 def _on_ready_to_restart(win: Any, ctx: AppContext, _path: str) -> None:
-    _on_update_done(win, ctx)
+    _on_update_done(win, ctx, "Update downloaded. Restart to apply.")
 
 
 def _on_update_dl_error(win: Any, msg: str) -> None:

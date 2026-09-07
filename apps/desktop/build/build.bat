@@ -1,45 +1,112 @@
 @echo off
-setlocal
+setlocal EnableExtensions EnableDelayedExpansion
 
-rem ── Resolve paths ──────────────────────────────────────────────────────────
-rem Script lives at: apps/desktop/build/build.bat
-rem APP_ROOT = apps/desktop  (one level up)
+rem ─────────────────────────────────────────────────────────────────────────────
+rem  build.bat — local build launcher for Mocha Tools
+rem
+rem  Wraps build.py (the unified orchestrator) with interactive prompts.
+rem
+rem  Usage:
+rem      build.bat [os] [variant] [version]
+rem
+rem    os      = windows | linux | macos     (default: prompt)
+rem    variant = portable | installer | all  (default: prompt)
+rem    version = e.g. 7.1.0                  (optional; default: from VERSION file)
+rem
+rem  Examples:
+rem      build.bat windows all 7.1.0
+rem      build.bat linux
+rem      build.bat
+rem ─────────────────────────────────────────────────────────────────────────────
+
 set "APP_ROOT=%~dp0.."
+set "OS_ARG=%~1"
+set "VARIANT_ARG=%~2"
+set "VERSION_ARG=%~3"
 
-rem ── Resolve version from VERSION file ─────────────────────────────────────
-if not exist "%APP_ROOT%\VERSION" (
-    echo VERSION file not found at %APP_ROOT%\VERSION
+rem ── 1. Choose target OS ─────────────────────────────────────────────────────
+set "OS="
+if /i "%OS_ARG%"=="windows" set "OS=windows"
+if /i "%OS_ARG%"=="linux"   set "OS=linux"
+if /i "%OS_ARG%"=="macos"   set "OS=macos"
+if defined OS_ARG if not defined OS (
+    echo Invalid OS: %OS_ARG%  ^(expected windows, linux, or macos^)
     exit /b 1
 )
-set /p "VERSION="<"%APP_ROOT%\VERSION"
-set "VERSION=%VERSION:v=%"
-if "%VERSION%"=="" (
-    echo VERSION file is empty.
-    exit /b 1
+if not defined OS (
+    echo.
+    echo Choose target OS:
+    echo   1^) Windows
+    echo   2^) Linux
+    echo   3^) macOS
+    set /p "OS=Enter 1, 2, or 3 [1]: "
+    if "!OS!"=="2" (
+        set "OS=linux"
+    ) else if "!OS!"=="3" (
+        set "OS=macos"
+    ) else (
+        set "OS=windows"
+    )
 )
 
-echo Mocha Tools build - version %VERSION%
-echo.
-echo Choose build type:
-echo   1) Executable only (dist\Mocha Tools.exe)
-echo   2) Executable + NSIS installer (dist\MochaTools-Setup-%VERSION%.exe)
-set /p "CHOICE=Enter 1 or 2: "
-
-if "%CHOICE%"=="1" (
-    set "WITH_INSTALLER=0"
-) else if "%CHOICE%"=="2" (
-    set "WITH_INSTALLER=1"
-) else (
-    echo Invalid choice.
+rem ── 2. Choose variant ───────────────────────────────────────────────────────
+set "VARIANT="
+if /i "%VARIANT_ARG%"=="portable"   set "VARIANT=portable"
+if /i "%VARIANT_ARG%"=="installer"  set "VARIANT=installer"
+if /i "%VARIANT_ARG%"=="all"        set "VARIANT=all"
+if defined VARIANT_ARG if not defined VARIANT (
+    echo Invalid variant: %VARIANT_ARG%  ^(expected portable, installer, or all^)
     exit /b 1
 )
+if not defined VARIANT (
+    echo.
+    echo Choose build variant:
+    echo   1^) Portable
+    echo   2^) Installer
+    echo   3^) All
+    set /p "VARIANT=Enter 1, 2, or 3 [3]: "
+    if "!VARIANT!"=="1" (
+        set "VARIANT=portable"
+    ) else if "!VARIANT!"=="2" (
+        set "VARIANT=installer"
+    ) else (
+        set "VARIANT=all"
+    )
+)
 
-rem ── Set up minimal virtualenv ─────────────────────────────────────────────
+rem ── 3. Choose version (optional) ────────────────────────────────────────────
+set "VERSION=%VERSION_ARG%"
+if not defined VERSION (
+    set "DEFAULT_VERSION="
+    if exist "%APP_ROOT%\VERSION" (
+        for /f "tokens=2" %%V in ('findstr /b "version:" "%APP_ROOT%\VERSION"') do set "DEFAULT_VERSION=%%V"
+    )
+    if defined DEFAULT_VERSION (
+        set /p "VERSION=Version [!DEFAULT_VERSION!]: "
+        if not defined VERSION set "VERSION=!DEFAULT_VERSION!"
+    ) else (
+        set /p "VERSION=Enter version (e.g. 7.1.0, or leave blank for VERSION file): "
+    )
+)
+
+rem ── 4. Warn when cross-compiling ────────────────────────────────────────────
+if /i not "%OS%"=="windows" (
+    echo.
+    echo WARNING: Nuitka does not cross-compile. Building for %OS% must be done
+    echo on a %OS% machine, and the packaging tools are platform-specific.
+    echo This build will likely fail if run on Windows.
+    echo.
+    set "CONTINUE="
+    set /p "CONTINUE=Continue anyway? [y/N]: "
+    if /i not "!CONTINUE!"=="y" exit /b 1
+)
+
+rem ── 5. Set up virtualenv + install dependencies ─────────────────────────────
 set "VENV=%APP_ROOT%\.venv"
 set "PY=%VENV%\Scripts\python.exe"
 if not exist "%PY%" (
     echo.
-    echo Creating minimal virtualenv...
+    echo Creating virtualenv...
     python -m venv "%VENV%"
     if errorlevel 1 (
         echo Failed to create virtualenv.
@@ -48,7 +115,7 @@ if not exist "%PY%" (
 )
 
 echo.
-echo Installing build dependencies into virtualenv...
+echo Installing build dependencies...
 "%PY%" -m pip install --upgrade pip >nul
 "%PY%" -m pip install -r "%APP_ROOT%\requirements.txt"
 if errorlevel 1 (
@@ -56,71 +123,25 @@ if errorlevel 1 (
     exit /b 1
 )
 
-rem ── Stamp version into constants.py + installer files ─────────────────────
-echo.
-echo Stamping version %VERSION%...
-"%PY%" "%APP_ROOT%\build\stamp_version.py" "%VERSION%"
-if errorlevel 1 (
-    echo Failed to stamp version.
-    exit /b 1
+rem ── 6. Stop running app so the exe isn't locked (Windows only) ─────────────
+if /i "%OS%"=="windows" (
+    echo.
+    echo Stopping any running Mocha Tools instances...
+    taskkill /f /im "Mocha Tools.exe" >nul 2>&1
 )
 
-rem ── Clean stale build artifacts (env/deps may have changed) ───────────────
+rem ── 7. Build ────────────────────────────────────────────────────────────────
 echo.
-echo Cleaning stale build artifacts...
-for %%D in (mochatools.build mochatools.dist mochatools.onefile-build) do (
-    if exist "%APP_ROOT%\dist\%%D" rmdir /s /q "%APP_ROOT%\dist\%%D"
+if defined VERSION (
+    echo Building Mocha Tools %VERSION% for %OS% ^(%VARIANT%^)...
+    "%PY%" "%APP_ROOT%\build\build.py" --platform "%OS%" --variant "%VARIANT%" --version "%VERSION%"
+) else (
+    echo Building Mocha Tools for %OS% ^(%VARIANT%^) using VERSION file...
+    "%PY%" "%APP_ROOT%\build\build.py" --platform "%OS%" --variant "%VARIANT%"
 )
-
-rem ── Stop any running app so the exe isn't locked ──────────────────────────
-echo.
-echo Stopping any running Mocha Tools instances...
-taskkill /f /im "Mocha Tools.exe" >nul 2>&1
-if exist "%APP_ROOT%\dist\Mocha Tools.exe" del /f /q "%APP_ROOT%\dist\Mocha Tools.exe" >nul 2>&1
-
-rem ── Build executable with Nuitka ─────────────────────────────────────────
-echo.
-echo Building Mocha Tools %VERSION% with Nuitka...
-"%PY%" -m nuitka --onefile ^
-    --assume-yes-for-downloads ^
-    --disable-cache=dll-dependencies ^
-    --jobs=8 ^
-    --enable-plugin=pyside6 ^
-    --include-package=keyring ^
-    --include-package-data=keyring ^
-    --noinclude-pytest-mode=nofollow ^
-    --windows-console-mode=disable ^
-    --windows-icon-from-ico="%APP_ROOT%\build\windows\icon.ico" ^
-    --include-data-files="%APP_ROOT%\build\windows\icon.ico=icon.ico" ^
-    --file-version="%VERSION%" ^
-    --product-version="%VERSION%" ^
-    --output-filename="Mocha Tools.exe" ^
-    --output-dir="%APP_ROOT%\dist" ^
-    "%APP_ROOT%\mochatools.py"
 if errorlevel 1 (
     echo Build failed.
     exit /b 1
-)
-
-set "BIN=%APP_ROOT%\dist\Mocha Tools.exe"
-if not exist "%BIN%" (
-    echo Build finished but binary not found.
-    exit /b 1
-)
-
-rem ── Build NSIS installer if requested ─────────────────────────────────────
-if "%WITH_INSTALLER%"=="1" (
-    echo.
-    echo Building NSIS installer...
-    if not exist "%APP_ROOT%\installer.nsi" (
-        echo installer.nsi not found.
-        exit /b 1
-    )
-    makensis "%APP_ROOT%\installer.nsi"
-    if errorlevel 1 (
-        echo NSIS build failed.
-        exit /b 1
-    )
 )
 
 echo.

@@ -13,6 +13,8 @@ __pycache__/
 /apps/desktop/src/tabs/__pycache__/
 /apps/desktop/src/ui/__pycache__/
 /apps/desktop/mochatools.log
+mochatools.log
+.playwright-mcp/
 
 # Local API documentation
 /DOCS/

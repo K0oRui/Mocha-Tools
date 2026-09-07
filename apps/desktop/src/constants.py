@@ -13,7 +13,8 @@ ORG_NAME = "Mocha"
 HARDCODED_BASE_URL = "https://api.mocha.my"
 SHARE_BASE_URL = "https://mocha.my"
 
-# Stamped at build time by builditems/stamp_version.py — do not edit manually.
+# Stamped at build time by build.py — do not edit manually.
 APP_VERSION = "7.0.0"
+APP_CHANGES: list[dict[str, str]] = []
 
 UPDATE_CHECK_URL = "https://api.github.com/repos/nxllvxxd/Mocha-Tools/releases/latest"
