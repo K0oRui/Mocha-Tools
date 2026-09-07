@@ -23,10 +23,10 @@ _DOWN_GOLD = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAcAAAAFCAYAAACJmvbY
 
 STYLESHEET = f"""
 QMainWindow, QWidget#root {{
-    background-color: __BG0__;
+    background: transparent;
 }}
 QFrame#titlebar {{
-    background-color: __BG0__;
+    background: transparent;
     border-bottom: 1px solid #181512;
     min-height: 34px;
     max-height: 34px;

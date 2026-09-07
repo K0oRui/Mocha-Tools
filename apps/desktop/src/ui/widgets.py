@@ -19,6 +19,7 @@ import pathlib
 
 from PySide6.QtCore import QSize, Qt, QUrl, Signal
 from PySide6.QtGui import (
+    QCursor,
     QDesktopServices,
     QDragEnterEvent,
     QDragLeaveEvent,
@@ -42,7 +43,7 @@ from PySide6.QtWidgets import (
 
 from ..logging_utils import write_debug_log
 from ..workers import UploadWorker
-from .icons import lucide_icon
+from .icons import app_icon, lucide_icon
 
 # ── Drop Zone ─────────────────────────────────────────────────────────────────
 
@@ -343,12 +344,11 @@ class FullWidthTabWidget(QWidget):
             from ..theme import get_background_palette
 
             pal = get_background_palette()
-            bg0 = pal["bg0"]
             bg1 = pal["bg1"]
             border = pal["border"]
         except (AttributeError, TypeError, RuntimeError, ImportError) as e:
             write_debug_log(f"[Silenced] _refresh_bar_background: {e}")
-            bg0, bg1, border = "#111010", "#181614", "#2e2b27"
+            bg1, border = "#181614", "#2e2b27"
         try:
             # Segmented-pill nav sits on the root background so the active
             # pill reads as a floating chip; a hairline separates it from
@@ -362,7 +362,9 @@ class FullWidthTabWidget(QWidget):
         except (AttributeError, TypeError, RuntimeError, ImportError) as e:
             write_debug_log(f"[Silenced] _refresh_bar_background: {e}")
         with contextlib.suppress(Exception):
-            self._stack.setStyleSheet(f"QStackedWidget {{ background: {bg0}; }}")
+            # The stacked content is transparent so the window's own
+            # anti-aliased rounded background shows through at the corners.
+            self._stack.setStyleSheet("QStackedWidget { background: transparent; }")
 
     def addTab(self, widget: QWidget, label: str) -> int:
         idx = len(self._tabs)
@@ -518,12 +520,10 @@ class CustomTitleBar(QFrame):
         lay.setContentsMargins(12, 0, 6, 0)
         lay.setSpacing(0)
 
-        # Coffee icon (clickable) + app name — keep original QLabel appearance
+        # Coffee icon (clickable) + app name
         self._icon_lbl = QLabel()
-        from ..theme import get_accent
-
         self._icon_lbl.setPixmap(
-            lucide_icon("coffee", get_accent(), 15).pixmap(QSize(15, 15)),
+            app_icon(20).pixmap(QSize(20, 20)),
         )
         self._icon_lbl.setStyleSheet("background:transparent; padding-right:6px;")
         self._icon_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -667,13 +667,10 @@ class CustomTitleBar(QFrame):
     def _refresh_icons(self) -> None:
         """Called by app to refresh titlebar icons when the accent changes."""
         try:
-            from ..theme import get_accent
-
-            acc = get_accent()
-            # update coffee icon (keep it tinted with accent)
+            # update coffee icon (brand icon, fixed gold tint)
             with contextlib.suppress(Exception):
                 self._icon_lbl.setPixmap(
-                    lucide_icon("coffee", acc, 15).pixmap(QSize(15, 15)),
+                    app_icon(20).pixmap(QSize(20, 20)),
                 )
             # refresh min/max/close icons as well
             try:
@@ -704,6 +701,7 @@ class CustomTitleBar(QFrame):
             # startSystemMove() works on both X11 and Wayland.
             # Manual move() calls are silently ignored by Wayland compositors,
             # so the old _drag_pos approach only ever worked on X11.
+            self._press_pos = self._window.pos()
             win = self._window.windowHandle()
             if win is not None:
                 with contextlib.suppress(Exception):
@@ -718,6 +716,31 @@ class CustomTitleBar(QFrame):
             return
         super().mouseMoveEvent(event)
 
+    def _snap_after_move(self) -> None:
+        """Aero-snap the window to the screen edge it was released near."""
+        w = self._window
+        try:
+            if w.isMaximized() or w.isFullScreen():
+                return
+            screen = w.screen()
+            if screen is None:
+                return
+            avail = screen.availableGeometry()
+            gp = QCursor.pos()
+            snap = 4
+            if gp.y() <= avail.top() + snap:
+                w.showMaximized()
+                self._sync_max_icon()
+            elif gp.x() <= avail.left() + snap:
+                w.setGeometry(
+                    avail.left(), avail.top(), avail.width() // 2, avail.height()
+                )
+            elif gp.x() >= avail.right() - snap:
+                half = avail.width() // 2
+                w.setGeometry(avail.right() - half, avail.top(), half, avail.height())
+        except (AttributeError, TypeError, RuntimeError) as e:
+            write_debug_log(f"[Silenced] _snap_after_move: {e}")
+
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if getattr(self, "_native_frame", False):
             super().mouseReleaseEvent(event)
@@ -728,18 +751,10 @@ class CustomTitleBar(QFrame):
             if (
                 event.button() == Qt.MouseButton.LeftButton
                 and not self._window.isMaximized()
+                and self._window.pos()
+                != getattr(self, "_press_pos", self._window.pos())
             ):
-                try:
-                    gp = event.globalPosition().toPoint()
-                except (AttributeError, TypeError, RuntimeError) as e:
-                    write_debug_log(f"[Silenced] mouseReleaseEvent: {e}")
-                    gp = event.globalPos()
-                screen = self._window.screen()
-                if screen is not None:
-                    top = screen.availableGeometry().top()
-                    if gp.y() <= top + 3:
-                        self._window.showMaximized()
-                        self._sync_max_icon()
+                self._snap_after_move()
         except (AttributeError, TypeError, RuntimeError) as e:
             write_debug_log(f"[Silenced] mouseReleaseEvent: {e}")
         event.accept()

@@ -21,10 +21,26 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass, field
-from functools import partial
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QEvent, QObject, QSize, Qt, QThread, QTimer
+from PySide6.QtCore import (
+    QByteArray,
+    QEvent,
+    QObject,
+    QRectF,
+    QSize,
+    Qt,
+    QThread,
+    QTimer,
+)
+from PySide6.QtGui import (
+    QColor,
+    QMoveEvent,
+    QPainter,
+    QPainterPath,
+    QPaintEvent,
+    QShowEvent,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -66,11 +82,10 @@ from .update_controller import install_update_controller
 # Subsystems
 from .upload_manager import build_upload_tab, install_upload
 from .upload_pipeline import UploadManager
-from .window_chrome import apply_window_rounding
 from .window_chrome import event_filter as _chrome_event_filter
 
 if TYPE_CHECKING:
-    from PySide6.QtGui import QCloseEvent, QResizeEvent, QShowEvent
+    from PySide6.QtGui import QCloseEvent
 
     from .workers import StorageWorker
 
@@ -131,11 +146,17 @@ class MochaTools(QMainWindow):
         super().__init__()
         self.setWindowTitle("Mocha Tools")
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._corner_radius = 12
-        self._resize_margin = 7
+        self._resize_margin = 12
         self._resize_cursor_active = False
         self._titlebar_dragging = False
+        self._native_hit_test = False
+        self._adj_cache: set[str] = set()
+        self._adj_last_check: float = 0.0
+        self._adj_fallback = QTimer(self)
+        self._adj_fallback.setInterval(2000)
+        self._adj_fallback.timeout.connect(self._refresh_adjacency)
         self.setMouseTracking(True)
         self.setMinimumWidth(520)
         self.setMinimumHeight(600)
@@ -173,7 +194,9 @@ class MochaTools(QMainWindow):
         self.setCentralWidget(root)
 
         root_lay = QVBoxLayout(root)
-        root_lay.setContentsMargins(0, 0, 0, 0)
+        # Inset the content by the border width so child widgets (titlebar,
+        # tab bar, tab pages) don't paint over the window's rounded border.
+        root_lay.setContentsMargins(1, 1, 1, 1)
         root_lay.setSpacing(0)
 
         self.titlebar = CustomTitleBar(self, APP_NAME, APP_VERSION)
@@ -307,15 +330,154 @@ class MochaTools(QMainWindow):
             return True
         return super().eventFilter(obj, event)
 
-    def resizeEvent(self, event: QResizeEvent) -> None:
-        with contextlib.suppress(Exception):
-            apply_window_rounding(self)
-        super().resizeEvent(event)
-
     def showEvent(self, event: QShowEvent) -> None:
-        with contextlib.suppress(Exception):
-            apply_window_rounding(self)
         super().showEvent(event)
+        from .window_chrome import enable_native_snap, install_window_hook
+
+        enable_native_snap(self)
+        if not install_window_hook(self):
+            self._adj_fallback.start()
+
+    def nativeEvent(
+        self,
+        eventType: QByteArray | bytes | bytearray | memoryview,
+        message: int,
+    ) -> tuple[bool, int]:
+        from typing import cast
+
+        from .window_chrome import handle_native_message
+
+        result = handle_native_message(self, bytes(eventType), message)
+        if result is not None:
+            return result
+        return cast("tuple[bool, int]", super().nativeEvent(eventType, message))
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        """Paint the rounded window background with anti-aliased corners.
+        Corners touching a screen edge (snapped / maximised) are squared off."""
+        try:
+            from .theme import get_background_palette
+
+            pal = get_background_palette()
+            bg0 = QColor(pal["bg0"])
+            border = QColor(pal["border2"])
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            if self.isMaximized() or self.isFullScreen():
+                painter.fillRect(self.rect(), bg0)
+            else:
+                tl, tr, bl, br = self._corner_radii()
+                path = self._rounded_rect_path(
+                    QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5),
+                    tl,
+                    tr,
+                    bl,
+                    br,
+                )
+                painter.fillPath(path, bg0)
+                pen = painter.pen()
+                pen.setColor(border)
+                pen.setWidth(1)
+                painter.setPen(pen)
+                painter.drawPath(path)
+            painter.end()
+        except (AttributeError, TypeError, RuntimeError, ValueError) as e:
+            write_debug_log(f"[Silenced] paintEvent: {e}")
+        super().paintEvent(event)
+
+    def _corner_radii(self) -> tuple[float, float, float, float]:
+        """Return (top-left, top-right, bottom-left, bottom-right) corner radii
+        based on the window's snap state.  Corners whose adjacent edge touches
+        the work area or sits flush against another visible window are squared
+        off; maximised is fully square."""
+        r = float(getattr(self, "_corner_radius", 12))
+        if self.isMaximized() or self.isFullScreen():
+            return (0.0, 0.0, 0.0, 0.0)
+        screen = self.screen()
+        if screen is None:
+            return (r, r, r, r)
+        avail = screen.availableGeometry()
+        geo = self.geometry()
+        tol = 2
+        top = abs(geo.top() - avail.top()) <= tol
+        bottom = abs(geo.bottom() - avail.bottom()) <= tol
+        left = abs(geo.left() - avail.left()) <= tol
+        right = abs(geo.right() - avail.right()) <= tol
+
+        adj = self._adj_cache
+        top = top or ("top" in adj)
+        bottom = bottom or ("bottom" in adj)
+        left = left or ("left" in adj)
+        right = right or ("right" in adj)
+
+        return (
+            0.0 if (top or left) else r,
+            0.0 if (top or right) else r,
+            0.0 if (bottom or left) else r,
+            0.0 if (bottom or right) else r,
+        )
+
+    def moveEvent(self, event: QMoveEvent) -> None:
+        """Re-evaluate corner rounding on move (Aero Snap drags don't repaint
+        on their own)."""
+        super().moveEvent(event)
+        self._refresh_adjacency()
+        self.update()
+
+    def _refresh_adjacency(self) -> None:
+        """Recompute which edges sit flush against another visible window and
+        repaint only when the set changes.  Throttled; triggered on move and
+        by the WinEvent hook when other windows move."""
+        if not self.isVisible():
+            return
+        import time
+
+        from .window_chrome import adjacent_window_edges
+
+        _ADJ_REFRESH_INTERVAL = 0.1
+        now = time.monotonic()
+        if now - self._adj_last_check < _ADJ_REFRESH_INTERVAL:
+            return
+        self._adj_last_check = now
+        new = adjacent_window_edges(self, self.geometry())
+        if new != self._adj_cache:
+            self._adj_cache = new
+            self.update()
+
+    def _rounded_rect_path(
+        self,
+        rect: QRectF,
+        tl: float,
+        tr: float,
+        bl: float,
+        br: float,
+    ) -> QPainterPath:
+        """Build a rounded-rect QPainterPath with an independent radius per corner."""
+        path = QPainterPath()
+        if tl == 0 and tr == 0 and bl == 0 and br == 0:
+            path.addRect(rect)
+            return path
+        x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
+        max_r = min(w, h) / 2
+        tl = min(tl, max_r)
+        tr = min(tr, max_r)
+        bl = min(bl, max_r)
+        br = min(br, max_r)
+        path.moveTo(x + tl, y)
+        path.lineTo(x + w - tr, y)
+        if tr > 0:
+            path.arcTo(x + w - 2 * tr, y, 2 * tr, 2 * tr, 90, -90)
+        path.lineTo(x + w, y + h - br)
+        if br > 0:
+            path.arcTo(x + w - 2 * br, y + h - 2 * br, 2 * br, 2 * br, 0, -90)
+        path.lineTo(x + bl, y + h)
+        if bl > 0:
+            path.arcTo(x, y + h - 2 * bl, 2 * bl, 2 * bl, -90, -90)
+        path.lineTo(x, y + tl)
+        if tl > 0:
+            path.arcTo(x, y, 2 * tl, 2 * tl, 180, -90)
+        path.closeSubpath()
+        return path
 
     def changeEvent(self, event: QEvent) -> None:
         if event.type() == QEvent.Type.WindowStateChange:
@@ -324,10 +486,10 @@ class MochaTools(QMainWindow):
                     self.titlebar._sync_max_icon()
             except (AttributeError, TypeError, RuntimeError) as e:
                 write_debug_log(f"[Silenced] changeEvent: {e}")
-            with contextlib.suppress(Exception):
-                QTimer.singleShot(0, partial(apply_window_rounding, self))
             if self.isMinimized() and self._tray_enabled():
                 QTimer.singleShot(0, self.hide)
+            self._refresh_adjacency()
+            self.update()
         super().changeEvent(event)
 
     # ── Lifecycle ───────────────────────────────────────────────────────────
@@ -346,6 +508,10 @@ class MochaTools(QMainWindow):
             return
 
         save_settings(self)
+        from .window_chrome import uninstall_window_hook
+
+        uninstall_window_hook(self)
+        self._adj_fallback.stop()
         if hasattr(self, "remote_tab"):
             self.remote_tab.set_active(False)
         if hasattr(self, "sync_tab"):

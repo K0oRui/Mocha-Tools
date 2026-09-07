@@ -10,10 +10,11 @@ from __future__ import annotations
 import contextlib
 import sys
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QSize, QTimer
-from PySide6.QtGui import QColor, QFont, QPalette
+from PySide6.QtGui import QColor, QFont, QIcon, QPalette
 from PySide6.QtWidgets import QApplication
 
 from .constants import APP_NAME, ORG_NAME
@@ -202,12 +203,83 @@ def _refresh_accented_icons(win: Any) -> None:
 # ── Entry point ──────────────────────────────────────────────────────────────
 
 
+def _icon_path() -> str | None:
+    here = Path(__file__).resolve().parent
+    candidates = (
+        here / "icon.ico",
+        here.parent / "icon.ico",
+        here.parent / "build" / "windows" / "icon.ico",
+    )
+    for p in candidates:
+        if p.exists():
+            return str(p)
+    return None
+
+
+def _window_icon() -> QIcon:
+    from .ui import app_icon
+
+    p = _icon_path()
+    if p:
+        return QIcon(p)
+    return app_icon(256)
+
+
+_prev_win_icons: list[int] = []
+
+
+def _set_window_icon(win: Any) -> None:
+    """Send WM_SETICON to the native window handle so the taskbar shows the
+    gold icon.  Must run after the window is visible.  Windows only.
+    """
+    if sys.platform != "win32":
+        return
+    global _prev_win_icons
+    import ctypes
+    from ctypes import wintypes
+
+    p = _icon_path()
+    if not p:
+        return
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.LoadImageW.argtypes = [
+        wintypes.HINSTANCE,
+        wintypes.LPCWSTR,
+        wintypes.UINT,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.UINT,
+    ]
+    user32.LoadImageW.restype = wintypes.HANDLE
+    user32.SendMessageW.argtypes = [
+        wintypes.HWND,
+        wintypes.UINT,
+        wintypes.WPARAM,
+        wintypes.LPARAM,
+    ]
+    user32.SendMessageW.restype = wintypes.LPARAM
+    user32.DestroyIcon.argtypes = [wintypes.HICON]
+    user32.DestroyIcon.restype = wintypes.BOOL
+
+    hwnd = int(win.winId())
+    hicon = user32.LoadImageW(None, p, 1, 32, 32, 0x10)
+    hicon_sm = user32.LoadImageW(None, p, 1, 16, 16, 0x10)
+    if hicon:
+        user32.SendMessageW(hwnd, 0x0080, 1, hicon)
+    if hicon_sm:
+        user32.SendMessageW(hwnd, 0x0080, 0, hicon_sm)
+    for h in _prev_win_icons:
+        user32.DestroyIcon(h)
+    _prev_win_icons = [h for h in (int(hicon), int(hicon_sm)) if h]
+
+
 def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(ORG_NAME)
     app.setStyle("Fusion")
     app.setQuitOnLastWindowClosed(False)
+    app.setWindowIcon(_window_icon())
     try:
         app.setStyleSheet(
             build_stylesheet(get_accent(), background_key=get_background()),
@@ -230,7 +302,10 @@ def main() -> None:
     from .app import MochaTools
 
     win = MochaTools()
+    win.setWindowIcon(_window_icon())
     win.show()
+    QTimer.singleShot(0, lambda: _set_window_icon(win))
+    QTimer.singleShot(1000, lambda: _set_window_icon(win))
 
     # Wire accent refresh into win so settings / theme can call it
     win._refresh_accented_icons = lambda: _refresh_accented_icons(win)

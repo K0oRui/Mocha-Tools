@@ -1,4 +1,4 @@
-"""ui/icons.py — Lucide SVG icon helper for MochaTools.
+"""Lucide SVG icon helper for MochaTools.
 
 Minimal subset of Lucide icon paths used throughout the app.
 Each value is the SVG <path d="..."> content for a 24x24 viewBox icon.
@@ -9,6 +9,23 @@ from PySide6.QtGui import QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
 from ..logging_utils import write_debug_log
+
+# App brand icon (coffee cup), Phosphor-style 256x256, baked with the
+# default accent-gold so standalone rendering is deterministic.
+_APP_ICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" '
+    'fill="#c8a96e">'
+    '<path d="M208,88v48a88,88,0,0,1-51.3,80H83.3A88,88,0,0,1,32,136V88Z" '
+    'opacity="0.2"></path>'
+    '<path d="M80,56V24a8,8,0,0,1,16,0V56a8,8,0,0,1-16,0Zm40,8a8,8,0,0,0,'
+    "8-8V24a8,8,0,0,0-16,0V56A8,8,0,0,0,120,64Zm32,0a8,8,0,0,0,8-8V24a8,8,"
+    "0,0,0-16,0V56A8,8,0,0,0,152,64Zm96,56v8a40,40,0,0,1-37.51,39.91,96.59,"
+    "96.59,0,0,1-27,40.09H208a8,8,0,0,1,0,16H32a8,8,0,0,1,0-16H56.54A96.3,"
+    "96.3,0,0,1,24,136V88a8,8,0,0,1,8-8H208A40,40,0,0,1,248,120ZM200,96H40"
+    "v40a80.27,80.27,0,0,0,45.12,72h69.76A80.27,80.27,0,0,0,200,136Zm32,24a"
+    '24,24,0,0,0-16-22.62V136a95.78,95.78,0,0,1-1.2,15A24,24,0,0,0,232,128Z">'
+    "</path></svg>"
+)
 
 _LUCIDE_PATHS: dict[str, str] = {
     "upload": "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12",
@@ -40,20 +57,10 @@ _LUCIDE_PATHS: dict[str, str] = {
 def lucide_icon(name: str, color: str | None = None, size: int = 16) -> QIcon:
     """Return a QIcon rendered from a Lucide SVG path string.
 
-    This helper always creates and returns a fresh QIcon (no caching) so
-    callers can request a new pixmap when needed. To support legacy code
-    that used a special literal for the theme accent, if color is None
-    or equals the legacy accent literal the current accent color is
-    resolved from theme.get_accent().
-
-    Note: callers that need icons to automatically update when the
-    application's accent changes should recreate the icon on demand (for
-    example by connecting to the theme notifier). A module-level cache is
-    intentionally not used here; if one is introduced in future, a
-    connection to the theme notifier should be used to clear it on
-    updates.
+    If color is None or the default accent literal, the current theme accent
+    is used. Icons are not cached; recreate them on accent change.
     """
-    # Resolve dynamic accent if caller passed None or the original default
+    # Resolve dynamic accent
     try:
         if color is None:
             from ..theme import get_accent
@@ -98,3 +105,22 @@ def lucide_icon(name: str, color: str | None = None, size: int = 16) -> QIcon:
     renderer.render(painter)
     painter.end()
     return QIcon(pm)
+
+
+def app_icon(size: int = 256) -> QIcon:
+    """Return the MochaTools brand icon (coffee cup) rendered from SVG.
+
+    Used for the window and system-tray icons. Multiple resolutions are baked
+    in so Windows picks a crisp pixmap for the taskbar.
+    """
+    renderer = QSvgRenderer(QByteArray(_APP_ICON_SVG.encode("utf-8")))
+    icon = QIcon()
+    for s in sorted({16, 24, 32, 48, 64, 128, 256, size}):
+        pm = QPixmap(s, s)
+        pm.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pm)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        renderer.render(painter)
+        painter.end()
+        icon.addPixmap(pm)
+    return icon

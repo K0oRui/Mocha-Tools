@@ -34,8 +34,7 @@ from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from .constants import APP_NAME
 from .logging_utils import write_debug_log
-from .theme import get_accent
-from .ui import lucide_icon
+from .ui import app_icon
 from .utils import decay_speed, fmt_eta, fmt_speed
 
 if TYPE_CHECKING:
@@ -237,7 +236,7 @@ def setup_tray(win: Any, ctx: AppContext) -> None:
 
     tray = QSystemTrayIcon(win)
     with contextlib.suppress(Exception):
-        tray.setIcon(lucide_icon("coffee", get_accent(), 32))
+        tray.setIcon(app_icon(32))
     tray.setToolTip(APP_NAME)
 
     menu = QMenu()

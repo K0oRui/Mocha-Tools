@@ -91,8 +91,7 @@ echo Building Mocha Tools %VERSION% with Nuitka...
     --noinclude-pytest-mode=nofollow ^
     --windows-console-mode=disable ^
     --windows-icon-from-ico="%APP_ROOT%\build\windows\icon.ico" ^
-    --company-name=nxllxvxxd2 ^
-    --product-name="Mocha Tools" ^
+    --include-data-files="%APP_ROOT%\build\windows\icon.ico=icon.ico" ^
     --file-version="%VERSION%" ^
     --product-version="%VERSION%" ^
     --output-filename="Mocha Tools.exe" ^
