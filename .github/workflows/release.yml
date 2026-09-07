@@ -30,6 +30,10 @@ on:
         required: false
         default: true
         type: boolean
+      changelog_from:
+        description: "Changelog base ref (tag or commit). Defaults to the last version-bump commit"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -42,7 +46,7 @@ jobs:
     name: Bump Version & Commit
     runs-on: ubuntu-latest
     outputs:
-      commit-sha: ${{ steps.commit.outputs.sha }}
+      commit-sha: ${{ steps.sha.outputs.sha }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -59,14 +63,14 @@ jobs:
       - name: Generate VERSION file
         run: |
           python apps/desktop/build/changelog.py \
-            --from 17cab03 \
+            ${{ inputs.changelog_from && format('--from {0}', inputs.changelog_from) || '' }} \
             --version "${{ inputs.version }}" \
             --format yaml > apps/desktop/VERSION
 
       - name: Generate release notes
         run: |
           python apps/desktop/build/changelog.py \
-            --from 17cab03 \
+            ${{ inputs.changelog_from && format('--from {0}', inputs.changelog_from) || '' }} \
             --version "${{ inputs.version }}" \
             --format markdown > release-notes.md
 
@@ -79,8 +83,19 @@ jobs:
           name: release-notes
           path: release-notes.md
 
+      - name: Check if version already bumped
+        id: check-bump
+        run: |
+          LAST_BUMP=$(git log --format=%s --grep="^chore: bump version to" -1 || true)
+          if [ "$LAST_BUMP" = "chore: bump version to ${{ inputs.version }}" ]; then
+            echo "already-bumped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already-bumped=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Commit and push
         id: commit
+        if: steps.check-bump.outputs.already-bumped == 'false'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -93,7 +108,10 @@ jobs:
             git commit -m "chore: bump version to ${{ inputs.version }}"
             git push
           fi
-          echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Resolve commit sha
+        id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Windows — portable exe + custom installer

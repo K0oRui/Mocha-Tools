@@ -55,13 +55,15 @@ def run_git(args: list[str]) -> str:
     return proc.stdout
 
 
-def last_tag() -> str | None:
-    """Return the most recent tag reachable from HEAD, or None."""
+def last_bump() -> str | None:
+    """Return the most recent version-bump commit reachable from HEAD, or None."""
     try:
-        tag = run_git(["describe", "--tags", "--abbrev=0"]).strip()
+        sha = run_git(
+            ["log", "--format=%H", "--grep=^chore: bump version to", "-1"]
+        ).strip()
     except subprocess.CalledProcessError:
         return None
-    return tag or None
+    return sha or None
 
 
 def parse_commits(from_tag: str | None) -> list[dict[str, str]]:
@@ -163,7 +165,7 @@ def main() -> None:
         "--from",
         dest="from_ref",
         default=None,
-        help="Tag or commit to diff from (default: most recent tag reachable from HEAD)",
+        help="Tag or commit to diff from (default: most recent version-bump commit)",
     )
     parser.add_argument(
         "--from-tag",
@@ -179,7 +181,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    from_ref = args.from_ref or last_tag()
+    from_ref = args.from_ref or last_bump()
     commits = parse_commits(from_ref)
 
     if args.format == "markdown":
