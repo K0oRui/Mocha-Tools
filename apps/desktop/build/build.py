@@ -66,6 +66,33 @@ def read_version_file() -> tuple[str, list[dict[str, str]]]:
     return version, changes
 
 
+def _py_string(value: str) -> str:
+    """Quote a string the way ruff's formatter does.
+
+    Double quotes by default; single quotes only when the string contains
+    more double quotes than single quotes.
+    """
+    quote = "'" if value.count('"') > value.count("'") else '"'
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+        .replace(quote, "\\" + quote)
+    )
+    return f"{quote}{escaped}{quote}"
+
+
+def _format_change(change: dict[str, str]) -> str:
+    """Render one changelog entry in ruff's canonical style."""
+    return (
+        "    {\n"
+        f'        "subject": {_py_string(change["subject"])},\n'
+        f'        "description": {_py_string(change["description"])},\n'
+        "    },"
+    )
+
+
 def _stamp_constants(version: str, changes: list[dict[str, str]]) -> None:
     """Rewrite APP_VERSION and APP_CHANGES in src/constants.py."""
     constants = SRC / "constants.py"
@@ -82,7 +109,7 @@ def _stamp_constants(version: str, changes: list[dict[str, str]]) -> None:
         if line.startswith("APP_CHANGES"):
             if changes:
                 out.append("APP_CHANGES: list[dict[str, str]] = [")
-                out.extend(f"    {change!r}," for change in changes)
+                out.extend(_format_change(change) for change in changes)
                 out.append("]")
             else:
                 out.append("APP_CHANGES: list[dict[str, str]] = []")
