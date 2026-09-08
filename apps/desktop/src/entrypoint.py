@@ -273,6 +273,22 @@ def _set_window_icon(win: Any) -> None:
     _prev_win_icons = [h for h in (int(hicon), int(hicon_sm)) if h]
 
 
+def _set_foreground(win: Any) -> None:
+    """Bring the window to the foreground (Windows foreground-lock workaround)."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+        user32.SetForegroundWindow.restype = wintypes.BOOL
+        user32.SetForegroundWindow(int(win.winId()))
+    except (AttributeError, OSError, RuntimeError) as e:
+        write_debug_log(f"[Silenced] _set_foreground: {e}")
+
+
 def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
@@ -297,11 +313,35 @@ def main() -> None:
 
     app.setPalette(_build_app_palette())
 
+    # Single-instance guard: a second launch focuses the running window.
+    _win_holder: dict[str, Any] = {"win": None}
+
+    def _focus_existing() -> None:
+        win = _win_holder["win"]
+        if win is None:
+            return
+        try:
+            if hasattr(win, "_restore_from_tray"):
+                win._restore_from_tray()
+            else:
+                win.showNormal()
+                win.raise_()
+                win.activateWindow()
+            _set_foreground(win)
+        except (AttributeError, RuntimeError, OSError) as e:
+            write_debug_log(f"[Silenced] _focus_existing: {e}")
+
+    from .single_instance import ensure_single_instance
+
+    if not ensure_single_instance(_focus_existing):
+        sys.exit(0)
+
     test_update = "--test-update" in sys.argv
 
     from .app import MochaTools
 
     win = MochaTools()
+    _win_holder["win"] = win
     win.setWindowIcon(_window_icon())
     win.show()
     QTimer.singleShot(0, lambda: _set_window_icon(win))
