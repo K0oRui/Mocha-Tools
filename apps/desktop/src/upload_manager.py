@@ -614,7 +614,7 @@ def install_upload(win: Any, ctx: AppContext) -> None:
     def _on_finished(result: dict) -> None:
         nonlocal current_job_id
         current_job_id = None
-        ctx.is_uploading = False
+        win._set_uploading(False)
         win._badge("Complete", "#4ade80")
         win.transferred_label.setText("")
         win._log(f"✓ Done! File ID: {result.get('file_id', '')}")
@@ -642,7 +642,7 @@ def install_upload(win: Any, ctx: AppContext) -> None:
     def _on_error(msg: str) -> None:
         nonlocal current_job_id
         current_job_id = None
-        ctx.is_uploading = False
+        win._set_uploading(False)
         win._badge("Error", "#f87171")
         win.transferred_label.setText("")
         win._log(f"✗ Error: {msg}")
