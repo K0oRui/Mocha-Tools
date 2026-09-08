@@ -7,6 +7,9 @@ and HEAD, then emits either:
   --format markdown   grouped release-notes body (for the GitHub release)
   --format yaml       VERSION-file content (version + changes with descriptions)
 
+Only commits that change the desktop app (paths under apps/desktop/) are
+included; cosmetic commits such as style-only reformatting are skipped.
+
 Usage:
     python changelog.py --version 7.1.0 --format markdown
     python changelog.py --version 7.1.0 --format yaml
@@ -40,8 +43,14 @@ SECTIONS: list[tuple[str, str | None]] = [
     ("Other", None),
 ]
 
+# Only commits touching the desktop app are included in release notes.
+APP_PREFIX = "apps/desktop/"
+
+# Commit types that are cosmetic and never user-facing.
+SKIP_TYPES = {"style"}
+
 _COMMIT_RE = re.compile(r"^([a-z]+)(?:\([^)]*\))?(!)?:")
-_MIN_PARTS = 3
+_MIN_PARTS = 4
 
 
 def run_git(args: list[str]) -> str:
@@ -66,8 +75,25 @@ def last_bump() -> str | None:
     return sha or None
 
 
+def commit_files(sha: str) -> list[str]:
+    """Return the paths changed by a commit."""
+    out = run_git(["diff-tree", "--no-commit-id", "--name-only", "-r", sha])
+    return [line for line in out.splitlines() if line.strip()]
+
+
+def is_desktop_change(commit: dict[str, str]) -> bool:
+    """True if the commit changes the desktop app and isn't cosmetic."""
+    if commit_type(commit["subject"]) in SKIP_TYPES:
+        return False
+    return any(path.startswith(APP_PREFIX) for path in commit["files"])
+
+
 def parse_commits(from_tag: str | None) -> list[dict[str, str]]:
-    """Parse commit sha, subject, and body from git log."""
+    """Parse commit sha, subject, and body from git log.
+
+    Only commits that change the desktop app are returned; cosmetic commits
+    (style-only reformatting, etc.) are skipped.
+    """
     fmt = "--pretty=format:%x1f%H%x1f%s%x1f%b%x1e"
     if from_tag:
         log = run_git(["log", "--no-merges", f"{from_tag}..HEAD", fmt])
@@ -75,19 +101,20 @@ def parse_commits(from_tag: str | None) -> list[dict[str, str]]:
         log = run_git(["log", "--no-merges", fmt])
     commits: list[dict[str, str]] = []
     for raw_entry in log.split("\x1e"):
-        entry = raw_entry.strip("\x1f\r\n")
+        entry = raw_entry.strip("\r\n")
         if not entry:
             continue
         parts = entry.split("\x1f")
         if len(parts) < _MIN_PARTS:
             continue
-        commits.append(
-            {
-                "sha": parts[0],
-                "subject": parts[1].strip(),
-                "body": parts[2].strip(),
-            }
-        )
+        commit = {
+            "sha": parts[1],
+            "subject": parts[2].strip(),
+            "body": parts[3].strip(),
+            "files": commit_files(parts[1]),
+        }
+        if is_desktop_change(commit):
+            commits.append(commit)
     return commits
 
 
@@ -146,12 +173,8 @@ def render_markdown(
 
 
 def render_yaml(version: str, commits: list[dict[str, str]]) -> str:
-    """Render VERSION-file YAML. Only commits with a body are included."""
-    changes = [
-        {"subject": c["subject"], "description": c["body"]}
-        for c in commits
-        if c["body"]
-    ]
+    """Render VERSION-file YAML."""
+    changes = [{"subject": c["subject"], "description": c["body"]} for c in commits]
     return yaml.safe_dump(
         {"version": version, "changes": changes},
         sort_keys=False,
