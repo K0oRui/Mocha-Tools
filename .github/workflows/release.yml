@@ -3,6 +3,11 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
+      build_only:
+        description: "Build only (no version bump, no release)"
+        required: false
+        default: false
+        type: boolean
       version:
         description: "Version number (e.g. 7.1.0)"
         required: true
@@ -95,7 +100,7 @@ jobs:
 
       - name: Commit and push
         id: commit
-        if: steps.check-bump.outputs.already-bumped == 'false'
+        if: ${{ !inputs.build_only && steps.check-bump.outputs.already-bumped == 'false' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -295,7 +300,7 @@ jobs:
   release:
     name: Release
     needs: [build-windows, build-linux, build-macos-arm64, build-macos-x86]
-    if: always() && !failure() && !cancelled()
+    if: ${{ !inputs.build_only && always() && !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: Delete stale draft release
