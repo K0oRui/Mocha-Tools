@@ -59,6 +59,15 @@ Mocha, the API, and access to both come from [Bink-lab](https://github.com/Bink-
 
 ![Divider](https://capsule-render.vercel.app/api?type=rect&color=D0B276&height=3)
 
+## macOS Installation
+
+The macOS build is ad-hoc signed (no paid Apple Developer account), so Gatekeeper may block a directly-downloaded DMG or .pkg. Right-click the file → Open, or clear the quarantine flag:
+
+- **DMG:** `xattr -dr com.apple.quarantine "/Applications/Mocha Tools.app"`
+- **.pkg:** `xattr -dr com.apple.quarantine /path/to/MochaTools-*.pkg`
+
+![Divider](https://capsule-render.vercel.app/api?type=rect&color=D0B276&height=3)
+
 ## Preview
 
 <p align="center">

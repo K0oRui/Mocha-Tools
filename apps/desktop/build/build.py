@@ -138,29 +138,10 @@ def _stamp_installer_sh(version: str) -> None:
     installer_sh.write_text(text, encoding="utf-8")
 
 
-def _stamp_info_plist(version: str) -> None:
-    plist = APP_ROOT / "build" / "macos" / "Info.plist"
-    if not plist.exists():
-        return
-    text = plist.read_text(encoding="utf-8")
-    text = re.sub(
-        r"(<key>CFBundleShortVersionString</key>\s*<string>)[^<]*(</string>)",
-        rf"\g<1>{version}\g<2>",
-        text,
-    )
-    text = re.sub(
-        r"(<key>CFBundleVersion</key>\s*<string>)[^<]*(</string>)",
-        rf"\g<1>{version}\g<2>",
-        text,
-    )
-    plist.write_text(text, encoding="utf-8")
-
-
 def stamp_version(version: str, changes: list[dict[str, str]]) -> None:
     """Stamp version + changes into every manifest that needs them."""
     _stamp_constants(version, changes)
     _stamp_installer_sh(version)
-    _stamp_info_plist(version)
 
 
 def _clean_stale() -> None:
@@ -231,6 +212,9 @@ def compile_macos(version: str, jobs: int) -> Path:
             f"--macos-app-icon={icon}",
             f"--macos-app-name={PRODUCT_NAME}",
             f"--macos-app-version={version}",
+            "--macos-signed-app-name=com.mocha.tools",
+            "--macos-app-macos-min-version=11.0",
+            "--macos-app-category-type=public.app-category.utilities",
         ],
     )
     bundles = sorted(

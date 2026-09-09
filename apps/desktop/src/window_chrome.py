@@ -16,7 +16,7 @@ Corner rounding is handled by the window's own anti-aliased paintEvent
 from __future__ import annotations
 
 import ctypes
-from ctypes import wintypes
+import sys
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, Qt
 from PySide6.QtGui import QHoverEvent, QMouseEvent
@@ -315,6 +315,10 @@ def hit_test(win: QWidget, x: int, y: int) -> int:
 
 
 def _set_max_work_area(win: QWidget, lparam: int) -> None:
+    if sys.platform != "win32":
+        return
+    from ctypes import wintypes
+
     try:
         mmi = _MINMAXINFO.from_address(int(lparam))
         hwnd = int(win.winId())
@@ -344,6 +348,10 @@ def adjacent_window_edges(win: QWidget, geo: QRect, tol: int = 8) -> set[str]:
     visible top-level window sits flush against *geo* (the window's screen
     geometry).  Used to square off corners that touch a neighbouring window.
     The tolerance accounts for Windows' invisible resize borders (~7px)."""
+    if sys.platform != "win32":
+        return set()
+    from ctypes import wintypes
+
     edges: set[str] = set()
     try:
         user32 = ctypes.windll.user32
@@ -434,23 +442,27 @@ _WATCHED_EVENTS = {
     EVENT_OBJECT_LOCATIONCHANGE,
 }
 
-WINEVENTPROC = ctypes.WINFUNCTYPE(
-    None,
-    wintypes.HANDLE,
-    wintypes.DWORD,
-    wintypes.HWND,
-    ctypes.c_long,
-    ctypes.c_long,
-    wintypes.DWORD,
-    wintypes.DWORD,
-)
-
 
 def install_window_hook(win: QWidget) -> bool:
     """Install a WinEvent hook that notifies the window when other top-level
     windows move, resize, appear, or disappear.  Returns True on success.  The
     callback runs on the GUI thread and triggers a throttled adjacency
     recompute."""
+    if sys.platform != "win32":
+        return False
+    from ctypes import wintypes
+
+    WINEVENTPROC = ctypes.WINFUNCTYPE(
+        None,
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.HWND,
+        ctypes.c_long,
+        ctypes.c_long,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    )
+
     try:
         if getattr(win, "_win_event_hook", None) is not None:
             return True
@@ -510,6 +522,8 @@ def install_window_hook(win: QWidget) -> bool:
 
 
 def uninstall_window_hook(win: QWidget) -> None:
+    if sys.platform != "win32":
+        return
     try:
         hook = getattr(win, "_win_event_hook", None)
         if hook:
@@ -529,6 +543,8 @@ def handle_native_message(
     the message through to Qt's default handling."""
     if bytes(eventType) != b"windows_generic_MSG":
         return None
+    from ctypes import wintypes
+
     if not (win.windowFlags() & Qt.WindowType.FramelessWindowHint):
         return None
     try:

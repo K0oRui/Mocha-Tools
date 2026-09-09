@@ -100,8 +100,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add apps/desktop/VERSION apps/desktop/src/constants.py \
-            apps/desktop/installer apps/desktop/installer.sh \
-            apps/desktop/build/macos/Info.plist
+            apps/desktop/installer apps/desktop/installer.sh
           if git diff --cached --quiet; then
             echo "No version changes to commit"
           else
