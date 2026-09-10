@@ -12,10 +12,10 @@ if TYPE_CHECKING:
 from .linux_common import stage_package
 
 
-def build(version: str, app_root: Path, dist: Path, binary: Path) -> Path:
+def build(version: str, app_root: Path, dist: Path, binary: Path, arch: str) -> Path:
     """Package the staged layout into a .rpm."""
     staging = stage_package(app_root, dist, binary)
-    target = dist / f"MochaTools-{version}-x86_64.rpm"
+    target = dist / f"MochaTools-{version}-{arch}.rpm"
     subprocess.run(
         [
             "fpm",

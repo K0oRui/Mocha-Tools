@@ -26,8 +26,17 @@ Keywords=mocha;upload;share;file;
 StartupNotify=true
 """
 
+APPRUN = """\
+#!/bin/sh
+SELF=$(readlink -f "$0")
+HERE=${SELF%/*}
+export PATH="${HERE}/usr/bin/:${HERE}/usr/sbin/:${HERE}/usr/games/:${HERE}/bin/:${HERE}/sbin/:${PATH}"
+export LD_LIBRARY_PATH="${HERE}/usr/lib/:${HERE}/usr/lib/x86_64-linux-gnu/:${HERE}/usr/lib64/:${HERE}/lib/:${HERE}/lib/x86_64-linux-gnu/:${HERE}/lib64/:${LD_LIBRARY_PATH}"
+exec "${HERE}/usr/bin/mochatools" "$@"
+"""
 
-def build(version: str, app_root: Path, dist: Path, binary: Path) -> Path:
+
+def build(version: str, app_root: Path, dist: Path, binary: Path, arch: str) -> Path:
     """Assemble an AppDir and run appimagetool."""
     appdir = dist / "AppDir"
     if appdir.exists():
@@ -40,8 +49,11 @@ def build(version: str, app_root: Path, dist: Path, binary: Path) -> Path:
         appdir / "mochatools.png",
     )
     (appdir / "mochatools.desktop").write_text(DESKTOP_FILE, encoding="utf-8")
+    apprun = appdir / "AppRun"
+    apprun.write_text(APPRUN, encoding="utf-8")
+    apprun.chmod(0o755)
 
-    target = dist / f"MochaTools-{version}-x86_64.AppImage"
+    target = dist / f"MochaTools-{version}-{arch}.AppImage"
     subprocess.run(["appimagetool", str(appdir), str(target)], check=True)
     shutil.rmtree(appdir)
     return target

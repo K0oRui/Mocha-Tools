@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def build(version: str, app_root: Path, dist: Path, binary: Path) -> Path:
+def build(version: str, app_root: Path, dist: Path, binary: Path, arch: str) -> Path:
     """Bundle the binary + installer.sh + icon into a gzipped tarball."""
     staging = dist / "linux-installer"
     if staging.exists():
@@ -35,7 +35,7 @@ def build(version: str, app_root: Path, dist: Path, binary: Path) -> Path:
         icon_dir / "icon.png",
     )
 
-    target = dist / f"MochaTools-{version}-linux.tar.gz"
+    target = dist / f"MochaTools-{version}-linux-{arch}.tar.gz"
     with tarfile.open(target, "w:gz") as tar:
         tar.add(staging, arcname=".")
     shutil.rmtree(staging)

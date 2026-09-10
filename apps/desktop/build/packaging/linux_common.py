@@ -8,6 +8,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pathlib import Path
 
+SUPPORTED_ARCHS = ("x86_64", "aarch64")
+
+DEB_ARCH_MAP = {
+    "x86_64": "amd64",
+    "aarch64": "arm64",
+}
+
+
 DESKTOP_FILE = """\
 [Desktop Entry]
 Version=1.0

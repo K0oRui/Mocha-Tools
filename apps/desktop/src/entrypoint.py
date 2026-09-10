@@ -293,6 +293,8 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(ORG_NAME)
+    if sys.platform != "win32":
+        app.setDesktopFileName("mochatools.desktop")
     app.setStyle("Fusion")
     app.setQuitOnLastWindowClosed(False)
     app.setWindowIcon(_window_icon())

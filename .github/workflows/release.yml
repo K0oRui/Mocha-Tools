@@ -160,38 +160,71 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Linux — tarball + AppImage (portable), .deb + .rpm (installer)
+  # x86_64: built inside manylinux_2_34 container (glibc 2.34 floor)
+  # aarch64: built on ubuntu-24.04-arm runner (glibc 2.39 floor)
   # ─────────────────────────────────────────────────────────────────────────────
   build-linux:
-    name: Build (Linux)
+    name: Build (Linux ${{ matrix.arch }})
     needs: bump-version
     if: inputs.build_linux
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+            container: quay.io/pypa/manylinux_2_34_x86_64
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            container: ""
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.bump-version.outputs.commit-sha }}
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: pip install -r apps/desktop/requirements.txt
-
-      - name: Install packaging tools
+      # ── x86_64: container (manylinux_2_34, AlmaLinux 9-based, glibc 2.34) ──
+      - name: Install build deps (x86_64)
+        if: matrix.arch == 'x86_64'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ruby ruby-dev build-essential patchelf libfuse2
-          sudo gem install fpm --no-document
+          dnf install -y python3.11 python3.11-pip python3.11-devel \
+            ruby gcc make patchelf rpm-build wget
+          ln -sf /usr/bin/python3.11 /usr/local/bin/python
+          python -m pip install pip
+          python -m pip install -r apps/desktop/requirements.txt
           wget -q \
             https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage \
             -O /usr/local/bin/appimagetool
           chmod +x /usr/local/bin/appimagetool
+          gem install fpm --no-document
+
+      # ── aarch64: ubuntu-24.04-arm runner (glibc 2.39) ───────────────────────
+      - uses: actions/setup-python@v6
+        if: matrix.arch == 'aarch64'
+        with:
+          python-version: "3.11"
+
+      - name: Install build deps (aarch64)
+        if: matrix.arch == 'aarch64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev build-essential patchelf libfuse2 rpm
+          sudo gem install fpm --no-document
+          wget -q \
+            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-aarch64.AppImage \
+            -O /usr/local/bin/appimagetool
+          chmod +x /usr/local/bin/appimagetool
+
+      - name: Install Python dependencies (aarch64)
+        if: matrix.arch == 'aarch64'
+        run: pip install -r apps/desktop/requirements.txt
 
       - name: Build (portable + installer)
         run: |
           python apps/desktop/build/build.py \
             --platform linux --variant all \
+            --arch ${{ matrix.arch }} \
             --version "${{ inputs.version }}" --jobs 4
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
@@ -199,29 +232,29 @@ jobs:
       - name: Upload tarball
         uses: actions/upload-artifact@v6
         with:
-          name: linux-tarball
-          path: apps/desktop/dist/MochaTools-*-linux.tar.gz
+          name: linux-tarball-${{ matrix.arch }}
+          path: apps/desktop/dist/MochaTools-*-linux-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v6
         with:
-          name: linux-appimage
-          path: apps/desktop/dist/MochaTools-*-x86_64.AppImage
+          name: linux-appimage-${{ matrix.arch }}
+          path: apps/desktop/dist/MochaTools-*-${{ matrix.arch }}.AppImage
           if-no-files-found: error
 
       - name: Upload .deb
         uses: actions/upload-artifact@v6
         with:
-          name: linux-deb
-          path: apps/desktop/dist/MochaTools-*-amd64.deb
+          name: linux-deb-${{ matrix.arch }}
+          path: apps/desktop/dist/MochaTools-*-${{ matrix.arch == 'x86_64' && 'amd64' || 'arm64' }}.deb
           if-no-files-found: error
 
       - name: Upload .rpm
         uses: actions/upload-artifact@v6
         with:
-          name: linux-rpm
-          path: apps/desktop/dist/MochaTools-*-x86_64.rpm
+          name: linux-rpm-${{ matrix.arch }}
+          path: apps/desktop/dist/MochaTools-*-${{ matrix.arch }}.rpm
           if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────────────────────────
@@ -332,9 +365,13 @@ jobs:
           files: |
             artifacts/windows-portable/*
             artifacts/windows-installer/*
-            artifacts/linux-tarball/*
-            artifacts/linux-appimage/*
-            artifacts/linux-deb/*
-            artifacts/linux-rpm/*
+            artifacts/linux-tarball-x86_64/*
+            artifacts/linux-tarball-aarch64/*
+            artifacts/linux-appimage-x86_64/*
+            artifacts/linux-appimage-aarch64/*
+            artifacts/linux-deb-x86_64/*
+            artifacts/linux-deb-aarch64/*
+            artifacts/linux-rpm-x86_64/*
+            artifacts/linux-rpm-aarch64/*
             artifacts/macos-arm64/*
             artifacts/macos-x86_64/*

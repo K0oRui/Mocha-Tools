@@ -9,13 +9,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pathlib import Path
 
-from .linux_common import stage_package
+from .linux_common import DEB_ARCH_MAP, stage_package
 
 
-def build(version: str, app_root: Path, dist: Path, binary: Path) -> Path:
+def build(version: str, app_root: Path, dist: Path, binary: Path, arch: str) -> Path:
     """Package the staged layout into a .deb."""
     staging = stage_package(app_root, dist, binary)
-    target = dist / f"MochaTools-{version}-amd64.deb"
+    deb_arch = DEB_ARCH_MAP[arch]
+    target = dist / f"MochaTools-{version}-{deb_arch}.deb"
     subprocess.run(
         [
             "fpm",

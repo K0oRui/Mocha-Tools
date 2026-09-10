@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import platform
 import re
 import shutil
 import subprocess
@@ -245,21 +246,21 @@ def build_windows(variant: str, version: str, jobs: int) -> None:
         _verify(target)
 
 
-def build_linux(variant: str, version: str, jobs: int) -> None:
+def build_linux(variant: str, version: str, jobs: int, arch: str) -> None:
     binary = compile_linux(jobs)
     if variant == "portable":
         module = _import_packaging("linux_tarball")
-        target = module.build(version, APP_ROOT, DIST, binary)
+        target = module.build(version, APP_ROOT, DIST, binary, arch)
         _verify(target)
         appimage = _import_packaging("linux_appimage")
-        target = appimage.build(version, APP_ROOT, DIST, binary)
+        target = appimage.build(version, APP_ROOT, DIST, binary, arch)
         _verify(target)
     else:
         module = _import_packaging("linux_deb")
-        target = module.build(version, APP_ROOT, DIST, binary)
+        target = module.build(version, APP_ROOT, DIST, binary, arch)
         _verify(target)
         module = _import_packaging("linux_rpm")
-        target = module.build(version, APP_ROOT, DIST, binary)
+        target = module.build(version, APP_ROOT, DIST, binary, arch)
         _verify(target)
 
 
@@ -277,9 +278,17 @@ def build_macos(variant: str, version: str, jobs: int) -> None:
 
 
 def _is_arm64() -> bool:
-    import platform
-
     return platform.machine().lower() in ("arm64", "aarch64")
+
+
+def detect_arch() -> str:
+    machine = platform.machine().lower()
+    if machine in ("x86_64", "amd64"):
+        return "x86_64"
+    if machine in ("aarch64", "arm64"):
+        return "aarch64"
+    print(f"Unsupported architecture: {machine}", file=sys.stderr)
+    sys.exit(1)
 
 
 def _verify(path: Path) -> None:
@@ -318,6 +327,12 @@ def main() -> None:
         default=4,
         help="Nuitka compile jobs (default: 4)",
     )
+    parser.add_argument(
+        "--arch",
+        choices=["x86_64", "aarch64"],
+        default=None,
+        help="Target Linux architecture (default: auto-detect)",
+    )
     args = parser.parse_args()
 
     version, changes = read_version_file()
@@ -332,14 +347,22 @@ def main() -> None:
         parser.error("--platform and --variant are required unless --stamp-only")
 
     stamp_version(version, changes)
-    print(f"Building {PRODUCT_NAME} {version} for {args.platform} ({args.variant})")
+
+    arch = ""
+    if args.platform == "linux":
+        arch = args.arch or detect_arch()
+
+    print(
+        f"Building {PRODUCT_NAME} {version} for {args.platform}"
+        f"{' (' + arch + ')' if arch else ''} ({args.variant})"
+    )
 
     variants = ["portable", "installer"] if args.variant == "all" else [args.variant]
     for variant in variants:
         if args.platform == "windows":
             build_windows(variant, version, args.jobs)
         elif args.platform == "linux":
-            build_linux(variant, version, args.jobs)
+            build_linux(variant, version, args.jobs, arch)
         else:
             build_macos(variant, version, args.jobs)
 
