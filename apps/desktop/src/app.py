@@ -155,7 +155,7 @@ class MochaTools(QMainWindow):
         self._adj_cache: set[str] = set()
         self._adj_last_check: float = 0.0
         self._adj_fallback = QTimer(self)
-        self._adj_fallback.setInterval(2000)
+        self._adj_fallback.setInterval(500)
         self._adj_fallback.timeout.connect(self._refresh_adjacency)
         self.setMouseTracking(True)
         self.setMinimumWidth(520)
@@ -332,6 +332,13 @@ class MochaTools(QMainWindow):
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
+        if not getattr(self, "_centered", False):
+            self._centered = True
+            screen = self.screen() or QApplication.primaryScreen()
+            if screen is not None:
+                geo = self.frameGeometry()
+                geo.moveCenter(screen.availableGeometry().center())
+                self.move(geo.topLeft())
         from .window_chrome import enable_native_snap, install_window_hook
 
         enable_native_snap(self)
@@ -393,16 +400,27 @@ class MochaTools(QMainWindow):
         r = float(getattr(self, "_corner_radius", 12))
         if self.isMaximized() or self.isFullScreen():
             return (0.0, 0.0, 0.0, 0.0)
-        screen = self.screen()
+        geo = self.frameGeometry()
+        screen = QApplication.screenAt(geo.center()) or self.screen()
         if screen is None:
             return (r, r, r, r)
         avail = screen.availableGeometry()
-        geo = self.geometry()
         tol = 2
         top = abs(geo.top() - avail.top()) <= tol
         bottom = abs(geo.bottom() - avail.bottom()) <= tol
         left = abs(geo.left() - avail.left()) <= tol
         right = abs(geo.right() - avail.right()) <= tol
+
+        if QApplication.platformName() == "wayland":
+            tile_tol = 8
+            half_w = avail.width() / 2
+            half_h = avail.height() / 2
+            if abs(geo.width() - half_w) <= tile_tol:
+                left = True
+                right = True
+            if abs(geo.height() - half_h) <= tile_tol:
+                top = True
+                bottom = True
 
         adj = self._adj_cache
         top = top or ("top" in adj)
@@ -439,8 +457,11 @@ class MochaTools(QMainWindow):
         if now - self._adj_last_check < _ADJ_REFRESH_INTERVAL:
             return
         self._adj_last_check = now
-        new = adjacent_window_edges(self, self.geometry())
-        if new != self._adj_cache:
+        geo = self.frameGeometry()
+        new = adjacent_window_edges(self, geo)
+        geo_changed = geo != getattr(self, "_last_geo", None)
+        self._last_geo = geo
+        if new != self._adj_cache or geo_changed:
             self._adj_cache = new
             self.update()
 
