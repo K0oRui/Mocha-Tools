@@ -14,27 +14,23 @@ HARDCODED_BASE_URL = "https://api.mocha.my"
 SHARE_BASE_URL = "https://mocha.my"
 
 # Stamped at build time by build.py — do not edit manually.
-APP_VERSION = "8.1.0"
+APP_VERSION = "8.2.0"
 APP_CHANGES: list[dict[str, str]] = [
     {
-        "subject": "fix(build): filter changelog to desktop app changes",
+        "subject": "feat(build): add PowerShell build launcher with dependency checks",
+        "description": "- Add build.ps1 as a cross-platform alternative to build.bat\n- Remove build.bat (superseded by build.ps1)\n- Check for platform-specific build dependencies before compiling\n- Default target OS prompt to the current platform\n- Remove invalid --linux-app-icon flag from onefile builds\n- Add --force to fpm so rebuilds overwrite existing artifacts\n- Update release workflow version example",
+    },
+    {
+        "subject": "fix(desktop): keep corners rounded on Linux when not at screen edge",
         "description": "",
     },
     {
-        "subject": "fix(build): stamp changelog entries in ruff-canonical format",
-        "description": "The release pipeline wrote APP_CHANGES with repr() (single-quoted, one-line dicts), so the committed constants.py failed ruff format --check. Emit multi-line double-quoted entries matching ruff's formatter instead.",
+        "subject": "feat(build): rework Linux packaging for glibc-pinned multi-arch builds",
+        "description": "Pin x86_64 builds to manylinux_2_34 and aarch64 to ubuntu-24.04-arm so each artifact targets the correct glibc floor. Add AppRun to AppImage packaging and set the desktop file name so the taskbar icon resolves on Wayland.",
     },
     {
-        "subject": "fix(upload): mark upload inactive via _set_uploading on finish/error",
-        "description": "",
-    },
-    {
-        "subject": "feat(desktop): enforce single instance and focus existing window",
-        "description": "The first instance listens on a named QLocalServer. Any later launch connects, asks the running instance to focus its window, and exits before creating a window. Stale servers are cleared and simultaneous-start races fall back to notifying the winner.",
-    },
-    {
-        "subject": "ci: make changelog base ref configurable and skip redundant bumps",
-        "description": "- changelog base ref as a manual workflow input\n- default changelog to the last version-bump commit\n- skip the version bump when the version is already bumped",
+        "subject": "fix(macos): make app build and run on macOS",
+        "description": "- guard window_chrome ctypes/wintypes behind sys.platform so the app\n  no longer crashes at import on macOS\n- pass bundle identifier, min-version, and category to Nuitka instead\n  of the unused Info.plist\n- add /Applications shortcut to the DMG\n- document Gatekeeper workaround for DMG and pkg",
     },
 ]
 
