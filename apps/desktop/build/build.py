@@ -191,12 +191,10 @@ def compile_windows(version: str, jobs: int) -> Path:
 
 def compile_linux(jobs: int) -> Path:
     """Compile the Linux onefile executable."""
-    icon = APP_ROOT / "build" / "debian_ubuntu" / "icon.png"
     _run_nuitka(
         jobs,
         [
             "--onefile",
-            f"--linux-app-icon={icon}",
             "--output-filename=Mocha Tools",
         ],
     )

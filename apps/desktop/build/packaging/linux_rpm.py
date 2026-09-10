@@ -19,6 +19,7 @@ def build(version: str, app_root: Path, dist: Path, binary: Path, arch: str) -> 
     subprocess.run(
         [
             "fpm",
+            "--force",
             "-s",
             "dir",
             "-t",
